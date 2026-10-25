@@ -1,23 +1,26 @@
 "use client";
 
 import { useQuery } from "@powersync/react";
+import { ConfirmDialog, RejectedWritesBanner, type SignOutResult, SyncStatusChip } from "@samesight/next";
 import Link from "next/link";
 import { type ReactNode, useState } from "react";
-import { type SignOutResult, useSession, useSignedIn } from "./session-provider";
+import { useSession, useSignedIn } from "./session-provider";
 import { SignIn } from "./sign-in";
-import { SyncStatus } from "./sync-status";
 
-/** Renders children for a signed-in user with a tenant, or the right fallback. */
+/**
+ * Renders children for a signed-in user with an open store, or the right fallback. The
+ * provider itself shows the unlock and recovery screens.
+ */
 export function AppShell({ children }: { children: ReactNode }) {
   const { state } = useSession();
-  if (state.status === "loading") {
+  if (state.status === "signed-out") return <SignIn />;
+  if (state.status !== "ready") {
     return (
       <p role="status" className="p-8 text-sm text-muted">
         Loading…
       </p>
     );
   }
-  if (state.status === "signed-out") return <SignIn />;
   return <SignedInShell>{children}</SignedInShell>;
 }
 
@@ -26,28 +29,36 @@ function SignedInShell({ children }: { children: ReactNode }) {
   const { data: tenants } = useQuery<{ name: string }>("SELECT name FROM Tenant LIMIT 1");
 
   return (
-    <div className="mx-auto max-w-3xl px-4 pb-16">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line py-4">
-        <Link href="/" className="text-lg font-semibold">
-          Fieldbook
-        </Link>
-        <span className="text-sm text-muted">{tenants[0]?.name ?? ""}</span>
-        <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-2">
-          <SyncStatus />
-          <span className="min-w-0 truncate text-sm">
-            {claims.email}
-            {claims.appRole && <span className="ml-1 text-xs text-muted">({claims.appRole.toLowerCase()})</span>}
+    <>
+      <RejectedWritesBanner />
+      <div className="mx-auto max-w-3xl px-4 pb-16">
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line py-4">
+          <Link href="/" className="text-lg font-semibold">
+            Fieldbook
+          </Link>
+          <span className="text-sm text-muted">{tenants[0]?.name ?? ""}</span>
+          <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-2">
+            <SyncStatusChip />
+            <span className="min-w-0 truncate text-sm">
+              {claims.email}
+              {claims.appRole && <span className="ml-1 text-xs text-muted">({claims.appRole.toLowerCase()})</span>}
+            </span>
+            <SignOutButton />
           </span>
-          <SignOutButton />
-        </span>
-      </header>
-      {claims.tenantId ? (
-        <main className="pt-6">{children}</main>
-      ) : (
-        <p className="pt-6 text-sm">This account has no membership in any team, so there is nothing to show.</p>
-      )}
-    </div>
+        </header>
+        {claims.tenantId ? (
+          <main className="pt-6">{children}</main>
+        ) : (
+          <p className="pt-6 text-sm">This account has no membership in any team, so there is nothing to show.</p>
+        )}
+      </div>
+    </>
   );
+}
+
+function lossText(count: number | null): string {
+  if (count === null) return "The changes queued on this device could not be counted, and any that have not synced will be lost.";
+  return `${count} change${count === 1 ? "" : "s"} made on this device ${count === 1 ? "has" : "have"} not synced and will be lost for good.`;
 }
 
 function SignOutButton() {
@@ -56,6 +67,7 @@ function SignOutButton() {
   const [busy, setBusy] = useState(false);
 
   async function run(force: boolean) {
+    if (busy) return;
     setBusy(true);
     try {
       setResult(await signOut({ force }));
@@ -64,26 +76,10 @@ function SignOutButton() {
     }
   }
 
-  if (result?.status === "pending") {
-    return (
-      <span role="alert" className="flex basis-full flex-wrap items-center justify-end gap-2 text-sm">
-        <span className="text-danger">
-          {result.count} unsynced change{result.count === 1 ? "" : "s"} will be lost.
-        </span>
-        <button type="button" className="btn-danger" disabled={busy} onClick={() => void run(true)}>
-          Sign out anyway
-        </button>
-        {/* biome-ignore lint/a11y/noAutofocus: focus moves into the confirmation that replaced the button */}
-        <button type="button" className="btn" autoFocus onClick={() => setResult(null)}>
-          Cancel
-        </button>
-      </span>
-    );
-  }
-
   return (
     <>
-      <button type="button" className="btn" disabled={busy} onClick={() => void run(false)}>
+      {/* Not disabled while counting: the confirmation returns focus here on cancel. */}
+      <button type="button" className="btn" aria-disabled={busy} onClick={() => void run(false)}>
         Sign out
       </button>
       {result?.status === "error" && (
@@ -91,6 +87,18 @@ function SignOutButton() {
           Could not sign out: {result.message}
         </span>
       )}
+      <ConfirmDialog
+        open={result?.status === "pending"}
+        title="Sign out and discard unsynced changes?"
+        body={result?.status === "pending" ? lossText(result.count) : ""}
+        confirmLabel="Discard and sign out"
+        busyLabel="Signing out…"
+        cancelLabel="Stay signed in"
+        destructive
+        busy={busy}
+        onConfirm={() => void run(true)}
+        onCancel={() => setResult(null)}
+      />
     </>
   );
 }

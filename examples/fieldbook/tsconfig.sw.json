@@ -1,0 +1,10 @@
+{
+  "//": "The service worker needs the webworker lib, which conflicts with dom in the app tsconfig, so it is excluded there and checked here.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["esnext", "webworker"],
+    "incremental": false
+  },
+  "include": ["src/app/sw.ts"],
+  "exclude": ["node_modules"]
+}

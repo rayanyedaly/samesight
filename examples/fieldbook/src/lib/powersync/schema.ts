@@ -1,4 +1,5 @@
 import { column, Schema, Table } from "@powersync/web";
+import { rejectedWriteTable } from "@samesight/supabase";
 
 // Client-side SQLite tables, one per synced Postgres table. Names and columns match
 // what powersync/sync-config.yaml sends. Phase 3 generates this file.
@@ -57,7 +58,16 @@ const Photo = new Table({
   createdAt: column.text,
 });
 
-export const AppSchema = new Schema({ Tenant, Membership, Site, Inspection, Finding, Photo });
+// RejectedWrite is local-only: writes the server refused for good, kept and shown.
+export const AppSchema = new Schema({
+  Tenant,
+  Membership,
+  Site,
+  Inspection,
+  Finding,
+  Photo,
+  RejectedWrite: rejectedWriteTable,
+});
 
 export type Database = (typeof AppSchema)["types"];
 export type SiteRecord = Database["Site"];

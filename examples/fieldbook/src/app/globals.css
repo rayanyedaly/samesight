@@ -4,7 +4,7 @@
   --color-muted: oklch(0.5 0.01 260);
   --color-line: oklch(0.9 0.005 260);
   /* Borders of controls: 3:1 against white, as WCAG 1.4.11 asks of input boundaries. */
-  --color-line-strong: oklch(0.65 0.01 260);
+  --color-line-strong: oklch(0.6 0.01 260);
   --color-subtle: oklch(0.97 0.003 260);
   --color-accent: oklch(0.45 0.13 250);
   --color-danger: oklch(0.52 0.19 27);
@@ -13,6 +13,25 @@
   --color-warn-soft: oklch(0.96 0.04 85);
   --color-ok: oklch(0.48 0.12 150);
   --color-ok-soft: oklch(0.95 0.04 150);
+}
+
+/* @samesight/next components in Fieldbook's palette. */
+:root {
+  --ss-ink: var(--color-neutral-900);
+  --ss-ink-soft: var(--color-muted);
+  --ss-canvas: var(--color-subtle);
+  --ss-line: var(--color-line-strong);
+  --ss-primary: var(--color-accent);
+  --ss-focus: var(--color-accent);
+  --ss-danger: var(--color-danger);
+  --ss-danger-soft: var(--color-danger-soft);
+  --ss-positive: var(--color-ok);
+  --ss-positive-soft: var(--color-ok-soft);
+  --ss-warm: var(--color-warn);
+  --ss-warm-soft: var(--color-warn-soft);
+  --ss-neutral: var(--color-muted);
+  --ss-neutral-soft: var(--color-subtle);
+  --ss-radius: var(--radius-md);
 }
 
 @layer components {

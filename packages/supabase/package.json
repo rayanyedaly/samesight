@@ -15,5 +15,13 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@powersync/common": "^2.4.0",
+    "@supabase/supabase-js": "^2.118.0"
+  },
+  "devDependencies": {
+    "@powersync/common": "^2.4.0",
+    "@supabase/supabase-js": "^2.118.0"
   }
 }

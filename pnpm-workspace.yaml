@@ -9,4 +9,6 @@ packages:
 # Next.js pulls these in optionally; their build scripts are not needed here.
 ignoredBuiltDependencies:
   - sharp
+  # Serwist's build tooling; @swc/core ships its binary as an optional dependency.
+  - "@swc/core"
   - unrs-resolver
