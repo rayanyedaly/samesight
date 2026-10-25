@@ -211,5 +211,7 @@ export function definePolicy<DB = unknown>(spec: PolicySpec<DB>): Policy {
 }
 
 export function isPolicy(value: unknown): value is Policy {
-  return typeof value === "object" && value !== null && (value as Policy).kind === "samesight-policy";
+  if (typeof value !== "object" || value === null || (value as Policy).kind !== "samesight-policy") return false;
+  const spec = (value as Policy).spec as Partial<Policy["spec"]> | undefined;
+  return typeof spec === "object" && spec !== null && typeof spec.tables === "object" && typeof spec.membership === "object";
 }
