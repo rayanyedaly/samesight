@@ -1,0 +1,36 @@
+# Samesight CI.
+#
+# `quality` (typecheck + lint + unit tests) needs no services or secrets and is the
+# fast signal. A job that runs `supabase start` and the full verifier against the
+# Fieldbook example is added in Phase 4.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: typecheck + lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6 # version comes from package.json "packageManager"
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Separate steps so a lint failure is distinguishable from a type error.
+      - run: pnpm typecheck
+      - run: pnpm lint
+      # Serial, like the root script: later phases share one local database.
+      - run: pnpm test

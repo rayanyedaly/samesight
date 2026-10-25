@@ -1,0 +1,40 @@
+# Local-only planning and agent notes
+SAMESIGHT_PLAN.md
+CLAUDE.md
+CLAUDE.local.md
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+coverage/
+
+# Env / secrets: only .env.example is committed
+.env
+.env.*
+!.env.example
+.npmrc
+
+# Supabase CLI local state and keys
+**/supabase/.temp/
+**/supabase/.branches/
+**/supabase/signing_key.json
+**/supabase/signing_keys.json
+
+# Logs & OS
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
