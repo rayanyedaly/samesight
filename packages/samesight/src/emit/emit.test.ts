@@ -76,6 +76,26 @@ describe("sync config", () => {
     const out = buildIR(policy, fieldbookSchema);
     expect(emitSyncConfig(out)).toContain("auth.parameter('org_id') AND auth.parameter('org_role') = 'ADMIN'");
     expect(emitMigration(out)).toContain("select nullif(auth.jwt() ->> 'org_id', '')::uuid");
+    for (const text of [emitSyncConfig(out), emitMigration(out)]) {
+      expect(text).not.toContain("tenant_id'");
+      expect(text).not.toContain("'app_role");
+    }
+  });
+
+  it("hides a column from every role's stream with *", () => {
+    const policy = definePolicy({
+      ...fieldbookPolicy.spec,
+      tables: {
+        Membership: fieldbookPolicy.spec.tables.Membership,
+        Inspection: table({ tenant: "tenantId", read: { "*": true }, hide: { "*": ["internalNotes"] } }),
+      },
+    });
+    const yaml = emitSyncConfig(buildIR(policy, fieldbookSchema));
+    // Only the comment naming the hidden column may mention it; no query selects it.
+    const queries = yaml.split("\n").filter((l) => !l.trimStart().startsWith("#"));
+    expect(queries.join("\n")).not.toContain("internalNotes");
+    expect(yaml).not.toMatch(/SELECT \*\s+FROM "Inspection"/);
+    expect(yaml.match(/FROM "Inspection"/g)).toHaveLength(3);
   });
 });
 
@@ -122,7 +142,7 @@ describe("via CTEs", () => {
       },
     });
     const yaml = emitSyncConfig(buildIR(policy, schema));
-    expect(yaml).toContain('site_visit_visible: |\n        SELECT id FROM "Site_Visit"');
+    expect(yaml).toContain('site_visit_visible: |\n        SELECT id FROM "Site_Visit"\n        WHERE "tenantId" = auth.parameter(\'tenant_id\')');
     expect(yaml).toContain('site_visit_visible_2: |\n        SELECT id FROM "SiteVisit"\n        WHERE "tenantId" = auth.parameter(\'tenant_id\') AND "ownerId" = auth.user_id()');
     expect(yaml).toContain('FROM "C"\n        WHERE "tenantId" = auth.parameter(\'tenant_id\')\n          AND "visitId" IN site_visit_visible_2');
   });
@@ -145,7 +165,7 @@ describe("via CTEs", () => {
     };
     expect(linked(false)).toContain(`SELECT * FROM "C" WHERE "tenantId" = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'MEMBER'`);
     // A NULL column skips the foreign key check, and RLS hides the row: keep the CTE.
-    expect(linked(true)).toContain('"visitId" IN site_visit_visible');
+    expect(linked(true)).toMatch(/"visitId" IN site_visit_visible$/m);
   });
 
   it("refuses via cycles across roles, which Postgres would reject as recursive policies", () => {
