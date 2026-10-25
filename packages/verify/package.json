@@ -15,5 +15,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "samesight": "workspace:*",
+    "yaml": "2.9.1"
   }
 }
