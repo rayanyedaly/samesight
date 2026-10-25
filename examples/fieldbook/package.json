@@ -18,7 +18,10 @@
     "stack:down": "bash scripts/stack-down.sh",
     "seed": "node scripts/seed.ts",
     "db:reset": "bash scripts/db-reset.sh",
-    "prestart": "pnpm assets"
+    "prestart": "pnpm assets",
+    "policy:generate": "samesight generate",
+    "policy:check": "samesight check",
+    "policy:doctor": "samesight doctor"
   },
   "dependencies": {
     "@powersync/react": "^2.1.0",
@@ -37,6 +40,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "esbuild": "^0.28.2",
+    "samesight": "workspace:*",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3"
   }

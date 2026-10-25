@@ -1,4 +1,6 @@
-export type AppRole = "ADMIN" | "INSPECTOR" | "VIEWER";
+import { type AppRole, CLAIMS, isAppRole } from "./policy-types";
+
+export type { AppRole };
 
 export type Claims = {
   userId: string;
@@ -15,11 +17,12 @@ export function readClaims(accessToken: string): Claims {
   const json = JSON.parse(
     atob(payload.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(payload.length / 4) * 4, "=")),
   ) as Record<string, unknown>;
-  const role = json.app_role;
+  const role = json[CLAIMS.role];
+  const tenant = json[CLAIMS.tenant];
   return {
     userId: String(json.sub),
     email: typeof json.email === "string" ? json.email : undefined,
-    tenantId: typeof json.tenant_id === "string" ? json.tenant_id : undefined,
-    appRole: role === "ADMIN" || role === "INSPECTOR" || role === "VIEWER" ? role : undefined,
+    tenantId: typeof tenant === "string" ? tenant : undefined,
+    appRole: isAppRole(role) ? role : undefined,
   };
 }

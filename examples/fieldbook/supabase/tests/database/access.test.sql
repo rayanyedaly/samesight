@@ -7,7 +7,7 @@
 
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(45);
+select plan(61);
 
 -- Fixtures ---------------------------------------------------------------------------
 
@@ -101,6 +101,53 @@ select ok(
   and not has_column_privilege('authenticated', 'public."Inspection"', 'updatedAt', 'update'),
   'grants: tenantId, siteId and updatedAt are not client-updatable'
 );
+
+-- Inserts are granted per column: server-owned columns are not among them.
+select ok(
+  not has_column_privilege('authenticated', 'public."Inspection"', 'createdAt', 'insert')
+  and not has_column_privilege('authenticated', 'public."Inspection"', 'updatedAt', 'insert')
+  and not has_column_privilege('authenticated', 'public."Site"', 'createdAt', 'insert')
+  and not has_column_privilege('authenticated', 'public."Finding"', 'seq', 'insert')
+  and not has_column_privilege('authenticated', 'public."Finding"', 'createdAt', 'insert')
+  and not has_column_privilege('authenticated', 'public."Photo"', 'createdAt', 'insert')
+  and has_column_privilege('authenticated', 'public."Finding"', 'createdBy', 'insert'),
+  'grants: server-owned columns are not client-insertable (the author column is, for its check)'
+);
+
+select is_empty(
+  $$select t from unnest(array['Tenant', 'Membership', 'Site', 'Inspection', 'Finding', 'Photo']) t
+     where has_table_privilege('authenticated', format('public.%I', t), 'insert')
+        or has_table_privilege('authenticated', format('public.%I', t), 'update')$$,
+  'grants: no table-wide insert or update for authenticated, only column grants'
+);
+
+select ok(
+  not has_any_column_privilege('authenticated', 'public."Tenant"', 'insert, update')
+  and not has_any_column_privilege('authenticated', 'public."Membership"', 'insert, update')
+  and not has_table_privilege('authenticated', 'public."Tenant"', 'delete')
+  and not has_table_privilege('authenticated', 'public."Membership"', 'delete'),
+  'grants: clients cannot write Tenant or Membership'
+);
+
+-- The admin stream sends every Finding and Photo of the tenant without checking the
+-- inspection: safe only while these composite keys and NOT NULLs hold.
+select fk_ok('public', 'Finding', array['tenantId', 'inspectionId'], 'public', 'Inspection', array['tenantId', 'id']);
+select fk_ok('public', 'Photo', array['tenantId', 'inspectionId'], 'public', 'Inspection', array['tenantId', 'id']);
+select col_not_null('public', 'Finding', 'inspectionId', 'Finding.inspectionId is NOT NULL');
+select col_not_null('public', 'Photo', 'inspectionId', 'Photo.inspectionId is NOT NULL');
+
+select set_eq(
+  $$select tablename::text from pg_publication_tables where pubname = 'powersync'$$,
+  array['Tenant', 'Membership', 'Site', 'Inspection', 'Finding', 'Photo'],
+  'replication: the publication carries exactly the synced tables'
+);
+
+select ok(
+  (select rolreplication and rolbypassrls from pg_roles where rolname = 'powersync_role'),
+  'replication: powersync_role has REPLICATION and BYPASSRLS'
+);
+
+select policies_are('public', 'Site', array['Site: read', 'Site: insert', 'Site: update', 'Site: delete'], 'Site carries only the generated policies');
 
 -- As inspector A ---------------------------------------------------------------------
 
@@ -226,6 +273,41 @@ select is(
   '...and changes nothing (RLS filters the row; PostgREST reports 0 rows, no error)'
 );
 
+-- Write role gates: the column grants go to every signed-in user, so the role term in
+-- each write policy is all that keeps inspectors and viewers out.
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"a0000000-0000-0000-0000-00000000001a","role":"authenticated","tenant_id":"aaaaaaaa-0000-0000-0000-000000000000","app_role":"INSPECTOR"}', true);
+
+select throws_ok(
+  $$insert into public."Site" (id, "tenantId", name) values ('51000000-0000-0000-0000-0000000000ff', 'aaaaaaaa-0000-0000-0000-000000000000', 'x')$$,
+  '42501', null,
+  'an inspector cannot add a site'
+);
+select throws_ok(
+  $$insert into public."Inspection" (id, "tenantId", "siteId", title) values ('1a000000-0000-0000-0000-0000000000ff', 'aaaaaaaa-0000-0000-0000-000000000000', '51000000-0000-0000-0000-00000000000a', 'x')$$,
+  '42501', null,
+  'an inspector cannot create an inspection'
+);
+select lives_ok($$update public."Site" set name = 'renamed' where id = '51000000-0000-0000-0000-00000000000a'$$, 'an inspector''s site rename runs...');
+select lives_ok($$delete from public."Inspection" where id = '1a000000-0000-0000-0000-000000000001'$$, '...as does an inspector''s inspection delete...');
+
+reset role;
+select ok(
+  (select name = 'Site A' from public."Site" where id = '51000000-0000-0000-0000-00000000000a')
+  and exists (select from public."Inspection" where id = '1a000000-0000-0000-0000-000000000001'),
+  '...and neither changes anything'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"a0000000-0000-0000-0000-00000000003a","role":"authenticated","tenant_id":"aaaaaaaa-0000-0000-0000-000000000000","app_role":"VIEWER"}', true);
+select throws_ok(
+  $$insert into public."Photo" (id, "tenantId", "inspectionId", "storagePath", sha256) values ('9f000000-0000-0000-0000-0000000000ff', 'aaaaaaaa-0000-0000-0000-000000000000', '1a000000-0000-0000-0000-000000000003', 'x', repeat('0', 64))$$,
+  '42501', null,
+  'a viewer cannot add a photo'
+);
+reset role;
+
 -- As viewer A ------------------------------------------------------------------------
 
 set local role authenticated;
@@ -295,9 +377,9 @@ select is(
 
 -- Backdate updatedAt (with the trigger off) so the next check sees the admin's update.
 reset role;
-alter table public."Inspection" disable trigger "Inspection_touch_updated_at";
+alter table public."Inspection" disable trigger "Inspection_touch";
 update public."Inspection" set "updatedAt" = '2000-01-01' where id = '1a000000-0000-0000-0000-000000000001';
-alter table public."Inspection" enable trigger "Inspection_touch_updated_at";
+alter table public."Inspection" enable trigger "Inspection_touch";
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"a0000000-0000-0000-0000-00000000000a","role":"authenticated","tenant_id":"aaaaaaaa-0000-0000-0000-000000000000","app_role":"ADMIN"}', true);
 

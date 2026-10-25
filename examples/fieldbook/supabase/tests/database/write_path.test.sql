@@ -95,13 +95,13 @@ select throws_ok(
 
 select throws_ok(
   $$select public.apply_batch('[{"op":"PATCH","table":"Finding","id":"f1000000-0000-0000-0000-000000000001","data":{"body":"edited"}}]'::jsonb)$$,
-  'P0001', null,
+  'P0001', 'apply_batch: Finding is append-only; add a new row instead',
   'PATCH on an append-only table is refused'
 );
 
 select throws_ok(
   $$select public.apply_batch('[{"op":"DELETE","table":"Finding","id":"f1000000-0000-0000-0000-000000000001"}]'::jsonb)$$,
-  'P0001', null,
+  'P0001', 'apply_batch: Finding is append-only and cannot be deleted',
   'DELETE on an append-only table is refused'
 );
 
