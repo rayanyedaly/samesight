@@ -192,6 +192,8 @@ export interface PolicySpec<DB = unknown> {
   /** Where the access token hook reads tenant and role for a signing-in user. */
   membership: MembershipSpec<DB>;
   tables: { [T in TableName<DB>]?: TableSpec<ColumnOf<DB, T>> };
+  /** Roles that read the server copy of refused writes for their tenant. Default: none. */
+  rejectedWrites?: { read: readonly string[] };
   output?: OutputPaths;
   client?: {
     /** Package the generated client schema imports `column`, `Schema` and `Table` from. */
