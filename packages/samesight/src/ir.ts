@@ -307,6 +307,12 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     const immutable = new Set(t.immutable ?? []);
     const updateColumns = update.size > 0 ? clientColumns.filter((c) => !immutable.has(c)) : [];
 
+    // A role that cannot see a column but can update the row would write it back as null.
+    for (const [role, cols] of hide) {
+      const lost = update.has(role) ? cols.filter((c) => updateColumns.includes(c)) : [];
+      if (lost.length) fail(`${name}.hide.${role}: ${role} updates this table, so hidden columns must be immutable or server-owned (${lost.join(", ")})`);
+    }
+
     if (problems.length > before) return null;
     return {
       name,
@@ -421,6 +427,15 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
         }
         if (/--|\/\*|#|;/.test(node.rls) || /--|\/\*|#|;/.test(node.sync)) {
           fail(`${path}: raw rules cannot contain comments (--, /*, #) or ";"`);
+        }
+        // Each side is wrapped in parentheses and ANDed with the tenant and role gates; an
+        // unbalanced side like "x) or (true" would close that wrapper and escape the gates.
+        // $ (dollar quoting) and \ (E'' escapes) would let a quote end where the scan below
+        // does not see it end, so neither is allowed.
+        if (/[$\\]/.test(node.rls) || /[$\\]/.test(node.sync)) {
+          fail(`${path}: raw rules cannot contain $ or \\ (dollar quoting, escape strings)`);
+        } else if (!balanced(node.rls) || !balanced(node.sync)) {
+          fail(`${path}: raw rules need balanced parentheses and closed quotes`);
         }
         if (CLOCK.test(node.rls) || CLOCK.test(node.sync)) {
           fail(`${path}: raw rule depends on the clock; sync buckets cannot re-evaluate on time, so scope by status instead`);
@@ -591,4 +606,19 @@ function typeKind(type: string): "number" | "exact" | "uuid" | "boolean" | "time
   if (type === "boolean") return "boolean";
   if (/^(timestamp|date|time|interval)\b/.test(type)) return "time";
   return "text";
+}
+
+/** Parentheses balance outside string literals and quoted identifiers, and every quote closes. */
+function balanced(sql: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (ch === "'" || ch === '"') {
+      const end = sql.indexOf(ch, i + 1);
+      if (end === -1) return false;
+      i = end; // A doubled quote ('') reopens at the next character, which is the same as skipping it.
+    } else if (ch === "(") depth++;
+    else if (ch === ")" && --depth < 0) return false;
+  }
+  return depth === 0;
 }

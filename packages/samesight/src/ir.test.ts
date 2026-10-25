@@ -83,6 +83,25 @@ describe("compile errors", () => {
     ]);
   });
 
+  it("refuses raw rules that could escape the parentheses around them", () => {
+    const site = (rls: string, sync = "true") => problems({ Site: table({ tenant: "tenantId", read: { ADMIN: raw({ rls, sync }) } }) });
+    expect(site("x) or (true")).toEqual(["Site.read.ADMIN: raw rules need balanced parentheses and closed quotes"]);
+    expect(site("true", "name = 'a")).toEqual(["Site.read.ADMIN: raw rules need balanced parentheses and closed quotes"]);
+    expect(site("(name = ')') and (\"x(\" is null)")).toEqual([]);
+    expect(site("name = 'it''s (open'")).toEqual([]);
+    const quoting = ["Site.read.ADMIN: raw rules cannot contain $ or \\ (dollar quoting, escape strings)"];
+    expect(site("x = E'\\'') or true or (x = E'\\'")).toEqual(quoting);
+    expect(site("x = $$'$$) or true or (x = $$'$$")).toEqual(quoting);
+  });
+
+  it("refuses hiding a column from a role that can update it", () => {
+    expect(
+      problems({
+        Inspection: table({ tenant: "tenantId", read: { "*": true }, update: { VIEWER: true }, hide: { "*": ["internalNotes", "siteId"] }, immutable: ["siteId"] }),
+      }),
+    ).toEqual(["Inspection.hide.VIEWER: VIEWER updates this table, so hidden columns must be immutable or server-owned (internalNotes)"]);
+  });
+
   it("refuses a via to a parent the role cannot read, or one that nests", () => {
     expect(
       problems({
