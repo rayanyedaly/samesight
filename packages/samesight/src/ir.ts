@@ -34,6 +34,12 @@ export interface IRTable {
   appendOnly?: { supersedes?: string; order?: string };
   /** Identity columns: their sequences are revoked from clients. */
   identityColumns: string[];
+  /**
+   * Columns a composite foreign key (tenant, column) -> parent (tenant, key) ties to a
+   * parent row in the same tenant. A via over one of them to a parent the role reads
+   * entirely needs no subquery in a stream: the tenant gate already says it.
+   */
+  tenantLinked: { column: string; parent: string; key: string }[];
 }
 
 export interface IR {
@@ -88,8 +94,8 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     else if (RESERVED_CLAIMS.has(c.name)) fail(`claims.${key}: "${c.name}" is a claim Supabase sets itself; pick another name (e.g. app_${c.name})`);
   }
   if (spec.claims.tenant.name === spec.claims.role.name) fail("claims: tenant and role use the same claim name");
-  if (new Set(roles).size === roles.length && new Set(roles.map((r) => r.toLowerCase())).size !== roles.length) {
-    fail("claims.role: two roles differ only in case");
+  if (new Set(roles).size === roles.length && new Set(roles.map(snake)).size !== roles.length) {
+    fail("claims.role: two roles name the same sync stream (they differ only in case or underscores)");
   }
   const rejectionReaders = Array.isArray(spec.rejectedWrites?.read) ? [...spec.rejectedWrites.read] : [];
   if (spec.rejectedWrites && !Array.isArray(spec.rejectedWrites.read)) fail("rejectedWrites.read: a list of roles");
@@ -128,6 +134,16 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
   // Cross-table checks: read rules that reach a parent through via.
   const byName = new Map(tables.map((t) => [t.name, t]));
   for (const t of tables) {
+    for (const fk of findTable(schema, t.name)?.foreignKeys ?? []) {
+      const parent = byName.get(fk.table);
+      const i = fk.columns.indexOf(t.tenant);
+      if (!parent || fk.columns.length !== 2 || i === -1 || fk.references[i] !== parent.tenant) continue;
+      // A NULL column skips the foreign key check (MATCH SIMPLE), and RLS hides such a row.
+      if (findColumn(findTable(schema, t.name) as TableInfo, fk.columns[1 - i])?.nullable !== false) continue;
+      t.tenantLinked.push({ column: fk.columns[1 - i], parent: parent.name, key: fk.references[1 - i] });
+    }
+  }
+  for (const t of tables) {
     for (const [role, rule] of t.read) {
       if (rule === true) continue;
       for (const v of vias(rule)) {
@@ -149,6 +165,26 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
   }
 
+  const membershipSpec = byName.get(m.table);
+  if (membershipTable && policyTables.has(m.table) === false) {
+    fail(`membership.table: "${m.table}" must be a table in this policy, or it keeps Supabase's default grants and no RLS`);
+  } else if (membershipSpec && membershipSpec.read.size === 0) {
+    fail(`membership.table: "${m.table}" needs a read rule (each user at least reads their own membership)`);
+  }
+  if (tables.length > 0 && !tables.some((t) => t.read.size > 0)) fail("tables: no table has a read rule, so nothing syncs");
+
+  // Postgres refuses a policy that reaches its own table through other tables' policies,
+  // whatever the role, so cycles of via and rowsOf across all rules are refused here.
+  const edges = new Map(tables.map((t) => [t.name, new Set<string>()]));
+  for (const t of tables) {
+    for (const rules of [t.read, t.insert, t.update, t.delete]) {
+      for (const rule of rules.values()) if (rule !== true) for (const target of references(rule)) edges.get(t.name)?.add(target);
+    }
+    if (t.check) for (const target of references(t.check)) edges.get(t.name)?.add(target);
+  }
+  const cycle = findCycle(edges);
+  if (cycle) fail(`tables: ${cycle.join(" -> ")} reach each other through via or rowsOf; Postgres refuses recursive policies`);
+
   const tenantTables = tables.filter((t) => t.tenant === "id");
   if (tenantTables.length > 1) fail(`tables: ${tenantTables.map((t) => t.name).join(" and ")} both use tenant: "id"`);
 
@@ -167,6 +203,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
   function buildTable(name: string, t: TableSpec, info: TableInfo): IRTable | null {
     const before = problems.length;
     if (!IDENT.test(name)) fail(`${name}: table names must be letters, digits and underscores`);
+    else if (name.length > 48) fail(`${name}: table names over 48 characters would truncate generated policy and trigger names`);
     const column = (path: string, c: string | undefined) => {
       if (c === undefined) return;
       if (!findColumn(info, c)) fail(`${path}: no column "${c}" in "${name}"`);
@@ -181,6 +218,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     const tenantCol = findColumn(info, t.tenant);
     if (!tenantCol) fail(`${name}.tenant: no column "${t.tenant}" in "${name}"`);
     else if (tenantCol.type !== "uuid") fail(`${name}.tenant: "${t.tenant}" must be uuid, not ${tenantCol.type}`);
+    else if (tenantCol.nullable) fail(`${name}.tenant: "${t.tenant}" must be NOT NULL; a row without a tenant has no owner to scope it to`);
 
     // Rules.
     const read = mergeRules(`${name}.read`, [t.read]);
@@ -201,6 +239,10 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     if (t.check) checkCondition(`${name}.check`, t.check, info, false);
 
     const writable = insert.size + update.size + del.size > 0;
+    // Upserts, PATCH and replay checks read the row back under the caller's SELECT policy.
+    for (const role of new Set([...insert.keys(), ...update.keys(), ...del.keys()])) {
+      if (!read.has(role)) fail(`${name}: ${role} writes "${name}" but has no read rule on it; writes read the row back`);
+    }
     if (t.tenant === "id" && writable) fail(`${name}: the tenant table (tenant: "id") cannot be written by clients`);
 
     // Append-only.
@@ -225,7 +267,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
     column(`${name}.touch`, t.touch);
     const touch = t.touch ? findColumn(info, t.touch) : undefined;
-    if (touch && !touch.type.startsWith("timestamp")) fail(`${name}.touch: "${touch.name}" must be a timestamp`);
+    if (touch && touch.type !== "timestamp with time zone") fail(`${name}.touch: "${touch.name}" must be timestamptz`);
     for (const c of t.serverOwned ?? []) column(`${name}.serverOwned`, c);
     for (const c of t.immutable ?? []) column(`${name}.immutable`, c);
     // "*" hides from every role, on top of any per-role list.
@@ -283,6 +325,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
       touch: t.touch,
       appendOnly: t.appendOnly ? { ...t.appendOnly } : undefined,
       identityColumns,
+      tenantLinked: [],
     };
   }
 
@@ -376,6 +419,9 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
           fail(`${path}: raw rule needs both rls and sync`);
           return;
         }
+        if (/--|\/\*|#|;/.test(node.rls) || /--|\/\*|#|;/.test(node.sync)) {
+          fail(`${path}: raw rules cannot contain comments (--, /*, #) or ";"`);
+        }
         if (CLOCK.test(node.rls) || CLOCK.test(node.sync)) {
           fail(`${path}: raw rule depends on the clock; sync buckets cannot re-evaluate on time, so scope by status instead`);
         }
@@ -462,6 +508,52 @@ export function normalize(node: ConditionNode): ConditionNode {
     else items.push(item);
   }
   return items.length === 1 ? items[0] : { kind: node.kind, items };
+}
+
+/** Tables a condition reads through: via parents and rowsOf targets. */
+function references(node: ConditionNode): string[] {
+  switch (node.kind) {
+    case "via":
+      return [node.parent];
+    case "inRows":
+      return [node.rows.table, ...(node.rows.where ? references(node.rows.where) : [])];
+    case "and":
+    case "or":
+      return node.items.flatMap(references);
+    default:
+      return [];
+  }
+}
+
+function findCycle(edges: Map<string, Set<string>>): string[] | null {
+  const state = new Map<string, "open" | "done">();
+  const stack: string[] = [];
+  const visit = (n: string): string[] | null => {
+    if (state.get(n) === "done") return null;
+    if (state.get(n) === "open") return [...stack.slice(stack.indexOf(n)), n];
+    state.set(n, "open");
+    stack.push(n);
+    for (const next of edges.get(n) ?? []) {
+      const found = visit(next);
+      if (found) return found;
+    }
+    stack.pop();
+    state.set(n, "done");
+    return null;
+  };
+  for (const n of edges.keys()) {
+    const found = visit(n);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** "Inspection" -> "inspection", "SiteVisit" -> "site_visit": stream and CTE names. */
+export function snake(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .toLowerCase();
 }
 
 /** Every via in a condition. */

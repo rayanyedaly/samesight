@@ -5,7 +5,8 @@ import { claim, col, definePolicy, or, type PolicySpec, raw, rowsOf, table, via 
 
 const base = fieldbookPolicy.spec;
 function compile(tables: PolicySpec["tables"], extra: Partial<PolicySpec> = {}) {
-  return buildIR(definePolicy({ ...base, ...extra, tables }), fieldbookSchema);
+  // Every policy must govern its membership table, so the tests keep Fieldbook's.
+  return buildIR(definePolicy({ ...base, ...extra, tables: { Membership: base.tables.Membership, ...tables } }), fieldbookSchema);
 }
 function problems(tables: PolicySpec["tables"], extra: Partial<PolicySpec> = {}): string[] {
   try {
@@ -99,7 +100,7 @@ describe("compile errors", () => {
     expect(
       problems({
         Tenant: table({ tenant: "id", read: { "*": true }, write: { ADMIN: true } }),
-        Finding: table({ tenant: "tenantId", write: { ADMIN: true }, appendOnly: {} }),
+        Finding: table({ tenant: "tenantId", read: { "*": true }, write: { ADMIN: true }, appendOnly: {} }),
       }),
     ).toEqual([
       'Tenant: the tenant table (tenant: "id") cannot be written by clients',
@@ -137,6 +138,7 @@ describe("compile errors", () => {
       'Site.insert.ADMIN: {"kind":"user"} is not a string, number or boolean',
       'Site.update.ADMIN: {"kind":"user"} is not a string, number or boolean',
       'Site.delete.ADMIN: {"kind":"user"} is not a string, number or boolean',
+      'Site: ADMIN writes "Site" but has no read rule on it; writes read the row back',
     ]);
     expect(
       problems({
@@ -177,18 +179,21 @@ describe("compile errors", () => {
   it("keeps via where streams can express it, and rowsOf on policy tables", () => {
     expect(
       problems({
-        Inspection: table({ tenant: "tenantId", read: { ADMIN: true }, check: col("assigneeId").in(rowsOf("Membership", "userId")) }),
+        Inspection: table({ tenant: "tenantId", read: { ADMIN: true }, check: col("assigneeId").in(rowsOf("Site", "id")) }),
         Finding: table({ tenant: "tenantId", read: { ADMIN: or(via("inspectionId", "Inspection"), col("body").eq("x")) } }),
       }),
     ).toEqual([
-      'Inspection.check: rowsOf("Membership", ...): "Membership" is not a table in this policy, so its rows are not tenant-scoped',
+      'Inspection.check: rowsOf("Site", ...): "Site" is not a table in this policy, so its rows are not tenant-scoped',
       "Finding.read.ADMIN: via must stand alone or be a term of a top-level and(); sync streams cannot put it under or() (rules for \"*\" and for a role are ORed together)",
     ]);
   });
 
   it("refuses claim names Supabase owns", () => {
     expect(
-      problems({ Site: table({ tenant: "tenantId" }) }, { claims: { tenant: claim.uuid("sub"), role: claim.oneOf("role", ["ADMIN"]) } }),
+      problems(
+        { Membership: table({ tenant: "tenantId", read: { ADMIN: true } }) },
+        { claims: { tenant: claim.uuid("sub"), role: claim.oneOf("role", ["ADMIN"]) } },
+      ),
     ).toEqual([
       'claims.tenant: "sub" is a claim Supabase sets itself; pick another name (e.g. app_sub)',
       'claims.role: "role" is a claim Supabase sets itself; pick another name (e.g. app_role)',
@@ -198,7 +203,7 @@ describe("compile errors", () => {
   it("checks claims and membership", () => {
     expect(
       problems(
-        { Site: table({ tenant: "tenantId" }) },
+        { Membership: table({ tenant: "tenantId", read: { ADMIN: true } }) },
         {
           claims: { tenant: claim.uuid("Tenant-Id"), role: claim.oneOf("app_role", ["ADMIN", "ADMIN"]) },
           membership: { table: "Membership", user: "user_id", tenant: "tenantId", role: "role" },
