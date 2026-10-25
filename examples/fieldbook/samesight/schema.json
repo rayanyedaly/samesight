@@ -1,0 +1,530 @@
+{
+  "tables": [
+    {
+      "name": "Finding",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "tenantId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "inspectionId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "supersedesId",
+          "type": "uuid",
+          "nullable": true,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "seq",
+          "type": "bigint",
+          "nullable": false,
+          "default": null,
+          "identity": true,
+          "generated": false
+        },
+        {
+          "name": "body",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "severity",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "createdBy",
+          "type": "uuid",
+          "nullable": false,
+          "default": "auth.uid()",
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "createdAt",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": false,
+          "generated": false
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indexedColumns": [
+        "id",
+        "inspectionId",
+        "supersedesId",
+        "tenantId"
+      ],
+      "uniqueColumns": [
+        "id"
+      ],
+      "foreignKeys": [
+        {
+          "columns": [
+            "inspectionId",
+            "supersedesId"
+          ],
+          "table": "Finding",
+          "references": [
+            "inspectionId",
+            "id"
+          ]
+        },
+        {
+          "columns": [
+            "tenantId"
+          ],
+          "table": "Tenant",
+          "references": [
+            "id"
+          ]
+        },
+        {
+          "columns": [
+            "tenantId",
+            "inspectionId"
+          ],
+          "table": "Inspection",
+          "references": [
+            "tenantId",
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Inspection",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "tenantId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "siteId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "assigneeId",
+          "type": "uuid",
+          "nullable": true,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "default": "'DRAFT'::text",
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "internalNotes",
+          "type": "text",
+          "nullable": true,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "createdAt",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "updatedAt",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": false,
+          "generated": false
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indexedColumns": [
+        "assigneeId",
+        "id",
+        "siteId",
+        "tenantId"
+      ],
+      "uniqueColumns": [
+        "id"
+      ],
+      "foreignKeys": [
+        {
+          "columns": [
+            "tenantId"
+          ],
+          "table": "Tenant",
+          "references": [
+            "id"
+          ]
+        },
+        {
+          "columns": [
+            "tenantId",
+            "siteId"
+          ],
+          "table": "Site",
+          "references": [
+            "tenantId",
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Membership",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "userId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "tenantId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "role",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "displayName",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "createdAt",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": false,
+          "generated": false
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indexedColumns": [
+        "id",
+        "tenantId",
+        "userId"
+      ],
+      "uniqueColumns": [
+        "id",
+        "userId"
+      ],
+      "foreignKeys": [
+        {
+          "columns": [
+            "tenantId"
+          ],
+          "table": "Tenant",
+          "references": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Photo",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "tenantId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "inspectionId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "findingId",
+          "type": "uuid",
+          "nullable": true,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "storagePath",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "sha256",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "createdBy",
+          "type": "uuid",
+          "nullable": false,
+          "default": "auth.uid()",
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "createdAt",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": false,
+          "generated": false
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indexedColumns": [
+        "id",
+        "inspectionId"
+      ],
+      "uniqueColumns": [
+        "id"
+      ],
+      "foreignKeys": [
+        {
+          "columns": [
+            "inspectionId",
+            "findingId"
+          ],
+          "table": "Finding",
+          "references": [
+            "inspectionId",
+            "id"
+          ]
+        },
+        {
+          "columns": [
+            "tenantId"
+          ],
+          "table": "Tenant",
+          "references": [
+            "id"
+          ]
+        },
+        {
+          "columns": [
+            "tenantId",
+            "inspectionId"
+          ],
+          "table": "Inspection",
+          "references": [
+            "tenantId",
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Site",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "tenantId",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "address",
+          "type": "text",
+          "nullable": true,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "createdAt",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": false,
+          "generated": false
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indexedColumns": [
+        "id",
+        "tenantId"
+      ],
+      "uniqueColumns": [
+        "id"
+      ],
+      "foreignKeys": [
+        {
+          "columns": [
+            "tenantId"
+          ],
+          "table": "Tenant",
+          "references": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Tenant",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "createdAt",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "default": "now()",
+          "identity": false,
+          "generated": false
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indexedColumns": [
+        "id"
+      ],
+      "uniqueColumns": [
+        "id"
+      ],
+      "foreignKeys": []
+    }
+  ]
+}

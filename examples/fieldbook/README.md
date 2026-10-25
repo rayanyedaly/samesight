@@ -7,12 +7,14 @@ A multi-tenant inspections app for teams that work where the signal drops, built
 - **Writes the server refuses are kept and shown.** Each offline transaction uploads as one `apply_batch` call ([`@samesight/supabase`](../../packages/supabase)) and commits or fails as a unit. A refused one leaves the queue, but its content stays on the device in a banner, and the server keeps a copy for admins.
 - **Append-only findings:** a finding is never edited or deleted. A correction is a new row that supersedes it, and the UI shows "Amended". An inspection, site or tenant that has findings cannot be deleted; archive it instead.
 
-The access rules currently live in two hand-written files that must agree:
+The whole access policy is one file, [`samesight.policy.ts`](samesight.policy.ts). `samesight generate` turns it into everything that must agree:
 
-- `supabase/migrations/*_fieldbook_access.sql`: the Postgres RLS policies, the custom access token hook, the append-only trigger and the replication setup. The write path (`*_fieldbook_write_path.sql`: `apply_batch` and `record_rejection`) lists the columns clients may write, which must match those grants.
-- `powersync/sync-config.yaml`: the PowerSync sync streams, one per role.
+- `supabase/migrations/*_samesight.sql`: the RLS policies, the custom access token hook, column grants, the append-only and `updatedAt` triggers, the replication setup, and the write path (`apply_batch`, `record_rejection`) with its column allowlists;
+- `powersync/sync-config.yaml` and `service.yaml`: the sync streams, one per role;
+- `src/lib/powersync/schema.ts` and `src/lib/policy-types.ts`: the client schema and the roles and claims as TypeScript;
+- `samesight/schema.json` (the database schema it read) and `samesight/manifest.json`.
 
-Samesight's compiler will generate both from one policy file.
+The generated migration replaced two hand-written ones (`*_fieldbook_access.sql`, `*_fieldbook_write_path.sql`), so a database created before that change needs `pnpm --filter fieldbook db:reset` once. Do not edit those files; change the policy and regenerate. `policy:check` (run in CI) fails when they drift. The schema itself (`*_fieldbook_schema.sql`) stays hand-written.
 
 ## Run it locally
 
@@ -33,6 +35,9 @@ Sign in as `admin@`, `inspector@` or `viewer@` followed by `northwind.test` or `
 | `pnpm --filter fieldbook stack:down` | Stops both and keeps the data. |
 | `pnpm --filter fieldbook db:reset` | Wipes the data, reapplies the migrations and reseeds. |
 | `pnpm --filter fieldbook test:db` | Runs the database tests in `supabase/tests` (claims hook, RLS reads and writes, append-only rules, `apply_batch`) against the local stack. |
+| `pnpm --filter fieldbook policy:generate` | Reads the local database and rewrites the generated files above. A changed policy adds a new migration; apply it with `db:reset` (or `supabase migration up`) and restart PowerSync. After a schema migration, regenerate `supabase/types.ts` first (the command is in the policy file). |
+| `pnpm --filter fieldbook policy:check` | Regenerates from `samesight/schema.json`, with no database, and fails if any generated file differs. |
+| `pnpm --filter fieldbook policy:doctor` | Checks the local database against the policy: migration applied, RLS on, publication, replica identity, token hook, replication lag. |
 | `pnpm --filter fieldbook build` | Production build with the service worker. It first copies PowerSync's prebuilt database worker to `public/@powersync` (`pnpm assets`; `dev` does the same). |
 
 PowerSync reads `powersync/*.yaml` at startup. After editing the sync config, rerun `stack:up`, which recreates the container.

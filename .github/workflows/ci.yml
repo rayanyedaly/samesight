@@ -1,6 +1,6 @@
 # Samesight CI.
 #
-# `quality` (typecheck + lint + unit tests) needs no services or secrets and is the
+# `quality` (typecheck + lint + unit tests + samesight check) needs no services or secrets and is the
 # fast signal. A job that runs `supabase start` and the full verifier against the
 # Fieldbook example is added in Phase 4.
 name: CI
@@ -34,3 +34,5 @@ jobs:
       - run: pnpm lint
       # Serial, like the root script: later phases share one local database.
       - run: pnpm test
+      # Generated access files (migration, sync config, client schema) match the policy.
+      - run: pnpm --filter fieldbook policy:check

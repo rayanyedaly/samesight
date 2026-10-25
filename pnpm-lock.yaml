@@ -72,6 +72,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      samesight:
+        specifier: workspace:*
+        version: link:../../packages/samesight
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
