@@ -1,0 +1,19 @@
+{
+  "name": "samesight",
+  "version": "0.0.0",
+  "private": true,
+  "description": "One access policy for Supabase RLS and PowerSync sync config: policy language, compiler and CLI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rayanyedaly/samesight.git",
+    "directory": "packages/samesight"
+  },
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "test": "vitest run"
+  }
+}

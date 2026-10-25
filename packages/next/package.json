@@ -1,0 +1,19 @@
+{
+  "name": "@samesight/next",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Encrypted browser store, provider and sync status UI for Next.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rayanyedaly/samesight.git",
+    "directory": "packages/next"
+  },
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "test": "vitest run"
+  }
+}
