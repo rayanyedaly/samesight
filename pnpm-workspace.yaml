@@ -5,3 +5,8 @@ packages:
 # pnpm 10 blocks dependency build scripts unless they are allowlisted under
 # onlyBuiltDependencies. None are needed yet: the Supabase CLI, Biome and Turbo
 # ship their binaries as per-platform optional dependencies.
+
+# Next.js pulls these in optionally; their build scripts are not needed here.
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver

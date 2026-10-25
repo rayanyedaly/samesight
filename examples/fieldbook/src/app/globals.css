@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  --color-muted: oklch(0.5 0.01 260);
+  --color-line: oklch(0.9 0.005 260);
+  /* Borders of controls: 3:1 against white, as WCAG 1.4.11 asks of input boundaries. */
+  --color-line-strong: oklch(0.65 0.01 260);
+  --color-subtle: oklch(0.97 0.003 260);
+  --color-accent: oklch(0.45 0.13 250);
+  --color-danger: oklch(0.52 0.19 27);
+  --color-danger-soft: oklch(0.95 0.03 27);
+  --color-warn: oklch(0.5 0.12 70);
+  --color-warn-soft: oklch(0.96 0.04 85);
+  --color-ok: oklch(0.48 0.12 150);
+  --color-ok-soft: oklch(0.95 0.04 150);
+}
+
+@layer components {
+  .field {
+    @apply block w-full rounded-md border border-line-strong bg-white px-3 py-2 text-sm;
+  }
+  .btn {
+    @apply rounded-md border border-line-strong bg-white px-3 py-1.5 text-sm hover:bg-subtle disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60;
+  }
+  .btn-danger {
+    @apply rounded-md bg-danger px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60;
+  }
+  .field:focus-visible,
+  .btn:focus-visible,
+  .btn-primary:focus-visible,
+  .btn-danger:focus-visible,
+  a:focus-visible,
+  summary:focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
+  }
+}

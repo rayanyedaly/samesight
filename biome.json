@@ -24,5 +24,10 @@
 	},
 	"formatter": {
 		"enabled": false
+	},
+	"css": {
+		"parser": {
+			"tailwindDirectives": true
+		}
 	}
 }
