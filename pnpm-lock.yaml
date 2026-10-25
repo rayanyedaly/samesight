@@ -128,12 +128,19 @@ importers:
 
   packages/verify:
     dependencies:
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
       samesight:
         specifier: workspace:*
         version: link:../samesight
       yaml:
         specifier: 2.9.1
         version: 2.9.1
+    devDependencies:
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
 
 packages:
 
