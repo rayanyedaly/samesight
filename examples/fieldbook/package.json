@@ -4,30 +4,39 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "assets": "powersync-web copy-assets -o public",
+    "predev": "pnpm assets",
+    "prebuild": "pnpm assets",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.sw.json",
     "lint": "biome lint .",
     "test": "vitest run",
     "test:db": "supabase test db",
     "stack:up": "bash scripts/stack-up.sh",
     "stack:down": "bash scripts/stack-down.sh",
     "seed": "node scripts/seed.ts",
-    "db:reset": "bash scripts/db-reset.sh"
+    "db:reset": "bash scripts/db-reset.sh",
+    "prestart": "pnpm assets"
   },
   "dependencies": {
     "@powersync/react": "^2.1.0",
     "@powersync/web": "^2.5.0",
+    "@samesight/next": "workspace:*",
+    "@samesight/supabase": "workspace:*",
+    "@serwist/turbopack": "9.5.13",
     "@supabase/supabase-js": "^2.118.0",
     "next": "16.4.3",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "serwist": "9.5.13"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4.3.3",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "^0.28.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3"
   }

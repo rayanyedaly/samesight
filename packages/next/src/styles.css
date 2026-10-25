@@ -1,0 +1,277 @@
+/*
+ * Styles for @samesight/next components. Import once: `import "@samesight/next/styles.css"`.
+ * Theme by overriding the variables on :root (or any ancestor).
+ */
+:root {
+  --ss-font: inherit;
+  --ss-ink: #1f2328;
+  --ss-ink-soft: #57606a;
+  --ss-surface: #ffffff;
+  --ss-canvas: #f6f8fa;
+  --ss-line: #6e7781;
+  --ss-primary: #1f5fa8;
+  --ss-on-primary: #ffffff;
+  --ss-danger: #b42318;
+  --ss-danger-soft: #fdecea;
+  --ss-on-danger: #ffffff;
+  --ss-positive: #116329;
+  --ss-positive-soft: #e6f4ea;
+  --ss-neutral: #57606a;
+  --ss-neutral-soft: #eef1f4;
+  --ss-warm: #8a5a00;
+  --ss-warm-soft: #fdf3dc;
+  --ss-radius: 8px;
+  --ss-focus: #1f5fa8;
+}
+
+.ss-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 24px 16px;
+  background: var(--ss-canvas);
+  color: var(--ss-ink);
+  font-family: var(--ss-font);
+}
+.ss-panel {
+  width: 100%;
+  max-width: 24rem;
+}
+.ss-title {
+  margin: 0 0 8px;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.ss-text {
+  margin: 0 0 8px;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--ss-ink-soft);
+}
+.ss-strong {
+  font-weight: 600;
+  color: inherit;
+}
+.ss-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+.ss-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ss-ink-soft);
+}
+.ss-input {
+  height: 2.75rem;
+  padding: 0 12px;
+  border: 1px solid var(--ss-line);
+  border-radius: var(--ss-radius);
+  background: var(--ss-surface);
+  color: var(--ss-ink);
+  font: inherit;
+  font-size: 0.9375rem;
+}
+.ss-input[aria-invalid="true"] {
+  border-color: var(--ss-danger);
+}
+.ss-error {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--ss-danger);
+}
+.ss-button {
+  min-height: 2.25rem;
+  padding: 6px 12px;
+  border: 1px solid var(--ss-line);
+  border-radius: var(--ss-radius);
+  background: var(--ss-surface);
+  color: var(--ss-ink);
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.ss-button-primary {
+  border-color: var(--ss-primary);
+  background: var(--ss-primary);
+  color: var(--ss-on-primary);
+  font-weight: 600;
+}
+.ss-button-danger {
+  border-color: var(--ss-danger);
+  background: var(--ss-danger);
+  color: var(--ss-on-danger);
+  font-weight: 600;
+}
+.ss-button:hover:not(:disabled) {
+  filter: brightness(0.96);
+}
+.ss-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.ss-button:disabled,
+.ss-link:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.ss-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+.ss-link {
+  padding: 4px;
+  border: 0;
+  background: none;
+  color: var(--ss-ink-soft);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ss-button:focus-visible,
+.ss-link:focus-visible,
+.ss-input:focus-visible {
+  outline: 2px solid var(--ss-focus);
+  outline-offset: 2px;
+}
+
+.ss-dialog::backdrop {
+  background: rgb(0 0 0 / 0.4);
+}
+.ss-dialog {
+  width: calc(100% - 32px);
+  max-width: 28rem;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  border: 0;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--ss-surface);
+  color: var(--ss-ink);
+  font-family: var(--ss-font);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.2);
+}
+.ss-dialog-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.ss-dialog-body {
+  margin: 8px 0 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--ss-ink-soft);
+}
+.ss-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.ss-chip-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--ss-font);
+}
+.ss-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.ss-chip-positive {
+  background: var(--ss-positive-soft);
+  color: var(--ss-positive);
+}
+.ss-chip-neutral {
+  background: var(--ss-neutral-soft);
+  color: var(--ss-neutral);
+}
+.ss-chip-warm {
+  background: var(--ss-warm-soft);
+  color: var(--ss-warm);
+}
+.ss-chip-count {
+  font-weight: 500;
+}
+.ss-chip-note {
+  font-size: 0.75rem;
+  color: var(--ss-ink-soft);
+}
+.ss-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.ss-dot-animated {
+  animation: ss-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ss-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ss-dot-animated {
+    animation: none;
+  }
+}
+
+.ss-banner {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ss-danger);
+  background: var(--ss-danger-soft);
+  color: var(--ss-danger);
+  font-family: var(--ss-font);
+  font-size: 0.8125rem;
+}
+.ss-banner p {
+  margin: 0;
+}
+.ss-banner-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ss-banner-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ss-banner-item {
+  padding: 8px;
+  border-radius: var(--ss-radius);
+  background: var(--ss-surface);
+  color: var(--ss-ink);
+}
+.ss-pre {
+  max-height: 10rem;
+  margin: 6px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+  color: var(--ss-ink-soft);
+}

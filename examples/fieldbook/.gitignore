@@ -20,6 +20,9 @@
 # production
 /build
 
+# PowerSync's prebuilt worker, copied by `pnpm assets`
+/public/@powersync/
+
 # misc
 .DS_Store
 *.pem

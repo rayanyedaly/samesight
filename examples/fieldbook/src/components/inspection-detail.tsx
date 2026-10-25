@@ -3,7 +3,7 @@
 import { useQuery, useStatus } from "@powersync/react";
 import Link from "next/link";
 import { type FormEvent, useMemo, useRef, useState } from "react";
-import { type Finding, type FindingChain, latestOnly } from "@/lib/latest-only";
+import { type Finding, type FindingChain, findingChains } from "@/lib/latest-only";
 import type { InspectionRecord, MembershipRecord } from "@/lib/powersync/schema";
 import { useSignedIn } from "./session-provider";
 import { SEVERITY_LABEL, STATUS_LABEL, SeverityBadge, StatusBadge } from "./status-badge";
@@ -27,7 +27,7 @@ export function InspectionDetail({ inspectionId }: { inspectionId: string }) {
   const { data: inspectors } = useQuery<MembershipRecord & { id: string }>(
     "SELECT * FROM Membership WHERE role = 'INSPECTOR' AND userId IS NOT NULL ORDER BY displayName",
   );
-  const chains = useMemo(() => latestOnly(findings), [findings]);
+  const chains = useMemo(() => findingChains(findings), [findings]);
   const inspection = inspections[0];
 
   if (!inspection) {
