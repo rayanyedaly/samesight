@@ -10,7 +10,10 @@
     "directory": "packages/samesight"
   },
   "type": "module",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./compiler": "./src/compiler.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",

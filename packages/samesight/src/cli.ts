@@ -8,13 +8,13 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { DEFAULT_DB_URL, introspect } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
-import { isPolicy, type Policy } from "./policy.ts";
+import { loadPolicy } from "./load.ts";
+import type { Policy } from "./policy.ts";
 import type { SchemaInfo } from "./schema.ts";
 
 const USAGE = `Usage: samesight <command> [options]
@@ -96,13 +96,6 @@ async function main(argv: string[]): Promise<number> {
       console.error(`Unknown command "${command}".\n\n${USAGE}`);
       return 1;
   }
-}
-
-async function loadPolicy(path: string): Promise<Policy> {
-  if (!existsSync(path)) throw new Error(`No policy file at ${path}; run \`samesight init\`.`);
-  const mod = (await import(pathToFileURL(path).href)) as { default?: unknown };
-  if (!isPolicy(mod.default)) throw new Error(`${path} must \`export default definePolicy(...)\`.`);
-  return mod.default;
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {
