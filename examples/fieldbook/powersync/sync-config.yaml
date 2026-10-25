@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=https://unpkg.com/@powersync/service-sync-rules@latest/schema/sync_rules.json
+#
+# Fieldbook sync streams, written by hand. Phase 3 replaces this file with the output
+# of `samesight generate`.
+#
+# PowerSync replicates through a BYPASSRLS role, so these streams are the only filter
+# between the database and a device. Each one must stay inside what the RLS policies
+# in supabase/migrations/*_fieldbook_access.sql let the same user read:
+#   - one stream per app role, gated on auth.parameter('app_role');
+#   - the tenant gate on every query;
+#   - "via" rules (a child is visible when its parent is) as a CTE plus IN;
+#   - status lists as OR chains;
+#   - columns hidden from a role are left out of its projection.
+#
+# The service reads this file at startup: restart the container after editing it.
+
+config:
+  edition: 3
+
+streams:
+  admin:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM "Tenant" WHERE id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'ADMIN'
+      - SELECT * FROM "Membership" WHERE "tenantId" = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'ADMIN'
+      - SELECT * FROM "Site" WHERE "tenantId" = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'ADMIN'
+      - SELECT * FROM "Inspection" WHERE "tenantId" = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'ADMIN'
+      - SELECT * FROM "Finding" WHERE "tenantId" = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'ADMIN'
+      - SELECT * FROM "Photo" WHERE "tenantId" = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'ADMIN'
+
+  inspector:
+    auto_subscribe: true
+    with:
+      assigned_inspections: |
+        SELECT id FROM "Inspection"
+        WHERE "tenantId" = auth.parameter('tenant_id') AND "assigneeId" = auth.user_id()
+    queries:
+      - SELECT * FROM "Tenant" WHERE id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'INSPECTOR'
+      - SELECT * FROM "Membership" WHERE "tenantId" = auth.parameter('tenant_id') AND "userId" = auth.user_id() AND auth.parameter('app_role') = 'INSPECTOR'
+      - SELECT * FROM "Site" WHERE "tenantId" = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'INSPECTOR'
+      - SELECT * FROM "Inspection" WHERE "tenantId" = auth.parameter('tenant_id') AND "assigneeId" = auth.user_id() AND auth.parameter('app_role') = 'INSPECTOR'
+      - SELECT * FROM "Finding" WHERE "tenantId" = auth.parameter('tenant_id') AND "inspectionId" IN assigned_inspections AND auth.parameter('app_role') = 'INSPECTOR'
+      - SELECT * FROM "Photo" WHERE "tenantId" = auth.parameter('tenant_id') AND "inspectionId" IN assigned_inspections AND auth.parameter('app_role') = 'INSPECTOR'
+
+  viewer:
+    auto_subscribe: true
+    with:
+      published_inspections: |
+        SELECT id FROM "Inspection"
+        WHERE "tenantId" = auth.parameter('tenant_id') AND (status = 'PUBLISHED' OR status = 'ARCHIVED')
+    queries:
+      - SELECT * FROM "Tenant" WHERE id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'VIEWER'
+      - SELECT * FROM "Membership" WHERE "tenantId" = auth.parameter('tenant_id') AND "userId" = auth.user_id() AND auth.parameter('app_role') = 'VIEWER'
+      - SELECT * FROM "Site" WHERE "tenantId" = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'VIEWER'
+      # Every Inspection column except "internalNotes".
+      - |
+        SELECT id, "tenantId", "siteId", "assigneeId", title, status, "createdAt", "updatedAt"
+        FROM "Inspection"
+        WHERE "tenantId" = auth.parameter('tenant_id')
+          AND (status = 'PUBLISHED' OR status = 'ARCHIVED')
+          AND auth.parameter('app_role') = 'VIEWER'
+      - SELECT * FROM "Finding" WHERE "tenantId" = auth.parameter('tenant_id') AND "inspectionId" IN published_inspections AND auth.parameter('app_role') = 'VIEWER'
+      - SELECT * FROM "Photo" WHERE "tenantId" = auth.parameter('tenant_id') AND "inspectionId" IN published_inspections AND auth.parameter('app_role') = 'VIEWER'
