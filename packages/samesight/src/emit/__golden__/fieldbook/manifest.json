@@ -1,0 +1,284 @@
+{
+  "generator": "samesight",
+  "claims": {
+    "tenant": "tenant_id",
+    "role": "app_role",
+    "roles": [
+      "ADMIN",
+      "INSPECTOR",
+      "VIEWER"
+    ]
+  },
+  "membership": {
+    "table": "Membership",
+    "user": "userId",
+    "tenant": "tenantId",
+    "role": "role"
+  },
+  "tenantTable": "Tenant",
+  "tables": [
+    {
+      "name": "Tenant",
+      "tenant": "id",
+      "read": {
+        "ADMIN": "all",
+        "INSPECTOR": "all",
+        "VIEWER": "all"
+      },
+      "insert": {},
+      "update": {},
+      "delete": {},
+      "check": null,
+      "hide": {},
+      "insertColumns": [],
+      "updateColumns": [],
+      "appendOnly": null
+    },
+    {
+      "name": "Membership",
+      "tenant": "tenantId",
+      "read": {
+        "ADMIN": "all",
+        "INSPECTOR": {
+          "kind": "eq",
+          "column": "userId",
+          "value": {
+            "kind": "user"
+          }
+        },
+        "VIEWER": {
+          "kind": "eq",
+          "column": "userId",
+          "value": {
+            "kind": "user"
+          }
+        }
+      },
+      "insert": {},
+      "update": {},
+      "delete": {},
+      "check": null,
+      "hide": {},
+      "insertColumns": [],
+      "updateColumns": [],
+      "appendOnly": null
+    },
+    {
+      "name": "Site",
+      "tenant": "tenantId",
+      "read": {
+        "ADMIN": "all",
+        "INSPECTOR": "all",
+        "VIEWER": "all"
+      },
+      "insert": {
+        "ADMIN": "all"
+      },
+      "update": {
+        "ADMIN": "all"
+      },
+      "delete": {
+        "ADMIN": "all"
+      },
+      "check": null,
+      "hide": {},
+      "insertColumns": [
+        "name",
+        "address"
+      ],
+      "updateColumns": [
+        "name",
+        "address"
+      ],
+      "appendOnly": null
+    },
+    {
+      "name": "Inspection",
+      "tenant": "tenantId",
+      "read": {
+        "ADMIN": "all",
+        "INSPECTOR": {
+          "kind": "eq",
+          "column": "assigneeId",
+          "value": {
+            "kind": "user"
+          }
+        },
+        "VIEWER": {
+          "kind": "in",
+          "column": "status",
+          "values": [
+            "PUBLISHED",
+            "ARCHIVED"
+          ]
+        }
+      },
+      "insert": {
+        "ADMIN": "all"
+      },
+      "update": {
+        "ADMIN": "all",
+        "INSPECTOR": {
+          "kind": "and",
+          "items": [
+            {
+              "kind": "eq",
+              "column": "assigneeId",
+              "value": {
+                "kind": "user"
+              }
+            },
+            {
+              "kind": "in",
+              "column": "status",
+              "values": [
+                "DRAFT",
+                "IN_PROGRESS"
+              ]
+            }
+          ]
+        }
+      },
+      "delete": {
+        "ADMIN": "all"
+      },
+      "check": {
+        "kind": "or",
+        "items": [
+          {
+            "kind": "isNull",
+            "column": "assigneeId",
+            "negate": false
+          },
+          {
+            "kind": "inRows",
+            "column": "assigneeId",
+            "rows": {
+              "kind": "rows",
+              "table": "Membership",
+              "column": "userId",
+              "where": {
+                "kind": "eq",
+                "column": "role",
+                "value": "INSPECTOR"
+              }
+            }
+          }
+        ]
+      },
+      "hide": {
+        "VIEWER": [
+          "internalNotes"
+        ]
+      },
+      "insertColumns": [
+        "siteId",
+        "assigneeId",
+        "title",
+        "status",
+        "internalNotes"
+      ],
+      "updateColumns": [
+        "assigneeId",
+        "title",
+        "status",
+        "internalNotes"
+      ],
+      "appendOnly": null
+    },
+    {
+      "name": "Finding",
+      "tenant": "tenantId",
+      "read": {
+        "ADMIN": {
+          "kind": "via",
+          "column": "inspectionId",
+          "parent": "Inspection",
+          "parentKey": "id"
+        },
+        "INSPECTOR": {
+          "kind": "via",
+          "column": "inspectionId",
+          "parent": "Inspection",
+          "parentKey": "id"
+        },
+        "VIEWER": {
+          "kind": "via",
+          "column": "inspectionId",
+          "parent": "Inspection",
+          "parentKey": "id"
+        }
+      },
+      "insert": {
+        "INSPECTOR": {
+          "kind": "via",
+          "column": "inspectionId",
+          "parent": "Inspection",
+          "parentKey": "id"
+        }
+      },
+      "update": {},
+      "delete": {},
+      "check": null,
+      "hide": {},
+      "insertColumns": [
+        "inspectionId",
+        "supersedesId",
+        "body",
+        "severity"
+      ],
+      "updateColumns": [],
+      "appendOnly": {
+        "supersedes": "supersedesId",
+        "order": "seq"
+      }
+    },
+    {
+      "name": "Photo",
+      "tenant": "tenantId",
+      "read": {
+        "ADMIN": {
+          "kind": "via",
+          "column": "inspectionId",
+          "parent": "Inspection",
+          "parentKey": "id"
+        },
+        "INSPECTOR": {
+          "kind": "via",
+          "column": "inspectionId",
+          "parent": "Inspection",
+          "parentKey": "id"
+        },
+        "VIEWER": {
+          "kind": "via",
+          "column": "inspectionId",
+          "parent": "Inspection",
+          "parentKey": "id"
+        }
+      },
+      "insert": {
+        "INSPECTOR": {
+          "kind": "via",
+          "column": "inspectionId",
+          "parent": "Inspection",
+          "parentKey": "id"
+        }
+      },
+      "update": {},
+      "delete": {},
+      "check": null,
+      "hide": {},
+      "insertColumns": [
+        "inspectionId",
+        "findingId",
+        "storagePath",
+        "sha256"
+      ],
+      "updateColumns": [],
+      "appendOnly": {}
+    }
+  ],
+  "outputs": {
+    "a.sql": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+  }
+}

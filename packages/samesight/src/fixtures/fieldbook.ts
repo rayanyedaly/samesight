@@ -1,5 +1,5 @@
 import { and, claim, col, definePolicy, or, rowsOf, table, via } from "../policy.ts";
-import type { ColumnInfo, SchemaInfo, TableInfo } from "../schema.ts";
+import type { ColumnInfo, ForeignKey, SchemaInfo, TableInfo } from "../schema.ts";
 
 // Fieldbook's schema migration, as introspection reports it. Kept by hand so the
 // compiler's tests need no database.
@@ -14,12 +14,22 @@ const c = (name: string, type: string, extra: Partial<ColumnInfo> = {}): ColumnI
   ...extra,
 });
 const ts = "timestamp with time zone";
-const t = (name: string, columns: ColumnInfo[], indexedColumns: string[] = [], uniqueColumns: string[] = []): TableInfo => ({
+const fk = (columns: string[], table: string, references: string[]): ForeignKey => ({ columns, table, references });
+const tenantFk = fk(["tenantId"], "Tenant", ["id"]);
+const t = (
+  name: string,
+  columns: ColumnInfo[],
+  indexedColumns: string[] = [],
+  uniqueColumns: string[] = [],
+  foreignKeys: ForeignKey[] = [],
+): TableInfo => ({
   name,
   columns,
   primaryKey: ["id"],
-  indexedColumns,
-  uniqueColumns: ["id", ...uniqueColumns],
+  // As introspection reports them: the primary key included, sorted.
+  indexedColumns: [...new Set(["id", ...indexedColumns])].sort(),
+  uniqueColumns: [...new Set(["id", ...uniqueColumns])].sort(),
+  foreignKeys,
 });
 
 export const fieldbookSchema: SchemaInfo = {
@@ -37,6 +47,7 @@ export const fieldbookSchema: SchemaInfo = {
       ],
       ["userId", "tenantId"],
       ["userId"],
+      [tenantFk],
     ),
     t("Site", [
       c("id", "uuid"),
@@ -44,7 +55,7 @@ export const fieldbookSchema: SchemaInfo = {
       c("name", "text"),
       c("address", "text", { nullable: true }),
       c("createdAt", ts, { default: "now()" }),
-    ], ["tenantId"]),
+    ], ["tenantId"], [], [tenantFk]),
     t(
       "Inspection",
       [
@@ -59,6 +70,8 @@ export const fieldbookSchema: SchemaInfo = {
         c("updatedAt", ts, { default: "now()" }),
       ],
       ["tenantId", "siteId", "assigneeId"],
+      [],
+      [tenantFk, fk(["tenantId", "siteId"], "Site", ["tenantId", "id"])],
     ),
     t(
       "Finding",
@@ -74,6 +87,12 @@ export const fieldbookSchema: SchemaInfo = {
         c("createdAt", ts, { default: "now()" }),
       ],
       ["tenantId", "inspectionId", "supersedesId"],
+      [],
+      [
+        fk(["inspectionId", "supersedesId"], "Finding", ["inspectionId", "id"]),
+        tenantFk,
+        fk(["tenantId", "inspectionId"], "Inspection", ["tenantId", "id"]),
+      ],
     ),
     t(
       "Photo",
@@ -88,6 +107,12 @@ export const fieldbookSchema: SchemaInfo = {
         c("createdAt", ts, { default: "now()" }),
       ],
       ["inspectionId"],
+      [],
+      [
+        fk(["inspectionId", "findingId"], "Finding", ["inspectionId", "id"]),
+        tenantFk,
+        fk(["tenantId", "inspectionId"], "Inspection", ["tenantId", "id"]),
+      ],
     ),
   ],
 };

@@ -26,6 +26,14 @@ export interface TableInfo {
   indexedColumns: string[];
   /** Columns with a single-column unique constraint or unique index (the primary key included). */
   uniqueColumns: string[];
+  /** Validated foreign keys to other public tables, columns in constraint order. */
+  foreignKeys: ForeignKey[];
+}
+
+export interface ForeignKey {
+  columns: string[];
+  table: string;
+  references: string[];
 }
 
 export interface SchemaInfo {
