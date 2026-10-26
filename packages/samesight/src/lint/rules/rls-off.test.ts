@@ -15,7 +15,7 @@ const lint = (...sql: string[]) =>
 describe("rls-off", () => {
   it("warns about each synced table whose migrations never enable RLS", () => {
     expect(lint("alter table lists enable row level security;")).toEqual([
-      ["warning", 8, "Notes is synced, but the migrations never enable row level security on it, so with Supabase's default grants any client can read and change every row through the API"],
+      ["warning", 8, "Notes is synced, but the migrations never enable row level security on it, so unless its grants to anon and authenticated were revoked, any client can read and change every row through the Supabase API"],
     ]);
     expect(lint('alter table lists enable row level security;\nalter table "Notes" enable row level security;')).toEqual([]);
   });
