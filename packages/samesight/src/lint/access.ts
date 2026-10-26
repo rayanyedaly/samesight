@@ -5,10 +5,11 @@
  *
  * A query's conditions are its WHERE and each INNER JOIN's ON, all of which must hold. A
  * condition limits rows by a value when some AND term does, or every OR branch does; a
- * term does when it compares (= or IN) something with the value, or reads a stream CTE or
- * IN (SELECT ...) subquery whose own conditions do. NOT, and anything else, does not.
- * A comparison with a fixed value (auth.parameter('role') = 'admin') counts: it is a role
- * gate, which decides who gets the rows.
+ * term does when it compares (= or IN) a row with the value, or reads a stream CTE or
+ * IN (SELECT ...) subquery whose own conditions do. NOT, and anything else, does not. The
+ * value compared with a literal or with itself picks no row by who is asking: a token claim
+ * against a literal (a role) is a claim check, which rules report apart, and a claim every
+ * signed-in Supabase token passes (role or aud = 'authenticated') checks nothing.
  *
  * For sync rules, each bucket parameter is traced to the token, the client, or the rows of
  * its parameter query (themselves limited by the token, the client or neither), and a data
@@ -80,7 +81,7 @@ export function conditions(t: Token[]): Token[][] {
       const before = join === undefined ? undefined : t[join - 1];
       if (before?.kind === "word" && OUTER.has(before.text)) continue;
     }
-    const end = top.find((j) => j > i && CLAUSE_END.has(t[j]?.kind === "word" ? (t[j] as Token).text : "") && !(word(t[i], "where") && word(t[j], "where")));
+    const end = top.find((j) => j > i && CLAUSE_END.has(t[j]?.kind === "word" ? (t[j] as Token).text : "") && !sym(t[j + 1], "(") && !(word(t[i], "where") && word(t[j], "where")));
     out.push(t.slice(i + 1, end ?? t.length));
   }
   return out.filter((c) => c.length);
@@ -105,79 +106,134 @@ export function queryLimits(t: Token[], gate: Gate): boolean {
   return conditions(t).some((c) => limits(c, gate));
 }
 
-/** Has = or IN at its own top level. */
-const compares = (term: Token[]) => topLevel(term).some((i) => sym(term[i], "=") || word(term[i], "in"));
+/** IN, and not NOT IN, which keeps every row but some. */
+const isIn = (t: Token[], i: number) => word(t[i], "in") && !word(t[i - 1], "not");
+
+/** The two sides of a term's top-level = or IN; undefined when it has neither. */
+function sides(term: Token[]): [Token[], Token[]] | undefined {
+  const at = topLevel(term).find((i) => sym(term[i], "=") || isIn(term, i));
+  return at === undefined ? undefined : [term.slice(0, at), term.slice(at + 1)];
+}
 
 const LITERALS = new Set(["true", "false", "null"]);
 const literal = (side: Token[]) => side.length > 0 && side.every((x) => x.kind === "string" || x.kind === "number" || x.kind === "symbol" || (x.kind === "word" && LITERALS.has(x.text)));
 
-/** A comparison with a fixed value on one side: status = 'public', role IN ('a', 'b'). */
+/**
+ * A row compared with a value `reads` finds: owner_id = auth.user_id(). The value compared
+ * with a literal, or with itself, picks no row by who is asking.
+ */
+const matches =
+  (reads: (t: Token[]) => boolean): Gate =>
+  (term) => {
+    const s = sides(term);
+    return s !== undefined && s.some((side, i) => reads(side) && !literal(s[1 - i] as Token[]) && !reads(s[1 - i] as Token[]));
+  };
+
+/** A fixed value on exactly one side: status = 'public', role IN ('a', 'b'). */
 const fixed: Gate = (term) => {
-  const at = topLevel(term).find((i) => sym(term[i], "=") || word(term[i], "in"));
-  return at !== undefined && (literal(term.slice(0, at)) || literal(term.slice(at + 1)));
+  const s = sides(term);
+  return s !== undefined && literal(s[0]) !== literal(s[1]);
 };
 
-/** `a.x = b.y`: a join between two tables, which picks no rows by itself. */
-const joins: Gate = (term) => {
-  const at = topLevel(term).find((i) => sym(term[i], "="));
-  if (at === undefined) return false;
-  const qualifier = (side: Token[]) => (side.length === 3 && isName(side[0]) && sym(side[1], ".") && isName(side[2]) ? (side[0] as Token).text : undefined);
-  const a = qualifier(term.slice(0, at));
-  const b = qualifier(term.slice(at + 1));
-  return a !== undefined && b !== undefined && a !== b;
+/** A column alone as a condition: users.is_admin. */
+const flag: Gate = (term) => (term.length === 1 && isName(term[0])) || (term.length === 3 && isName(term[0]) && sym(term[1], ".") && isName(term[2]));
+
+/** A check every signed-in Supabase token passes: its role or aud claim = 'authenticated'. */
+export const everyToken: Gate = (term) => {
+  const s = sides(term);
+  if (!s || !readsToken(term)) return false;
+  const claim = term.some((x) => x.kind === "string" && /^(\$\.)?(role|aud)$/.test(x.text));
+  return claim && s.some((side) => literal(side) && side.some((x) => x.kind === "string" && x.text === "authenticated"));
 };
 
-/** Whether anything filters a query's rows, if only fixed values: a join does not count. */
-export function filtered(sql: string, ctes: Map<string, string> = new Map()): boolean {
-  const t = parse(sql);
-  if (!t) return false;
-  const parsed = new Map([...ctes].map(([name, s]) => [name.toLowerCase(), parse(s)]));
-  const gate: Gate = through(
-    (term) => compares(term) && !joins(term),
-    (name) => (parsed.has(name) ? queryLimits(parsed.get(name) ?? [], gate) : undefined),
-  );
-  return queryLimits(t, gate);
-}
+/** A token claim checked against a fixed value, such as a role, that not every token passes. */
+const claimCheck: Gate = (term) => fixed(term) && readsToken(term) && !readsClient(term) && !everyToken(term);
 
 /**
  * A gate that follows IN (SELECT ...) and IN cte into the rows they select, and asks
  * `base` of any other term. `cte` answers for a stream CTE's name, undefined for others.
+ * The token on the left (auth.user_id() IN (SELECT user_id FROM admins)) checks who is
+ * asking, not which rows: it counts only for a gate that takes checks (`checks`).
  */
-function through(base: Gate, cte: (name: string) => boolean | undefined): Gate {
+function through(base: Gate, cte: (name: string) => boolean | undefined, checks = false): Gate {
   const gate: Gate = (term) => {
-    for (const i of topLevel(term).filter((i) => word(term[i], "in"))) {
+    for (const i of topLevel(term).filter((i) => isIn(term, i))) {
       const next = term[i + 1];
-      if (sym(next, "(") && word(term[i + 2], "select")) {
-        const end = closing(term, i + 1);
-        return queryLimits(term.slice(i + 2, end === -1 ? term.length : end), gate);
-      }
-      const named = isName(next) ? cte((next as Token).text.toLowerCase()) : undefined;
+      const set = sym(next, "(") && word(term[i + 2], "select");
+      const named = !set && isName(next) ? cte((next as Token).text.toLowerCase()) : undefined;
+      if (!set && named === undefined) continue;
+      if (readsToken(term.slice(0, i))) return checks;
       if (named !== undefined) return named;
+      const end = closing(term, i + 1);
+      const sub = term.slice(i + 2, end === -1 ? term.length : end);
+      // A subquery that reads a CTE: SELECT org_id FROM mine.
+      const from = topLevel(sub).find((j) => word(sub[j], "from"));
+      const source = from !== undefined && isName(sub[from + 1]) ? cte((sub[from + 1] as Token).text.toLowerCase()) : undefined;
+      return source === true || queryLimits(sub, gate);
     }
     return base(term);
   };
   return gate;
 }
 
-/** The gate for a value: a comparison involving it, followed through CTEs and subqueries. */
-export function valueGate(reads: (term: Token[]) => boolean, cte: (name: string) => boolean | undefined = () => undefined): Gate {
-  return through((term) => compares(term) && reads(term), cte);
+/** Whether `base` limits a query's rows, followed through its stream CTEs and subqueries. */
+function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = false): boolean {
+  const parsed = new Map([...ctes].map(([name, s]) => [name.toLowerCase(), parse(s)]));
+  const gate: Gate = through(base, (name) => (parsed.has(name) ? queryLimits(parsed.get(name) ?? [], gate) : undefined), checks);
+  return queryLimits(t, gate);
+}
+
+/** The gate for a value: a row compared with it, followed through subqueries. */
+export function valueGate(reads: (term: Token[]) => boolean): Gate {
+  return through(matches(reads), () => undefined);
 }
 
 const readsAny = (term: Token[]) => readsToken(term) || readsClient(term);
 
-/** How a stream query's rows are limited: by the token, by the token or the client. */
-export function streamAccess(sql: string, ctes: Map<string, string>): { token: boolean; tokenOrClient: boolean } | null {
+/**
+ * A row's own column against a fixed value, or a row compared with a token or client value.
+ * A token or client value against a literal checks who is asking, not which rows.
+ */
+const filters: Gate = (term) => (fixed(term) && !readsAny(term)) || matches(readsAny)(term);
+
+/** Whether anything filters a query's rows: a fixed value or a row compared with a value. A join does not. */
+export function filtered(sql: string, ctes: Map<string, string> = new Map()): boolean {
+  const t = parse(sql);
+  return t !== null && limitedBy(t, ctes, filters);
+}
+
+export interface StreamAccess {
+  /** A row compared with a token value limits it: each user gets their own. */
+  token: boolean;
+  /** A row compared with a token or client value limits it. */
+  tokenOrClient: boolean;
+  /** A per-user comparison, or a check on who is asking (a role claim, membership of a list) limits it. */
+  claim: boolean;
+  /** Anything filters it, fixed values included. */
+  filtered: boolean;
+}
+
+/** How a stream query's rows are limited; see StreamAccess. */
+export function streamAccess(sql: string, ctes: Map<string, string>): StreamAccess | null {
   const t = parse(sql);
   if (!t) return null;
-  const cteLimits = (reads: (term: Token[]) => boolean) => {
-    const parsed = new Map([...ctes].map(([name, s]) => [name.toLowerCase(), parse(s)]));
-    return (name: string) => (parsed.has(name) ? queryLimits(parsed.get(name) ?? [], valueGate(reads)) : undefined);
-  };
   return {
-    token: queryLimits(t, valueGate(readsToken, cteLimits(readsToken))),
-    tokenOrClient: queryLimits(t, valueGate(readsAny, cteLimits(readsAny))),
+    token: limitedBy(t, ctes, matches(readsToken)),
+    tokenOrClient: limitedBy(t, ctes, matches(readsAny)),
+    claim: limitedBy(t, ctes, (term) => matches(readsToken)(term) || claimCheck(term), true),
+    filtered: limitedBy(t, ctes, filters),
   };
+}
+
+/** Whether a query checks a claim every signed-in Supabase token passes, anywhere in its conditions. */
+export function checksEveryToken(sql: string): boolean {
+  const t = parse(sql);
+  const leaves = (c: Token[]): Token[][] => {
+    const x = unwrap(c);
+    const parts = splitTop(x, (y) => word(y, "or") || word(y, "and"));
+    return parts.length > 1 ? parts.flatMap(leaves) : [x];
+  };
+  return t !== null && conditions(t).flatMap(leaves).some(everyToken);
 }
 
 export type Source = "token" | "client" | "rows";
@@ -195,6 +251,8 @@ export function parameterQuery(sql: string): ParameterQuery | null {
   if (!t) return null;
   const end = topLevel(t).find((i) => word(t[i], "from") || word(t[i], "where"));
   const items = splitTop(t.slice(1, end ?? t.length), (x) => sym(x, ","));
+  // SELECT * names no parameters (PowerSync wants them named); leave it to PowerSync.
+  if (items.some((item) => item.length === 1 && sym(item[0], "*"))) return null;
   const parameters = new Map<string, Source>();
   for (const item of items) {
     const as = topLevel(item).find((i) => word(item[i], "as"));
@@ -222,7 +280,7 @@ function bucketNames(term: Token[]): string[] {
 /** Whether a data query's rows are limited by bucket parameters that `accept` takes. */
 export function dataLimitedBy(sql: string, accept: (name: string) => boolean): boolean {
   const t = parse(sql);
-  return t !== null && queryLimits(t, (term) => compares(term) && bucketNames(term).some(accept));
+  return t !== null && queryLimits(t, matches((side) => bucketNames(side).some(accept)));
 }
 
 export interface BucketAccess {
@@ -230,7 +288,7 @@ export interface BucketAccess {
   loose: { label: string; sql: string; via: "client" | "nobody" }[];
   /** Data queries no bucket parameter limits: every user the bucket reaches gets all their rows. */
   open: { label: string; sql: string }[];
-  /** Every parameter query admits only users who pass a fixed check, such as a role. */
+  /** No data query uses bucket parameters, and every parameter query is a gate that admits a role. */
   roleGated: boolean;
 }
 
@@ -251,11 +309,17 @@ export function bucketAccess(parameters: Map<string, string>, data: { label: str
     const client = failing.every((d) => dataLimitedBy(d.sql, (n) => parameterSource(p, n) !== "nobody"));
     loose.push({ label, sql, via: client ? "client" : "nobody" });
   }
+  // A parameter query that gives no bucket parameters only decides who gets the bucket: a
+  // gate. It admits a role when it checks, besides who is asking, a fixed value of their own
+  // row (is_admin = true) or a claim of their token, and no client value.
   const roleGated =
     params.length > 0 &&
+    bound.length === 0 &&
     params.every(({ sql, p }) => {
       const t = parse(sql);
-      return p?.rows === "token" && t !== null && queryLimits(t, fixed);
+      if (!p || !t || p.parameters.size > 0) return false;
+      if (p.rows === "token") return queryLimits(t, (term) => (fixed(term) && !readsClient(term) && !everyToken(term)) || flag(term));
+      return queryLimits(t, claimCheck);
     });
   return { loose, open: readable.filter((d) => !bound.includes(d)), roleGated };
 }
