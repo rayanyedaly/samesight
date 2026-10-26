@@ -11,7 +11,7 @@ The first published release.
 - The policy language: `definePolicy<Database>` with claims, a membership table and per-table rules (`read`, `write`, `insert`, `update`, `delete`, `check`) built from `col`, `via`, `rowsOf`, `and`, `or` and `raw`; column options `hide`, `serverOwned`, `immutable`, `author`, `touch` and `appendOnly`; `rejectedWrites`, `output` and `client`.
 - A compiler that checks the policy against the live schema and refuses, with the rule named, whatever RLS and sync streams cannot both express.
 - `samesight generate`: the Supabase migration (RLS, column grants, the access token hook, append-only and `touch` triggers, the replication role and publication, `apply_batch` and `record_rejection`), Edition 3 sync streams, a local PowerSync service config, the client schema, policy types, a manifest and a schema snapshot.
-- `samesight check` for CI, with no database; `samesight doctor` against the local database.
+- `samesight check` for CI, with no database; `samesight doctor` against the local database and `supabase/config.toml` (the access token hook turned on, an Auth signing key).
 - `samesight init` drafts a compiling policy from the local database: the membership and tenant tables, each table's tenant column and the role values. Without a database it writes a template.
 - `samesight explain` prints the compiled policy in plain words: a role by operation matrix, each rule, the columns clients write and those each role never receives.
 - Policy files load as `samesight.policy.ts` or `samesight.policy.mts`, with a clear error for a CommonJS package and for Node without TypeScript support.

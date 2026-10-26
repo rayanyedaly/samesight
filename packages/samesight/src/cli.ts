@@ -18,6 +18,7 @@ import { buildIR, CompileError } from "./ir.ts";
 import { loadPolicy, POLICY_FILES, resolvePolicyPath, tsIsModule } from "./load.ts";
 import type { Policy } from "./policy.ts";
 import type { SchemaInfo } from "./schema.ts";
+import { checkAuthConfig, readSupabaseConfig } from "./supabase-config.ts";
 
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
@@ -120,6 +121,7 @@ async function main(argv: string[]): Promise<number> {
         );
       }
       findings.unshift(...drift);
+      findings.push(...checkAuthConfig(readSupabaseConfig(root)));
       const mark = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
       for (const f of findings) console.log(`${mark[f.status]}  ${f.check}: ${f.detail}`);
       return findings.some((f) => f.status === "fail") ? 1 : 0;
