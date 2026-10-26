@@ -3,7 +3,7 @@
 
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(39);
+select plan(41);
 
 -- Fixtures ---------------------------------------------------------------------------
 
@@ -168,6 +168,21 @@ select is(
   (select status || ' ' || "siteId"::text from public."Inspection" where id = '1a000000-0000-0000-0000-000000000001'),
   'DRAFT 51000000-0000-0000-0000-00000000000a',
   'the inspection has the new status and its original site'
+);
+
+-- PowerSync sends PUT for a local upsert too. An inspector may update this inspection but
+-- not insert one; the existing row goes to the UPDATE path, never past the INSERT policy.
+select is(
+  public.apply_batch('[{"op":"PUT","table":"Inspection","id":"1a000000-0000-0000-0000-000000000001",
+    "data":{"title":"IA renamed","status":"IN_PROGRESS","siteId":"51000000-0000-0000-0000-00000000000a"}}]'::jsonb),
+  1,
+  'a PUT of an existing row by a role that may update but not insert it applies, and apply_batch counts it'
+);
+
+select is(
+  (select title || ' ' || status from public."Inspection" where id = '1a000000-0000-0000-0000-000000000001'),
+  'IA renamed IN_PROGRESS',
+  '...as an update of the allowed columns'
 );
 
 select throws_ok(

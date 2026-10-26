@@ -218,3 +218,17 @@ describe("rowsOf in a read rule", () => {
     );
   });
 });
+
+describe("apply_batch", () => {
+  it("returns how many ops it applied, and decodes json and array columns clients hold as text", () => {
+    const meta: ColumnInfo = { name: "meta", type: "jsonb", nullable: true, default: null, identity: false, generated: false };
+    const tags: ColumnInfo = { ...meta, name: "tags", type: "text[]" };
+    const schema = { tables: fieldbookSchema.tables.map((t): TableInfo => (t.name === "Site" ? { ...t, columns: [...t.columns, meta, tags] } : t)) };
+    const sql = emitMigration(buildIR(fieldbookPolicy, schema));
+    expect(sql).toContain('"Site": {"appendOnly": false, "tenant": "tenantId", "insert": ["name", "address", "meta", "tags"],');
+    expect(sql).toContain('"json": ["meta", "tags"]}');
+    expect(sql).toContain("select jsonb_object_agg(c, (data ->> c)::jsonb)");
+    expect(sql).toContain("drop function if exists public.apply_batch(jsonb);\ncreate function public.apply_batch(ops jsonb)\nreturns integer");
+    expect(sql).toContain("  return jsonb_array_length(ops);");
+  });
+});

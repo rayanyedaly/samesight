@@ -17,7 +17,8 @@ The first published release.
 - `samesight explain` prints the compiled policy in plain words: a role by operation matrix, each rule, the columns clients write and those each role never receives.
 - Policy files load as `samesight.policy.ts` or `samesight.policy.mts`, with a clear error for a CommonJS package and for Node without TypeScript support.
 - Connects only to a database on this machine, found from the `[db]` port in `supabase/config.toml` unless `--db` says otherwise.
-- `apply_batch` treats a PUT whose row exists as a replay: it updates the row where the caller may (last write wins) and otherwise leaves it, so a role that may insert a row but not update it can still replay its own insert after a lost acknowledgement.
+- `apply_batch` treats a PUT whose row exists as a replay or an upsert: it updates the row where the caller may (last write wins) and otherwise leaves it, without ever putting it through the INSERT policy. It returns the number of ops it applied, and decodes json, jsonb and array values that PowerSync clients hold as text.
+- The compiler refuses what RLS and the streams would read differently: generated columns in read rules (logical replication does not send them), literals on arrays, json, citext and char(n), `real` literals a 4-byte float cannot hold, partitioned tables, and non-uuid ids or unquotable column names on tables clients write. A `powersync` publication made `FOR ALL TABLES` is replaced rather than failing the migration.
 
 ### @samesight/verify
 
@@ -29,11 +30,11 @@ The first published release.
 
 ### @samesight/supabase
 
-- `SupabaseConnector`: one `apply_batch` call per transaction, failures sorted into retry, reauth, stuck and reject, refused writes recorded locally before they leave the queue, and no uploads under another user's session.
+- `SupabaseConnector`: one `apply_batch` call per transaction, taken out of the queue only when `apply_batch` confirms how many ops it applied; failures sorted into retry, reauth, stuck and reject, where only Postgres's judgements on the data (constraints, RLS, `apply_batch` refusals) reject and anything else is held; `onStuck` for batches that keep failing; refused writes recorded locally before they leave the queue; no uploads under another user's session.
 - `latestOnly` and `earlierVersions` for append-only tables with superseding corrections; `pendingUploadCount` and `hasUnsyncedWrites`.
 
 ### @samesight/next
 
 - `createEncryptedStore`: a per-user encrypted PowerSync database keyed from the sign-in password.
-- `SamesightProvider` and `useSamesight`: offline unlock, idle lock, sign-out that counts the queue, and a recovery screen that names the loss.
+- `SamesightProvider` and `useSamesight`: offline unlock, an idle lock that also counts time the device slept, sign-out that counts the queue and unacknowledged refused writes, and a recovery screen that names the loss.
 - `SyncStatusChip`, `RejectedWritesBanner`, `ConfirmDialog` and `styles.css`.

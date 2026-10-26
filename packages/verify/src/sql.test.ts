@@ -24,7 +24,7 @@ do $body$ begin raise notice 'it''s; fine'; end $body$;
     const sql = readFileSync(new URL(latest, dir), "utf8");
     const statements = splitSqlStatements(sql);
     expect(statements.length).toBeGreaterThan(80);
-    expect(statements.filter((s) => /create or replace function public\.apply_batch/.test(s))).toHaveLength(1);
+    expect(statements.filter((s) => /create function public\.apply_batch/.test(s))).toHaveLength(1);
     // Every statement ends a top-level construct, never mid-body.
     for (const s of statements) expect(s.split("$$").length % 2, s.slice(0, 80)).toBe(1);
   });
