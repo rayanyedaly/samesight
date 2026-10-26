@@ -60,19 +60,26 @@ describe("client-scoped on sync streams", () => {
     expect(levels(lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND subscription.parameter('k') IN (SELECT k FROM keys)\n")))).toEqual(["error"]);
   });
 
-  it("warns, not fails, on a client value checked against the user's own set", () => {
-    // Safe, but read as a check on who is asking; the usual form (list_id IN (SELECT ...)) passes.
+  it("fails a client value checked against the user's own set, and passes the usual form", () => {
+    // Safe here, but lint does not tell it from the client value checked alone, which sends
+    // every row to anyone with one membership; the usual form (org_id IN (SELECT ...)) passes.
     expect(
       levels(lint(stream("  s:\n    query: SELECT * FROM docs WHERE org_id = subscription.parameter('org') AND subscription.parameter('org') IN (SELECT org_id FROM members WHERE user_id = auth.user_id())\n"))),
-    ).toEqual(["warning"]);
+    ).toEqual(["error"]);
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE org_id = subscription.parameter('org') AND org_id IN (SELECT org_id FROM members WHERE user_id = auth.user_id())\n"))).toEqual([]);
   });
 
   it("fails a sync rules parameter the client names, even where the user's own rows bound it", () => {
     const org = "request.parameters() ->> 'org'";
+    // Safe, but lint does not tell it from the leaks below, and says so.
+    expect(lint(`bucket_definitions:\n  b:\n    parameters: SELECT ${org} AS org_id FROM members WHERE org_id = ${org} AND user_id = request.user_id()\n    data: [SELECT * FROM t WHERE org = bucket.org_id]\n`)).toEqual([
+      [
+        "error",
+        3,
+        "bucket b, parameters[0] selects a value the client sends as a bucket parameter; lint cannot tell whether the user's own rows bound it, so select the column instead (SELECT org_id FROM members WHERE ...)",
+      ],
+    ]);
     for (const where of [
-      // Safe, but lint does not tell it from the leaks below; select org_id from the rows instead.
-      `org_id = ${org} AND user_id = request.user_id()`,
       `user_id = request.user_id() AND NOT org_id = ${org}`,
       `user_id = request.user_id() AND (true OR org_id = ${org})`,
     ]) {
@@ -90,7 +97,8 @@ describe("client-scoped on sync streams", () => {
     expect(
       levels(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${pick} IN (SELECT org_id FROM members WHERE user_id = coalesce(subscription.parameter('u'), auth.user_id()))\n`))),
     ).toEqual(["error"]);
-    expect(levels(lint(stream(`  s:\n${own}    query: SELECT * FROM docs WHERE ${pick} IN mine\n`)))).toEqual(["warning"]);
+    expect(levels(lint(stream(`  s:\n${own}    query: SELECT * FROM docs WHERE ${pick} IN mine\n`)))).toEqual(["error"]);
+    expect(lint(stream(`  s:\n${own}    query: SELECT * FROM docs WHERE org_id = subscription.parameter('org') AND org_id IN mine\n`))).toEqual([]);
     expect(levels(lint(stream(`  s:\n${all}    query: SELECT * FROM docs WHERE ${pick} IN every\n`)))).toEqual(["error"]);
   });
 

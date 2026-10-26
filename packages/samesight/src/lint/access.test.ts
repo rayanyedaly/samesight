@@ -69,7 +69,7 @@ describe("sync rules buckets", () => {
       { label: "data[0]", sql: "SELECT * FROM lists WHERE id = bucket.id" },
       { label: "data[1]", sql: "SELECT * FROM tags" },
     ]);
-    expect(access).toEqual({ loose: [{ label: "parameters[0]", sql: "SELECT request.parameters() ->> 'id' AS id", via: "client" }], open: [{ label: "data[1]", sql: "SELECT * FROM tags" }], roleGated: false });
+    expect(access).toEqual({ loose: [{ label: "parameters[0]", sql: "SELECT request.parameters() ->> 'id' AS id", via: "client", bounded: false }], open: [{ label: "data[1]", sql: "SELECT * FROM tags" }], roleGated: false });
   });
 });
 

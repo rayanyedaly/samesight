@@ -79,6 +79,10 @@ describe("unscoped-query on sync streams", () => {
       "auth.parameter('role') = CAST('authenticated' AS text)",
       "auth.parameter('is_anonymous') = false",
       "auth.parameter('is_anonymous') = 0",
+      "(auth.parameters() -> 'is_anonymous') = 'false'",
+      "auth.parameter('is_anonymous')::text = '0'",
+      // Every user's role is in the set if 'authenticated' is.
+      "auth.parameter('role') IN (SELECT role FROM doc_roles)",
       "(auth.parameters()) ->> 'role' = 'authenticated'",
       "auth.parameters()::json ->> 'role' = 'authenticated'",
       "auth.parameter('role') = 'authenticated'::\"text\"",
@@ -90,6 +94,13 @@ describe("unscoped-query on sync streams", () => {
       "owner = coalesce(subscription.parameter('u'), auth.user_id()) OR auth.user_id() IN (SELECT user_id FROM admins)",
       // Every user's role is the same: a column compared with it tells no user apart.
       "public_to = auth.parameter('role')",
+      "tenant = auth.parameter('iss')",
+      // A client value IN the user's own set only proves the set is not empty.
+      "subscription.parameter('org') IN (SELECT org_id FROM members WHERE user_id = auth.user_id())",
+      // A set that holds anything: a literal, the client's value, a UNION.
+      "'admin' IN (SELECT 'admin' FROM users WHERE id = auth.user_id())",
+      "auth.user_id() IN (SELECT subscription.parameter('u'))",
+      "org_id IN (SELECT org_id FROM members WHERE user_id = auth.user_id() UNION SELECT id FROM orgs)",
       "upper(auth.parameter('role')) = 'AUTHENTICATED'",
       "(auth.parameters() -> 'role') = '\"authenticated\"'",
       // Any client passes by sending its own id.
@@ -105,8 +116,8 @@ describe("unscoped-query on sync streams", () => {
     for (const where of ["auth.parameters() -> 'app_metadata' ->> 'role' = 'authenticated'", "json_extract(auth.parameters(), '$.app_metadata') ->> 'role' = 'authenticated'"]) {
       expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["warning"]);
     }
-    // Nobody's role is 'AUTHENTICATED', and is_anonymous is no string: checks, not every user.
-    for (const where of ["auth.parameter('role') = 'AUTHENTICATED'", "auth.parameter('is_anonymous') = 'false'"]) {
+    // Nobody's role is 'AUTHENTICATED': a check, not every user.
+    for (const where of ["auth.parameter('role') = 'AUTHENTICATED'"]) {
       expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["warning"]);
     }
     // app_metadata.role is the app's own, so a check on it is a role, not every token.
@@ -260,6 +271,12 @@ describe("unscoped-query on sync rules", () => {
         "bucket_definitions:\n  by_org:\n    parameters: SELECT org_id FROM members WHERE user_id = request.user_id() AND accepted = true\n    data:\n      - SELECT * FROM projects WHERE org_id = bucket.org_id\n      - SELECT * FROM invoices\n",
       ),
     ).toEqual([["error", 6, "bucket by_org: 1 of its data queries is not limited by a bucket parameter, so every user it reaches receives every row of invoices"]]);
+  });
+
+  it("takes no claim every user shares for a bucket parameter", () => {
+    for (const parameters of ["SELECT request.jwt() ->> 'role' AS r", "SELECT request.jwt() ->> 'aud' AS r FROM users WHERE id = request.user_id()"]) {
+      expect(lint(`bucket_definitions:\n  b:\n    parameters: ${parameters}\n    data: [SELECT * FROM t WHERE audience = bucket.r]\n`).map((f) => f[0]), parameters).toEqual(["error"]);
+    }
   });
 
   it("takes no token flag for a filter of rows", () => {
