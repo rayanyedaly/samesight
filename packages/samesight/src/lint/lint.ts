@@ -6,6 +6,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { LineCounter, parseDocument, Scalar, visit } from "yaml";
 import { parseSyncConfig, type SyncConfig } from "../sync/config.ts";
 import type { LintFinding } from "./finding.ts";
 import type { Migrations } from "./migrations.ts";
@@ -26,7 +27,7 @@ export interface LintContext {
   config: SyncConfig;
   /** The project's migrations as read, when lint was given or found them. */
   migrations?: Migrations;
-  /** The line a query starts on, found by its text; undefined when it cannot be placed. */
+  /** The line a query starts on, found by its YAML string; undefined when it cannot be placed. */
   lineOf: (sql: string) => number | undefined;
 }
 
@@ -45,7 +46,7 @@ export const RULE_NAMES = RULES.map((r) => r.ruleName);
 /** Every rule's findings for one sync config; throws when the file cannot be read as one. */
 export function lintSyncConfig(text: string, file: string, rules: LintRule[] = RULES, migrations?: Migrations): LintFinding[] {
   const config = parseSyncConfig(text);
-  const context: LintContext = { file, text, config, lineOf: (sql) => lineOf(text, sql), ...(migrations ? { migrations } : {}) };
+  const context: LintContext = { file, text, config, lineOf: lineFinder(text), ...(migrations ? { migrations } : {}) };
   return rules.flatMap((rule) => rule(context));
 }
 
@@ -57,33 +58,33 @@ export function findSyncConfig(dir: string): string | undefined {
   return SYNC_CONFIG_FILES.find((f) => existsSync(join(dir, f)));
 }
 
+const collapse = (s: string) => s.replace(/\s+/g, " ").trim();
+
 /**
- * The 1-based line where `sql` starts in `text`, found by its full text with all spacing
- * collapsed on both sides, so a query YAML folded across lines is still found. A query
- * written twice is placed at its first copy; one that cannot be found (quoted with escapes,
- * say) has no line.
+ * Finds the 1-based line where a query starts in `text`: the line of the YAML string that
+ * holds it (its first content line, for a | or > block), matched with all spacing collapsed.
+ * Comments and keys never match, and neither does a longer query that starts the same
+ * way. A query written twice is placed at its first copy; one that is no string in the
+ * file has no line.
  */
+export function lineFinder(text: string): (sql: string) => number | undefined {
+  const lines = new LineCounter();
+  const doc = parseDocument(text, { lineCounter: lines });
+  const at = new Map<string, number>();
+  visit(doc, {
+    Scalar(_, node) {
+      if (typeof node.value !== "string" || !node.range) return;
+      const key = collapse(node.value);
+      if (!key || at.has(key)) return;
+      const block = node.type === Scalar.BLOCK_LITERAL || node.type === Scalar.BLOCK_FOLDED;
+      const blank = block ? (/^\n*/.exec(node.value)?.[0].length ?? 0) + 1 : 0;
+      at.set(key, lines.linePos(node.range[0]).line + blank);
+    },
+  });
+  return (sql) => at.get(collapse(sql));
+}
+
+/** The 1-based line where `sql` starts in `text`; see lineFinder. */
 export function lineOf(text: string, sql: string): number | undefined {
-  const target = sql.replace(/\s+/g, " ").trim();
-  if (!target) return undefined;
-  let flat = "";
-  const lineAt: number[] = [];
-  let line = 1;
-  let gap = false;
-  for (const ch of text) {
-    if (ch === "\n") line++;
-    if (/\s/.test(ch)) {
-      gap = flat.length > 0;
-      continue;
-    }
-    if (gap) {
-      flat += " ";
-      lineAt.push(line);
-      gap = false;
-    }
-    flat += ch;
-    lineAt.push(line);
-  }
-  const at = flat.indexOf(target);
-  return at === -1 ? undefined : lineAt[at];
+  return lineFinder(text)(sql);
 }

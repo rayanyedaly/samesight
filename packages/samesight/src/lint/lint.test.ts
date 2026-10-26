@@ -45,11 +45,26 @@ describe("RULE_NAMES", () => {
 });
 
 describe("lineOf", () => {
-  it("finds a query by its first line, whatever the spacing, and gives up on what it cannot find", () => {
+  it("places a query at its first content line, whatever the spacing, and gives up on what it cannot find", () => {
     const text = "streams:\n  s:\n    query: |\n      SELECT *\n        FROM todos\n";
     expect(lineOf(text, "SELECT  *\nFROM todos")).toBe(4);
     expect(lineOf(text, "SELECT id FROM lists")).toBeUndefined();
     expect(lineOf(text, "")).toBeUndefined();
+    expect(lineOf("q: >-\n\n  SELECT 1\n", "SELECT 1")).toBe(3);
+    expect(lineOf('q: "SELECT\\n 2"\n', "SELECT 2")).toBe(1);
+  });
+
+  it("matches whole strings only: not a comment, not a longer query that starts the same", () => {
+    const text = [
+      "streams:",
+      "  # SELECT * FROM todos",
+      "  a:",
+      "    query: SELECT * FROM todos WHERE owner_id = auth.user_id()",
+      "  b:",
+      "    query: SELECT * FROM todos",
+      "",
+    ].join("\n");
+    expect(lineOf(text, "SELECT * FROM todos")).toBe(6);
   });
 });
 
