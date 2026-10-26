@@ -79,6 +79,7 @@ export function writeFamilies(s: Setup): string[] {
   for (const t of writableTables(s)) {
     out.push(`${t.name}: PUT into another tenant`, `${t.name}: PATCH, PUT over and DELETE another tenant's row`, `${t.name}: PUT without a membership`);
     if (t.insert.size) out.push(`${t.name}: insert with forged server-owned columns, then replay`);
+    for (const role of s.ir.claims.roles) out.push(...withoutRule(t, role).map((op) => `${t.name}: ${role} may not ${op}`));
     if (t.appendOnly) out.push(`${t.name}: PATCH and DELETE an append-only row`);
     else if (t.updateColumns.length) {
       out.push(`${t.name}: PATCH an own row`);
@@ -89,6 +90,13 @@ export function writeFamilies(s: Setup): string[] {
 }
 
 const writableTables = (s: Setup) => s.ir.tables.filter((t) => t.insert.size || t.update.size || t.delete.size);
+/** What some role may do on this table but `role` may not at all, inside its own tenant. */
+const withoutRule = (t: IRTable, role: string) =>
+  [
+    t.insert.size && !t.insert.has(role) ? "insert" : null,
+    !t.appendOnly && t.updateColumns.length && t.update.size && !t.update.has(role) ? "update" : null,
+    !t.appendOnly && t.delete.size && !t.delete.has(role) ? "delete" : null,
+  ].filter((op): op is "insert" | "update" | "delete" => op !== null);
 /** Columns a client may set on insert, or never, but not change. */
 const immutable = (t: IRTable) => [...new Set([...t.insertColumns, ...t.serverOwned])].filter((c) => c !== "id" && !t.updateColumns.includes(c));
 
@@ -229,6 +237,32 @@ export async function forgeBatches(s: Setup, prepare?: (client: pg.Client) => Pr
         });
         const all = patch.covered && put.covered && del.covered;
         for (const c of [patch, put, del]) c.covered = all;
+      }
+
+      // Inside its own tenant, a role with no rule for an operation others have: refused.
+      for (const op of user.role && first ? withoutRule(t, user.role) : []) {
+        if (!first) break;
+        const id = String(first.id);
+        await run(user, `${t.name}: ${user.role} may not ${op}`, `${op} ${t.name} in its own tenant as ${user.role}`, async (claims) => {
+          if (op === "insert") {
+            const fresh = prefixedUuid(s.fixed.prefix);
+            const error = await call(s.client, claims, [{ op: "PUT", table: t.name, id: fresh, data: pick(first, t.insertColumns) }]);
+            const problem = (await asRow(s.client, t.name, fresh)) ? "stored it" : error ? unexpected(error) : "accepted it without an error";
+            return { error, problem, covered: true };
+          }
+          if (op === "update") {
+            const column = t.updateColumns.find((col) => changed(t, col, first, own) !== undefined);
+            if (!column) return { error: null, problem: null, covered: false };
+            const before = await asRow(s.client, t.name, id);
+            const error = await call(s.client, claims, [{ op: "PATCH", table: t.name, id, data: { [column]: changed(t, column, first, own) } }]);
+            const problem = !same(before, await asRow(s.client, t.name, id)) ? `changed its ${column}` : error ? unexpected(error) : "accepted it without an error";
+            return { error, problem, covered: true };
+          }
+          // A row this role cannot see is gone as far as it knows: a no-op, as for a replay.
+          const error = await call(s.client, claims, [{ op: "DELETE", table: t.name, id }]);
+          const problem = (await asRow(s.client, t.name, id)) ? (error ? unexpected(error) : null) : "deleted it";
+          return { error, problem, covered: true };
+        });
       }
 
       if (t.appendOnly && first) {

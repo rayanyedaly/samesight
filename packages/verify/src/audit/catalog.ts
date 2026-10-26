@@ -108,3 +108,19 @@ export async function checkAuditCatalog(client: pg.Client, synced: string[], pub
   }
   return out;
 }
+
+/**
+ * Rules that read user_metadata: a user can write their own (supabase.auth.updateUser), so
+ * whatever access it grants, every user can grant themselves. app_metadata is the one only
+ * the server can set.
+ */
+export function checkUserEditableClaims(rules: { where: string; sql: string }[]): Finding[] {
+  const bad = rules.filter((r) => /\b(raw_)?user_meta(data|_data)\b/i.test(r.sql));
+  return bad.length
+    ? bad.map((r) => ({
+        status: "fail" as const,
+        check: "user metadata",
+        detail: `${r.where} reads user_metadata, which every user can set on themselves; decide access from app_metadata or a table instead`,
+      }))
+    : [{ status: "ok" as const, check: "user metadata", detail: "no RLS policy or stream query reads user_metadata, which users can set on themselves" }];
+}

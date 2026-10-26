@@ -8,11 +8,12 @@
 import fc from "fast-check";
 import type pg from "pg";
 import { rows } from "../db.ts";
+import { sqlHints } from "../differential/model.ts";
 import { differential, setUpUsers, tearDown } from "../differential/run.ts";
 import { worldArbitrary } from "../differential/world.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
-import { checkAuditCatalog } from "./catalog.ts";
+import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
 import { auditScope } from "./scope.ts";
 import { parseSyncConfig } from "./sync-config.ts";
 import { checkWriteEscape } from "./writes.ts";
@@ -75,8 +76,13 @@ export async function audit(client: pg.Client, stack: Stack, o: AuditOptions): P
 
   let scope: ReturnType<typeof auditScope>;
   let warnings: Finding[];
+  let streamSql: { where: string; sql: string }[];
   try {
     const config = parseSyncConfig(o.syncConfig.text);
+    streamSql = config.streams.flatMap((st) => [
+      ...[...st.ctes].map(([name, sql]) => ({ where: `${st.name}.${name}`, sql })),
+      ...st.queries.map((q) => ({ where: `${st.name}.${q.label}`, sql: q.sql })),
+    ]);
     scope = auditScope(config.streams, config.kind);
     warnings = config.findings;
   } catch (e) {
@@ -86,7 +92,15 @@ export async function audit(client: pg.Client, stack: Stack, o: AuditOptions): P
   section("Sync config", [...scope.findings, ...warnings]);
   if (failed(findings)) return findings;
 
-  section("Database catalog", await checkAuditCatalog(client, scope.synced, o.publication, scope.reads));
+  const policies = await rows<{ table: string; name: string; qual: string | null; with_check: string | null }>(
+    client,
+    "select tablename as table, policyname as name, qual, with_check from pg_policies where schemaname = 'public'",
+  );
+  const rules = [
+    ...policies.map((p) => ({ where: `policy "${p.name}" on ${p.table}`, sql: `${p.qual ?? ""} ${p.with_check ?? ""}` })),
+    ...streamSql,
+  ];
+  section("Database catalog", [...(await checkAuditCatalog(client, scope.synced, o.publication, scope.reads)), ...checkUserEditableClaims(rules)]);
   if (o.staticOnly) return findings;
   if (failed(findings)) {
     o.log("skipping the differential: fix the failures above first");
@@ -95,7 +109,9 @@ export async function audit(client: pg.Client, stack: Stack, o: AuditOptions): P
 
   const tables = await auditTables(client, [...new Set([...scope.synced, ...scope.reads])]);
   o.log(`signing up users; generating rows for ${tables.join(", ")}`);
-  const s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name })), synced: scope.synced });
+  // The literals and user comparisons in the project's own rules steer the generated data.
+  const { hints, users } = sqlHints(rules.map((r) => r.sql).join("\n"));
+  const s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name, hints, userColumns: users })), synced: scope.synced });
   try {
     o.log("generating datasets for the differential");
     const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, ...(o.seed !== undefined ? { seed: o.seed } : {}) });

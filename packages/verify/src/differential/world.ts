@@ -70,14 +70,17 @@ function scalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
   return undefined;
 }
 
-/** The arbitrary for one column, or undefined to leave it to its default. */
+/**
+ * The arbitrary for one column, or undefined to leave it to its default. A column with a
+ * default is generated too, with the default as the first (and simplest) choice: a rule on
+ * `is_public boolean default false` must see rows on both sides of it.
+ */
 export function columnArbitrary(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
-  if (c.computed) return undefined;
-  const interesting = c.values?.length || c.pattern !== undefined || c.hints.length;
-  if (c.hasDefault && !interesting) return undefined;
+  if (c.computed || c.autoKey) return undefined;
   const arb = scalar(c);
-  if (!arb) return c.nullable ? fc.constant(null) : undefined;
-  return c.nullable ? fc.option(arb, { nil: null, freq: 4 }) : arb;
+  if (!arb) return c.nullable && !c.hasDefault ? fc.constant(null) : undefined;
+  const value = c.nullable ? fc.option(arb, { nil: null, freq: 4 }) : arb;
+  return c.hasDefault ? fc.oneof(fc.constant(undefined), value) : value;
 }
 
 /** The tables fast-check fills: every policy table but the tenant and membership tables. */

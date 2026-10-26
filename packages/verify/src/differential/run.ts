@@ -454,17 +454,28 @@ export async function differential(s: Run, options: { runs: number; seed?: numbe
   };
   const fail = (detail: string, runs: number) => ({ runs, findings: withGaps([{ status: "fail" as const, check, detail }]) });
 
-  const x = await explore(
-    worldArbitrary(s.tables),
-    async (world) => {
-      const failures = await withWorld(s, world, (rowsIn) => {
-        for (const r of rowsIn) inserted.set(r.table, (inserted.get(r.table) ?? 0) + 1);
-        return compareAll(s, { tally: visible, received });
-      });
-      return failing(failures).length === 0;
-    },
-    options,
-  );
+  const evaluate = async (world: World) => {
+    const failures = await withWorld(s, world, (rowsIn) => {
+      for (const r of rowsIn) inserted.set(r.table, (inserted.get(r.table) ?? 0) + 1);
+      return compareAll(s, { tally: visible, received });
+    });
+    return failing(failures).length === 0;
+  };
+  const untestedTables = () =>
+    s.tables.filter((t) => s.synced.includes(t.name) && !(inserted.get(t.name) && visible.get(t.name) && received.get(t.name))).length > 0;
+  // Small random datasets can leave a table deep in the foreign keys with no row a user
+  // reads (its rows all landed in the tenant nobody in the run belongs to). More datasets
+  // are tried, within the time limit, until every synced table was compared.
+  const started = Date.now();
+  let x = await explore(worldArbitrary(s.tables), evaluate, options);
+  let datasets = x.datasets;
+  for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {
+    const left = options.timeLimitMs - (Date.now() - started);
+    if (left <= 0) break;
+    x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, ...(options.seed !== undefined ? { seed: options.seed + pass } : {}) });
+    datasets += x.datasets;
+  }
+  x = { ...x, datasets };
   const crashed = x.crash === undefined ? "" : ` (then a run failed: ${String(x.crash)})`;
   if (x.lastFailing) {
     const world = x.lastFailing;

@@ -58,9 +58,12 @@ export function compare(device: DeviceRow[], rls: RlsRows, hidden: Map<string, s
     const colTypes = types.get(d.table);
     const shown = Object.keys(allowed).filter((c) => !(hidden.get(d.table) ?? []).includes(c));
     const unsent = shown.filter((c) => !(c in d.data) && allowed[c] !== null && allowed[c] !== undefined);
-    const differs = shown.filter(
-      (c) => !unsent.includes(c) && JSON.stringify(normalize(colTypes?.get(c), allowed[c])) !== JSON.stringify(normalize(colTypes?.get(c), d.data[c])),
-    );
+    const same = (c: string, v: unknown) => JSON.stringify(normalize(colTypes?.get(c), allowed[c])) === JSON.stringify(normalize(colTypes?.get(c), v));
+    const differs = shown.filter((c) => !unsent.includes(c) && !same(c, d.data[c]));
+    // Each bucket's own copy too: merged, a wrong copy could hide behind a right one.
+    for (const copy of d.copies ?? []) {
+      for (const c of Object.keys(copy.data)) if (shown.includes(c) && !differs.includes(c) && !same(c, copy.data[c])) differs.push(c);
+    }
     // A column the table does not have: a value from somewhere else (a join, an expression) riding along.
     differs.push(...Object.keys(d.data).filter((c) => !(c in allowed) && !(hidden.get(d.table) ?? []).includes(c)));
     if (unsent.length) problems.push({ kind: "unsent", table: d.table, id: d.id, streams: d.sources.map((s) => s.stream), row: allowed, columns: unsent });
