@@ -1,8 +1,10 @@
 # Planted leak: the client says whose rows it gets.
-# Based on real/powersync-js-nuxt-legacy.yaml. The bucket parameter comes from
-# request.parameters(), which the client sends, instead of request.user_id(),
-# which comes from the verified token: any client can ask for any user's tasks.
+# Based on real/powersync-js-nuxt-legacy.yaml (Apache 2.0), with one line changed: the
+# bucket parameter comes from request.parameters(), which the client sends, instead
+# of request.user_id(), which comes from the verified token. Any client can ask for
+# any user's tasks.
 # Expected: lint client-scoped (error).
+# yaml-language-server: $schema=https://unpkg.com/@powersync/service-sync-rules@latest/schema/sync_rules.json
 config:
   edition: 2
 
@@ -10,5 +12,5 @@ bucket_definitions:
   tasks:
     parameters:
       - SELECT request.parameters() ->> 'user_id' AS user_id
-    data:
+    data: 
       - SELECT * FROM tasks WHERE tasks.user_id = bucket.user_id
