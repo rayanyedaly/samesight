@@ -97,9 +97,9 @@ The mutation test needs a policy to mutate, so audit mode does not run it.
 | `--compose <file>` | | Checks the PowerSync version floor. |
 | `--static`, `--runs`, `--seed`, `--time-limit` | | As above. |
 
-Audit mode reads Edition 3 sync streams (`streams:`). Legacy sync rules (`bucket_definitions:`) are refused.
+Audit mode reads both forms of sync config: Edition 3 sync streams (`streams:`) and the earlier sync rules (`bucket_definitions:`). A bucket definition's parameter queries are read like a stream's CTEs and its data queries like stream queries. A definition that reads `request.parameters()` gets a warning: those values come from the client, so a device can ask for anything, and the run does not try what it could ask for. Streams that are not `auto_subscribe` are skipped with a warning, since no device here subscribes to them.
 
-[examples/audit-todolist](../examples/audit-todolist) runs audit mode on PowerSync's own Supabase to-do list demo: it passes as published, and `verify:planted` shows it failing once the lists query loses its owner filter.
+[examples/audit-todolist](../examples/audit-todolist) runs audit mode on PowerSync's own Supabase to-do list demo: it passes as published, and `verify:planted` shows it failing once the lists query loses its owner filter. `verify:rules` does the same with the demo's rules written as sync rules.
 
 ## In CI
 

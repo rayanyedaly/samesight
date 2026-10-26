@@ -9,7 +9,8 @@
     "stack:up": "bash scripts/stack-up.sh",
     "stack:down": "bash scripts/stack-down.sh",
     "verify": "samesight-verify audit --project upstream --sync-config upstream/sync-config.yaml --powersync http://127.0.0.1:8081 --compose docker-compose.yml",
-    "verify:planted": "bash scripts/verify-planted.sh"
+    "verify:planted": "bash scripts/verify-planted.sh",
+    "verify:rules": "bash scripts/verify-rules.sh"
   },
   "devDependencies": {
     "@samesight/verify": "workspace:*"

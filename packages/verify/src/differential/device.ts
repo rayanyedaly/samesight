@@ -27,10 +27,13 @@ export interface Op {
   data: string | null;
 }
 
-/** "3#inspector|1[...]" -> "inspector". PowerSync names a bucket shared by identical queries after the first stream. */
+/**
+ * "3#inspector|1[...]" -> "inspector", and a sync rules bucket "user_lists[\"...\"]" ->
+ * "user_lists". PowerSync names a bucket shared by identical queries after the first stream.
+ */
 export function streamOfBucket(name: string): string {
   const afterVersion = name.includes("#") ? name.slice(name.indexOf("#") + 1) : name;
-  return afterVersion.split("|")[0] ?? afterVersion;
+  return afterVersion.split(/[|[]/)[0] ?? afterVersion;
 }
 
 /** Connects with `token`, waits for the first complete sync, and returns every row the device holds. */
