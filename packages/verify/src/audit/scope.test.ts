@@ -13,6 +13,11 @@ describe("outputTable", () => {
       reads: ["todos", "lists"],
     });
     expect(outputTable("SELECT todos.* FROM todos JOIN lists l ON todos.list_id = l.id")).toEqual({ table: "todos", reads: ["todos", "lists"] });
+    // A qualified column renamed with AS, as PowerSync's group chat demo writes it.
+    expect(outputTable("SELECT profiles.id, profiles.id as profile_id FROM profiles JOIN messages ON messages.recipient_id = profiles.id")).toEqual({
+      table: "profiles",
+      reads: ["profiles", "messages"],
+    });
   });
 
   it("refuses what it cannot attribute to one table", () => {
