@@ -15,7 +15,7 @@ const RULE = "client-scoped";
 
 export const clientScoped: LintRule = ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
-  const add = (sql: string, message: string) => out.push({ rule: RULE, level: "error", file, line: lineOf(sql), message });
+  const add = (sql: string, subjects: string[], message: string) => out.push({ rule: RULE, level: "error", file, line: lineOf(sql), message, subjects });
 
   for (const s of config.streams) {
     if (config.kind === "streams") {
@@ -29,6 +29,7 @@ export const clientScoped: LintRule = ({ file, config, lineOf }) => {
         if (!all.some(readsClient) || all.some(readsToken)) continue;
         add(
           q.sql,
+          [s.name, tableOf(q.sql)],
           `stream ${s.name}, ${q.label} picks its ${tableOf(q.sql)} rows by a parameter the client sends, and nothing checks the requesting user, so any client can ask for any of them`,
         );
       }
@@ -37,7 +38,7 @@ export const clientScoped: LintRule = ({ file, config, lineOf }) => {
     for (const [label, sql] of s.ctes) {
       const t = tokens(sql);
       if (!t || !readsClient(t) || readsToken(t)) continue;
-      add(sql, `bucket ${s.name}, ${label} takes its bucket parameters from what the client sends, and nothing checks the requesting user, so any client can ask for any bucket`);
+      add(sql, [s.name], `bucket ${s.name}, ${label} takes its bucket parameters from what the client sends, and nothing checks the requesting user, so any client can ask for any bucket`);
     }
   }
   return out;

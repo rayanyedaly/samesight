@@ -21,8 +21,8 @@ const RULE = "unscoped-query";
 
 export const unscopedQuery: LintRule = ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
-  const add = (sql: string, filtered: boolean, message: string) =>
-    out.push({ rule: RULE, level: filtered ? "warning" : "error", file, line: lineOf(sql), message });
+  const add = (sql: string, filtered: boolean, subjects: string[], message: string) =>
+    out.push({ rule: RULE, level: filtered ? "warning" : "error", file, line: lineOf(sql), message, subjects });
 
   for (const s of config.streams) {
     if (config.kind === "streams") {
@@ -37,6 +37,7 @@ export const unscopedQuery: LintRule = ({ file, config, lineOf }) => {
         add(
           q.sql,
           hasWhere(t),
+          [s.name, table],
           hasWhere(t)
             ? `stream ${s.name}, ${q.label} sends every user the same ${table} rows, filtered only by fixed values; fine if they are public by design`
             : `stream ${s.name}, ${q.label} sends every ${table} row to every user: nothing in it reads the requesting user (auth.user_id()) or a token claim`,
@@ -52,6 +53,7 @@ export const unscopedQuery: LintRule = ({ file, config, lineOf }) => {
       add(
         sql,
         hasWhere(t),
+        [s.name],
         `bucket ${s.name}, ${label} reads nothing from the requesting user's token (request.user_id(), token_parameters), so every user gets every bucket it lists${hasWhere(t) ? " that its fixed filters allow" : ""}`,
       );
     }
@@ -66,6 +68,7 @@ export const unscopedQuery: LintRule = ({ file, config, lineOf }) => {
     add(
       first.q.sql,
       filtered,
+      [s.name, ...tables],
       s.ctes.size
         ? `bucket ${s.name}: ${open.length === s.queries.length ? "its data queries read" : `${open.length} of its data queries read`} no bucket parameter, so every user it reaches receives every row of ${what}${allowed}`
         : `bucket ${s.name} has no parameter query, so every user receives every row of ${what}${allowed}`,

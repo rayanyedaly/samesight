@@ -15,8 +15,8 @@ const RULE = "unreadable-query";
 export const unreadableQuery: LintRule = ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
   const kind = config.kind === "streams" ? "stream" : "bucket";
-  const add = (sql: string, where: string, reason: string) =>
-    out.push({ rule: RULE, level: "warning", file, line: lineOf(sql), message: `${kind} ${where} cannot be checked by audit: it ${reason}` });
+  const add = (sql: string, name: string, where: string, reason: string) =>
+    out.push({ rule: RULE, level: "warning", file, line: lineOf(sql), message: `${kind} ${name}, ${where} cannot be checked by audit: it ${reason}`, subjects: [name] });
 
   for (const s of config.streams) {
     // CTEs and parameter queries only need their tables named; queries must map to one table.
@@ -25,14 +25,14 @@ export const unreadableQuery: LintRule = ({ file, config, lineOf }) => {
         tokenize(sql);
         tablesNamed(sql);
       } catch (e) {
-        add(sql, `${s.name}, ${config.kind === "streams" ? `with.${name}` : name}`, (e as Error).message);
+        add(sql, s.name, config.kind === "streams" ? `with.${name}` : name, (e as Error).message);
       }
     }
     for (const q of s.queries) {
       try {
         outputTable(q.sql);
       } catch (e) {
-        add(q.sql, `${s.name}, ${q.label}`, (e as Error).message);
+        add(q.sql, s.name, q.label, (e as Error).message);
       }
     }
   }

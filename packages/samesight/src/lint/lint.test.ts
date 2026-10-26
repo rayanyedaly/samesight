@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { findSyncConfig, lineOf, type LintRule, lintSyncConfig } from "./lint.ts";
+import { corpusFiles } from "../fixtures/corpus.ts";
+import { findSyncConfig, lineOf, type LintRule, lintSyncConfig, RULE_NAMES, RULES } from "./lint.ts";
 
 const streams = "config:\n  edition: 3\n\nstreams:\n  user_data:\n    auto_subscribe: true\n    queries:\n      - SELECT * FROM lists WHERE owner_id = auth.user_id()\n";
 
@@ -17,6 +18,14 @@ describe("lintSyncConfig", () => {
 
   it("throws on a file that is not a sync config it can read", () => {
     expect(() => lintSyncConfig("streams: [1]\n", "x.yaml")).toThrow(/no streams: section/);
+  });
+});
+
+describe("RULE_NAMES", () => {
+  it("names every rule, so --allow can reach each one", () => {
+    expect(RULE_NAMES).toHaveLength(RULES.length);
+    const used = new Set(corpusFiles("real").concat(corpusFiles("planted")).flatMap((c) => lintSyncConfig(c.text, c.file).map((f) => f.rule)));
+    for (const rule of used) expect(RULE_NAMES).toContain(rule);
   });
 });
 
@@ -58,5 +67,15 @@ describe("samesight lint", () => {
     expect(bad.status).toBe(2);
     expect(bad.stdout).toBe("");
     expect(bad.stderr).toMatch(/bad.yaml: cannot be read as a sync config.*\n1 of 2 file\(s\) could not be read/);
+  });
+
+  it("accepts --allow for a known rule, reports what it allowed, and refuses an unknown rule", () => {
+    const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+    writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
+    expect(run(dir).status).toBe(1);
+    const allowed = run(dir, "--allow", "unscoped-query:customers");
+    expect([allowed.status, allowed.stdout]).toEqual([0, "No problems found.\n1 finding allowed by --allow\n"]);
+    const typo = run(dir, "--allow", "unscoped-querry");
+    expect([typo.status, typo.stderr]).toEqual([2, expect.stringMatching(/--allow names no rule unscoped-querry/)]);
   });
 });

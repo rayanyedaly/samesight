@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exitCode, formatLint, type LintFinding, summary } from "./finding.ts";
+import { applyAllow, exitCode, formatLint, type LintFinding, summary } from "./finding.ts";
 
 const finding = (over: Partial<LintFinding>): LintFinding => ({ rule: "unscoped-query", level: "error", file: "sync-config.yaml", message: "m", ...over });
 
@@ -31,5 +31,18 @@ describe("exitCode", () => {
     expect(exitCode([finding({ level: "warning" }), finding({ level: "info" })])).toBe(0);
     expect(exitCode([finding({})])).toBe(1);
     expect(exitCode([])).toBe(0);
+  });
+});
+
+describe("applyAllow", () => {
+  it("allows a whole rule, or its findings about one named stream, bucket, table or policy", () => {
+    const a = finding({ rule: "unscoped-query", subjects: ["global", "customers"] });
+    const b = finding({ rule: "unscoped-query", subjects: ["user_data", "todos"] });
+    const c = finding({ rule: "rls-off", subjects: ["Notes"] });
+    expect(applyAllow([a, b, c], ["unscoped-query:customers"])).toEqual({ kept: [b, c], allowed: [a] });
+    expect(applyAllow([a, b, c], ["unscoped-query"])).toEqual({ kept: [c], allowed: [a, b] });
+    // Names match as written: a quoted table keeps its case.
+    expect(applyAllow([c], ["rls-off:notes"]).allowed).toEqual([]);
+    expect(applyAllow([a, b, c], [])).toEqual({ kept: [a, b, c], allowed: [] });
   });
 });
