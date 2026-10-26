@@ -10,7 +10,7 @@
  * - A sync rules parameter query whose bucket parameters, as the data queries use them,
  *   come from neither the token nor the client: it hands its buckets to every user.
  *
- * Unfiltered, it is an error, and so is a check every signed-in token passes. It is a
+ * Unfiltered, it is an error, and so is a check every ordinary signed-in user passes. It is a
  * warning when something else filters the rows: fixed values (status = 'public', often
  * public by design), a check on a token claim such as a role, or, for sync rules, a bucket
  * whose parameter queries only admit users passing a fixed check on their own row or a
@@ -19,10 +19,10 @@
  */
 
 import type { Token } from "../../sync/sql.ts";
-import { bucketAccess, checksEveryToken, filtered, streamAccess } from "../access.ts";
+import { bucketAccess, checksClaim, checksEveryToken, filtered, streamAccess } from "../access.ts";
 import type { LintFinding } from "../finding.ts";
 import { defineRule, type LintRule } from "../lint.ts";
-import { inNames, readsClient, readsToken, tableOf, tokens } from "../sql.ts";
+import { names, readsClient, readsToken, tableOf, tokens } from "../sql.ts";
 
 const RULE = "unscoped-query";
 
@@ -43,8 +43,7 @@ export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf 
       for (const q of s.queries) {
         const t = tokens(q.sql);
         if (!t) continue;
-        const read = inNames(t);
-        const ctes = [...s.ctes].filter(([k]) => read.includes(k.toLowerCase()));
+        const ctes = [...s.ctes].filter(([k]) => names(t).has(k.toLowerCase()));
         const cteTokens = ctes.map(([, sql]) => tokens(sql));
         if (cteTokens.some((c) => c === null)) continue;
         const access = streamAccess(q.sql, s.ctes);
@@ -64,13 +63,22 @@ export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf 
           add(q.sql, true, [s.name, table], `${where} sends every user the rows of ${table} its fixed filters allow, whatever their token says; fine if those are public by design`);
           continue;
         }
+        if (access.filteredOrClaim) {
+          add(
+            q.sql,
+            true,
+            [s.name, table],
+            `${where} sends every user the rows of ${table} its fixed filters allow, and every row to users who pass its check on who is asking (a role claim, or a list such as admins); fine if those rows are public and only users meant to see them all pass the check`,
+          );
+          continue;
+        }
         const what = reads([t, ...(cteTokens as Token[][])]);
         add(
           q.sql,
           false,
           [s.name, table],
           [q.sql, ...ctes.map(([, sql]) => sql)].some(checksEveryToken)
-            ? `${where} checks a claim every signed-in Supabase token passes (role or aud = 'authenticated'), so every user gets every row of ${table}`
+            ? `${where} checks a claim every ordinary signed-in Supabase user passes (role or aud = 'authenticated', is_anonymous = false), so every user gets every row of ${table}`
             : what
               ? `${where} reads ${what}, but not in a way that limits which rows of ${table} it sends, so every user gets every row`
               : `${where} sends every row of ${table} to every user: nothing in it reads the requesting user (auth.user_id()) or a token claim`,
@@ -85,6 +93,15 @@ export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf 
       const t = tokens(p.sql) as Token[];
       const what = reads([t]);
       const filter = filtered(p.sql);
+      if (checksClaim(p.sql)) {
+        add(
+          p.sql,
+          true,
+          [s.name],
+          `bucket ${s.name}, ${p.label} gives every bucket it lists to every user who passes its check on who is asking (a role claim), not each user their own; fine if only users meant to see them all pass it`,
+        );
+        continue;
+      }
       add(
         p.sql,
         filter,

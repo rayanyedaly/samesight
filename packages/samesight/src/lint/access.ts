@@ -9,7 +9,8 @@
  * IN (SELECT ...) subquery whose own conditions do. NOT, and anything else, does not. The
  * value compared with a literal or with itself picks no row by who is asking: a token claim
  * against a literal (a role) is a claim check, which rules report apart, and a claim every
- * signed-in Supabase token passes (role or aud = 'authenticated') checks nothing.
+ * ordinary signed-in Supabase user passes (role or aud = 'authenticated', is_anonymous =
+ * false) checks nothing.
  *
  * For sync rules, each bucket parameter is traced to the token, the client, or the rows of
  * its parameter query (themselves limited by the token, the client or neither), and a data
@@ -116,17 +117,34 @@ function sides(term: Token[]): [Token[], Token[]] | undefined {
 }
 
 const LITERALS = new Set(["true", "false", "null"]);
-const literal = (side: Token[]) => side.length > 0 && side.every((x) => x.kind === "string" || x.kind === "number" || x.kind === "symbol" || (x.kind === "word" && LITERALS.has(x.text)));
+/**
+ * A fixed value: a side that names no column and reads no token or client value. 'a', 1,
+ * true, ('a', 'b'), 'a'::text, CAST('a' AS text), lower('A'): its words are only literals,
+ * function names, type names and CAST's AS.
+ */
+function literal(side: Token[]): boolean {
+  if (!side.length || readsAny(side)) return false;
+  return side.every((t, i) => {
+    if (t.kind === "quoted") return false;
+    if (t.kind !== "word") return true;
+    return LITERALS.has(t.text) || t.text === "cast" || t.text === "as" || sym(side[i + 1], "(") || sym(side[i - 1], "::") || word(side[i - 1], "as");
+  });
+}
+
+function readsAny(term: Token[]): boolean {
+  return readsToken(term) || readsClient(term);
+}
 
 /**
  * A row compared with a value `reads` finds: owner_id = auth.user_id(). The value compared
- * with a literal, or with itself, picks no row by who is asking.
+ * with a literal, with itself or with another token or client value picks no row: any
+ * client can send its own user id as a parameter.
  */
 const matches =
   (reads: (t: Token[]) => boolean): Gate =>
   (term) => {
     const s = sides(term);
-    return s !== undefined && s.some((side, i) => reads(side) && !literal(s[1 - i] as Token[]) && !reads(s[1 - i] as Token[]));
+    return s !== undefined && s.some((side, i) => reads(side) && !literal(s[1 - i] as Token[]) && !reads(s[1 - i] as Token[]) && !readsAny(s[1 - i] as Token[]));
   };
 
 /** A fixed value on exactly one side: status = 'public', role IN ('a', 'b'). */
@@ -135,16 +153,36 @@ const fixed: Gate = (term) => {
   return s !== undefined && literal(s[0]) !== literal(s[1]);
 };
 
-/** A column alone as a condition: users.is_admin. */
-const flag: Gate = (term) => (term.length === 1 && isName(term[0])) || (term.length === 3 && isName(term[0]) && sym(term[1], ".") && isName(term[2]));
+/** A column alone as a condition: users.is_admin. Not `true`. */
+const flag: Gate = (term) =>
+  (term.length === 1 && isName(term[0]) && !LITERALS.has((term[0] as Token).text)) || (term.length === 3 && isName(term[0]) && sym(term[1], ".") && isName(term[2]));
 
-/** A check every signed-in Supabase token passes: its role or aud claim = 'authenticated'. */
+/** Claims every ordinary signed-in Supabase user's token carries, with the value they all have. */
+const EVERY_TOKEN: [RegExp, Set<string>][] = [
+  [/^(\$\.)?(role|aud)$/, new Set(["authenticated"])],
+  [/^(\$\.)?is_anonymous$/, new Set(["false"])],
+];
+
+/** A check every ordinary signed-in Supabase user passes: role or aud = 'authenticated', is_anonymous = false. */
 export const everyToken: Gate = (term) => {
   const s = sides(term);
   if (!s || !readsToken(term)) return false;
-  const claim = term.some((x) => x.kind === "string" && /^(\$\.)?(role|aud)$/.test(x.text));
-  return claim && s.some((side) => literal(side) && side.some((x) => x.kind === "string" && x.text === "authenticated"));
+  return EVERY_TOKEN.some(([claim, values]) => topClaim(term, claim) && s.some((side) => literal(side) && side.some((x) => (x.kind === "string" || x.kind === "word") && values.has(x.text))));
 };
+
+/**
+ * Whether a term reads a top-level claim of the token by that name: auth.parameter('role'),
+ * auth.parameters() ->> 'role', request.jwt() ->> 'role', or the path '$.role'. Not
+ * app_metadata ->> 'role', which the app sets.
+ */
+function topClaim(t: Token[], claim: RegExp): boolean {
+  return t.some((x, i) => {
+    if (x.kind !== "string" || !claim.test(x.text)) return false;
+    if (x.text.startsWith("$.")) return true;
+    if (sym(t[i - 1], "(") && word(t[i - 2], "parameter")) return true;
+    return (sym(t[i - 1], "->>") || sym(t[i - 1], "->")) && sym(t[i - 2], ")") && sym(t[i - 3], "(") && (word(t[i - 4], "parameters") || word(t[i - 4], "jwt"));
+  });
+}
 
 /** A token claim checked against a fixed value, such as a role, that not every token passes. */
 const claimCheck: Gate = (term) => fixed(term) && readsToken(term) && !readsClient(term) && !everyToken(term);
@@ -162,7 +200,9 @@ function through(base: Gate, cte: (name: string) => boolean | undefined, checks 
       const set = sym(next, "(") && word(term[i + 2], "select");
       const named = !set && isName(next) ? cte((next as Token).text.toLowerCase()) : undefined;
       if (!set && named === undefined) continue;
-      if (readsToken(term.slice(0, i))) return checks;
+      // Not a row on the left (the token, a client value, 'admin'): a check on who is asking.
+      const left = term.slice(0, i);
+      if (readsAny(left) || literal(left)) return checks;
       if (named !== undefined) return named;
       const end = closing(term, i + 1);
       const sub = term.slice(i + 2, end === -1 ? term.length : end);
@@ -179,7 +219,19 @@ function through(base: Gate, cte: (name: string) => boolean | undefined, checks 
 /** Whether `base` limits a query's rows, followed through its stream CTEs and subqueries. */
 function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = false): boolean {
   const parsed = new Map([...ctes].map(([name, s]) => [name.toLowerCase(), parse(s)]));
-  const gate: Gate = through(base, (name) => (parsed.has(name) ? queryLimits(parsed.get(name) ?? [], gate) : undefined), checks);
+  // A CTE that reads itself, directly or round a loop, limits nothing the second time.
+  const open = new Set<string>();
+  const cte = (name: string) => {
+    if (!parsed.has(name)) return undefined;
+    if (open.has(name)) return false;
+    open.add(name);
+    try {
+      return queryLimits(parsed.get(name) ?? [], gate);
+    } finally {
+      open.delete(name);
+    }
+  };
+  const gate: Gate = through(base, cte, checks);
   return queryLimits(t, gate);
 }
 
@@ -187,8 +239,6 @@ function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = f
 export function valueGate(reads: (term: Token[]) => boolean): Gate {
   return through(matches(reads), () => undefined);
 }
-
-const readsAny = (term: Token[]) => readsToken(term) || readsClient(term);
 
 /**
  * A row's own column against a fixed value, or a row compared with a token or client value.
@@ -211,6 +261,8 @@ export interface StreamAccess {
   claim: boolean;
   /** Anything filters it, fixed values included. */
   filtered: boolean;
+  /** Each OR branch is a filter or a check on who is asking: public rows for all, every row for admins. */
+  filteredOrClaim: boolean;
 }
 
 /** How a stream query's rows are limited; see StreamAccess. */
@@ -222,10 +274,17 @@ export function streamAccess(sql: string, ctes: Map<string, string>): StreamAcce
     tokenOrClient: limitedBy(t, ctes, matches(readsAny)),
     claim: limitedBy(t, ctes, (term) => matches(readsToken)(term) || claimCheck(term), true),
     filtered: limitedBy(t, ctes, filters),
+    filteredOrClaim: limitedBy(t, ctes, (term) => filters(term) || claimCheck(term), true),
   };
 }
 
-/** Whether a query checks a claim every signed-in Supabase token passes, anywhere in its conditions. */
+/** Whether a sync rules parameter query checks who is asking (a role claim): it gives its buckets to whoever passes. */
+export function checksClaim(sql: string): boolean {
+  const t = parse(sql);
+  return t !== null && queryLimits(t, claimCheck);
+}
+
+/** Whether a query checks a claim every ordinary signed-in Supabase user passes, anywhere in its conditions. */
 export function checksEveryToken(sql: string): boolean {
   const t = parse(sql);
   const leaves = (c: Token[]): Token[][] => {
@@ -319,7 +378,7 @@ export function bucketAccess(parameters: Map<string, string>, data: { label: str
       const t = parse(sql);
       if (!p || !t || p.parameters.size > 0) return false;
       if (p.rows === "token") return queryLimits(t, (term) => (fixed(term) && !readsClient(term) && !everyToken(term)) || flag(term));
-      return queryLimits(t, claimCheck);
+      return queryLimits(t, (term) => claimCheck(term) || (flag(term) && readsToken(term)));
     });
   return { loose, open: readable.filter((d) => !bound.includes(d)), roleGated };
 }

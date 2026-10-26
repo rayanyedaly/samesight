@@ -14,7 +14,7 @@
 import { bucketAccess, streamAccess } from "../access.ts";
 import type { LintFinding } from "../finding.ts";
 import { defineRule, type LintRule } from "../lint.ts";
-import { inNames, tableOf, tokens } from "../sql.ts";
+import { names, tableOf, tokens } from "../sql.ts";
 
 const RULE = "client-scoped";
 
@@ -27,8 +27,7 @@ export const clientScoped: LintRule = defineRule(RULE, ({ file, config, lineOf }
       for (const q of s.queries) {
         const t = tokens(q.sql);
         if (!t) continue;
-        const read = inNames(t);
-        if ([...s.ctes].some(([k, sql]) => read.includes(k.toLowerCase()) && !tokens(sql))) continue;
+        if ([...s.ctes].some(([k, sql]) => names(t).has(k.toLowerCase()) && !tokens(sql))) continue;
         const access = streamAccess(q.sql, s.ctes);
         if (!access?.tokenOrClient || access.token) continue;
         const table = tableOf(q.sql);
