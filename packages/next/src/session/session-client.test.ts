@@ -1,7 +1,7 @@
 import type { PowerSyncDatabase } from "@powersync/web";
 import { describe, expect, it } from "vitest";
-import type { EncryptedStore } from "../store/db";
-import { unsyncedCount } from "./session-client";
+import type { EncryptedStore } from "../store/db.ts";
+import { unsyncedCount } from "./session-client.ts";
 
 const storeWith = (db: unknown) => ({ current: () => db as PowerSyncDatabase | null }) as EncryptedStore;
 

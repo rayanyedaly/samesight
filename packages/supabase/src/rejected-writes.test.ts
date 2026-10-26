@@ -4,8 +4,8 @@
 // forever instead. These cases cover the three real runtimes for generating its ids.
 import type { AbstractPowerSyncDatabase } from "@powersync/common";
 import { afterEach, describe, expect, it } from "vitest";
-import { isPermanentRejection } from "./errors";
-import { acknowledgeRejection, type RejectedUpload, recordRejectedLocally } from "./rejected-writes";
+import { isPermanentRejection } from "./errors.ts";
+import { acknowledgeRejection, type RejectedUpload, recordRejectedLocally } from "./rejected-writes.ts";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 

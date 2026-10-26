@@ -1,13 +1,33 @@
 {
   "name": "@samesight/next",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Encrypted browser store, provider and sync status UI for Next.js",
   "license": "MIT",
+  "author": "Rayan Yedaly",
+  "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/next#readme",
+  "bugs": "https://github.com/rayanyedaly/samesight/issues",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rayanyedaly/samesight.git",
     "directory": "packages/next"
+  },
+  "keywords": [
+    "supabase",
+    "powersync",
+    "rls",
+    "row-level-security",
+    "sync",
+    "offline-first",
+    "local-first",
+    "postgres",
+    "nextjs",
+    "react",
+    "encryption",
+    "sqlcipher",
+    "pwa"
+  ],
+  "engines": {
+    "node": ">=22.18"
   },
   "type": "module",
   "exports": {
@@ -15,15 +35,17 @@
     "./styles.css": "./src/styles.css"
   },
   "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').copyFileSync('src/styles.css','dist/styles.css')\"",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "pnpm run build"
   },
   "sideEffects": [
     "*.css"
   ],
   "dependencies": {
-    "@samesight/supabase": "workspace:*"
+    "@samesight/supabase": "workspace:^"
   },
   "peerDependencies": {
     "@powersync/common": "^2.4.0",
@@ -39,5 +61,25 @@
     "@supabase/supabase-js": "^2.118.0",
     "@types/react": "^19.3.0",
     "react": "19.3.1"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./styles.css": "./dist/styles.css",
+      "./package.json": "./package.json"
+    }
   }
 }

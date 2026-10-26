@@ -5,7 +5,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { assertLocalTargets } from "./guard.ts";
 
 export interface Stack {
@@ -45,21 +46,47 @@ export function stackFromStatus(status: Record<string, string>, powersync: strin
   return stack;
 }
 
-/** Runs the project's Supabase CLI (a workspace dev dependency) for the stack's addresses and keys. */
+/**
+ * The Supabase CLI to ask for the stack: the nearest node_modules/.bin/supabase from the
+ * project up (a dev dependency, with any package manager), else `supabase` on the PATH.
+ */
+export function findSupabaseCli(projectDir: string, platform: NodeJS.Platform = process.platform): string {
+  const name = platform === "win32" ? "supabase.cmd" : "supabase";
+  for (let dir = resolve(projectDir); ; dir = dirname(dir)) {
+    const bin = join(dir, "node_modules", ".bin", name);
+    if (existsSync(bin)) return bin;
+    if (dirname(dir) === dir) return "supabase";
+  }
+}
+
+/** Runs the project's Supabase CLI for the stack's addresses and keys. */
 export function readStack(projectDir: string, powersync: string): Stack {
-  // --workdir: pnpm exec runs in the package root, which need not hold supabase/. On Windows
-  // the command goes through cmd.exe, which does not escape arguments: the path is quoted,
-  // and refused if it holds a character cmd.exe would still act on.
+  // --workdir: the CLI looks for supabase/ there, not in the directory it runs from. On
+  // Windows the command goes through cmd.exe, which does not escape arguments: paths are
+  // quoted, and refused if they hold a character cmd.exe would still act on.
   const win = process.platform === "win32";
   const dir = resolve(projectDir);
-  // A trailing separator (a drive root) would escape the closing quote.
-  if (win && (/["%^&|<>!]/.test(dir) || /[\\/]$/.test(dir))) throw new Error(`cannot pass ${dir} to the Supabase CLI safely on Windows; move the project to a plainer path`);
-  const workdir = win ? `"${dir}"` : dir;
-  const out = execFileSync("pnpm", ["exec", "supabase", "--workdir", workdir, "status", "-o", "env"], {
-    cwd: projectDir,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    shell: process.platform === "win32",
-  });
+  const cli = findSupabaseCli(dir);
+  for (const p of [dir, cli]) {
+    // A trailing separator (a drive root) would escape the closing quote.
+    if (win && (/["%^&|<>!]/.test(p) || /[\\/]$/.test(p))) throw new Error(`cannot pass ${p} to the Supabase CLI safely on Windows; move the project to a plainer path`);
+  }
+  const quote = (p: string) => (win ? `"${p}"` : p);
+  let out: string;
+  try {
+    out = execFileSync(quote(cli), ["--workdir", quote(dir), "status", "-o", "env"], {
+      cwd: dir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: win,
+    });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException & { stderr?: string };
+    if (err.code === "ENOENT") {
+      throw new Error("no Supabase CLI found: install it in the project (npm i -D supabase) or on the PATH");
+    }
+    const detail = err.stderr?.trim().split(/\r?\n/).at(-1);
+    throw new Error(`\`supabase status\` failed in ${dir}${detail ? `: ${detail}` : ""}; is the local stack running (supabase start)?`);
+  }
   return stackFromStatus(parseEnv(out), powersync);
 }

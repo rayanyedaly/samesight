@@ -1,7 +1,7 @@
 import type { AbstractPowerSyncDatabase } from "@powersync/common";
 import { describe, expect, it } from "vitest";
-import { hasUnsyncedWrites, pendingUploadCount } from "./queue";
-import { rejectedWriteTable } from "./rejected-writes";
+import { hasUnsyncedWrites, pendingUploadCount } from "./queue.ts";
+import { rejectedWriteTable } from "./rejected-writes.ts";
 
 const db = (stats: () => Promise<{ count: number }>) =>
   ({ getUploadQueueStats: stats }) as unknown as AbstractPowerSyncDatabase;

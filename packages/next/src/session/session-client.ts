@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { EncryptedStore } from "../store/db";
-import { clearStoredSession, storedSession } from "./stored-session";
+import type { EncryptedStore } from "../store/db.ts";
+import { clearStoredSession, storedSession } from "./stored-session.ts";
 
 /**
  * Three ways to leave a session, and they are not interchangeable:

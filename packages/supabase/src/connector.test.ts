@@ -1,7 +1,7 @@
 import type { AbstractPowerSyncDatabase } from "@powersync/common";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
-import { SupabaseConnector } from "./connector";
+import { SupabaseConnector } from "./connector.ts";
 
 type RpcResult = { error: { code?: string; message: string } | null; status: number };
 
