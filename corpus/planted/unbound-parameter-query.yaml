@@ -1,0 +1,10 @@
+# Planted leak: a bucket parameter query that is not tied to the requesting user.
+# Based on real/powersync-js-multi-client-legacy.yaml (CC0 1.0), with one line changed:
+# the parameter query lists every pebble owner instead of returning request.user_id(),
+# so each device gets every user's bucket, and with it every pebble.
+# Expected: lint unscoped-query (error), and audit fails on pebbles.
+bucket_definitions:
+  user_lists:
+    parameters: SELECT user_id FROM pebbles
+    data:
+      - SELECT * FROM pebbles WHERE user_id = bucket.user_id
