@@ -29,7 +29,8 @@ export function emitSyncConfig(ir: IR): string {
     "",
     "streams:",
   ];
-  const tenantGate = (t: IRTable) => `${ident(t.tenant)} = auth.parameter(${literal(ir.claims.tenant)})`;
+  // A shared table (tenant: null) has no tenant gate: every tenant receives the same rows.
+  const tenantGate = (t: IRTable) => (t.tenant === null ? [] : [`${ident(t.tenant)} = auth.parameter(${literal(ir.claims.tenant)})`]);
   const byName = new Map(ir.tables.map((t) => [t.name, t]));
 
   for (const role of ir.claims.roles) {
@@ -61,7 +62,7 @@ export function emitSyncConfig(ir: IR): string {
       for (let i = 2; taken.has(name); i++) name = `${base}_${i}`;
       taken.add(name);
       const where = [
-        tenantGate(table),
+        ...tenantGate(table),
         // NULL never matches on the RLS side; say so rather than rely on how streams treat it.
         ...(column === "id" || table.columns.find((c) => c.name === column)?.nullable === false ? [] : [`${ident(column)} IS NOT NULL`]),
         ...(rule === true ? [] : [wrap(rule, sync(rule, noSub))]),
@@ -74,7 +75,7 @@ export function emitSyncConfig(ir: IR): string {
 
     const queries = tables.map((t) => {
       const rule = linkedAway(t, t.read.get(role) as true | ConditionNode, role, byName);
-      const where = [tenantGate(t), ...(rule === true ? [] : [wrap(rule, sync(rule, cteName))]), roleGate];
+      const where = [...tenantGate(t), ...(rule === true ? [] : [wrap(rule, sync(rule, cteName))]), roleGate];
       const hidden = new Set(t.hide.get(role) ?? []);
       const projection = hidden.size === 0 ? "*" : t.columns.filter((c) => !hidden.has(c.name)).map((c) => ident(c.name)).join(", ");
       const sql = `SELECT ${projection} FROM ${ident(t.name)} WHERE ${where.join(" AND ")}`;

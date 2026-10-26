@@ -20,6 +20,9 @@ export default definePolicy<Database>({
   membership: { table: "members", user: "user_id", tenant: "org_id", role: "role" },
   tables: {
     organizations: table({ tenant: "id", read: { "*": true } }),
+    // Shared by every organization (tenant: null), and read-only to clients. Members see
+    // the labels in use; owners also see retired ones.
+    labels: table({ tenant: null, read: { owner: true, member: col("status").eq("active") } }),
     members: table({ tenant: "org_id", read: { owner: true, member: col("user_id").eq(claim.user) } }),
     project_members: table({
       tenant: "org_id",

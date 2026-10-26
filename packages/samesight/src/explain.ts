@@ -20,8 +20,10 @@ export function explainPolicy(ir: IR, only?: string): string {
     throw new Error(`no table "${only}" in the policy (it has ${ir.tables.map((t) => t.name).join(", ")})`);
   }
   const out: string[] = [];
+  const shared = ir.tables.filter((t) => t.tenant === null).map((t) => t.name);
   out.push(
     `Every rule applies inside the user's own tenant: the "${ir.claims.tenant}" claim, set at sign-in from ${ir.membership.table}.${ir.membership.tenant}.`,
+    ...(shared.length ? [`Except on ${shared.join(", ")}: shared by every tenant (tenant: null), read-only to clients.`] : []),
     `Roles come from the "${ir.claims.role}" claim (${ir.membership.table}.${ir.membership.role}): ${ir.claims.roles.join(", ")}.`,
     "",
   );
@@ -50,7 +52,11 @@ export function explainPolicy(ir: IR, only?: string): string {
 }
 
 function explainTable(ir: IR, t: IRTable): string[] {
-  const lines = [t.tenant === "id" ? `${t.name} (the tenant table: each user sees their own tenant's row at most)` : `${t.name} (tenant column ${t.tenant})`];
+  const lines = [
+    t.tenant === null ? `${t.name} (shared: every tenant reads the same rows, and clients write none)`
+    : t.tenant === "id" ? `${t.name} (the tenant table: each user sees their own tenant's row at most)`
+    : `${t.name} (tenant column ${t.tenant})`,
+  ];
   for (const [op] of OPS) {
     const rules = t[op];
     if (rules.size === 0) {

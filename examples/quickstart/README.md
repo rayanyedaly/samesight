@@ -10,10 +10,13 @@ real.
   tasks. `created_by` defaults to `auth.uid()` with no foreign key, as many schemas have it.
 - [`supabase/migrations/20261026090000_project_members.sql`](supabase/migrations/20261026090000_project_members.sql):
   which members were added to which projects.
+- [`supabase/migrations/20261026120000_labels.sql`](supabase/migrations/20261026120000_labels.sql):
+  task labels every organization shares, seeded by the migration.
 - [`samesight.policy.ts`](samesight.policy.ts): owners see and manage everything in their
   organization; members see only the projects they were added to (through
   `rowsOf("project_members", ...)`) and those projects' tasks, add tasks there, and change
-  only the tasks assigned to them.
+  only the tasks assigned to them. Labels are a shared table (`tenant: null`): owners see
+  all of them, members the active ones, and no client writes them.
 - `supabase/config.toml` as `supabase init` wrote it, with three changes from the guide:
   the ports moved to 563xx (so it runs beside the other examples), an Auth signing key,
   and the access token hook turned on.
@@ -31,6 +34,7 @@ pnpm --filter quickstart stack:down
 ```text
                  owner   member
 organizations    R---    R---
+labels           R---    r---
 members          R---    r---
 project_members  RIUD    r---
 projects         RIUD    r---

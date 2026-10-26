@@ -56,6 +56,10 @@ export interface Run {
    * says what syncs, a warning in an audit, where sync may be meant to send less than RLS allows.
    */
   gaps: "fail" | "warn";
+  /** Synced tables the run cannot give rows it would find again: compared as the database holds them. */
+  asFound?: string[];
+  /** Their rows, for generated rows to point at. */
+  existing?: Inserted[];
 }
 
 /** A run under a Samesight policy: tenants, a user per role, the policy's hidden columns. */
@@ -222,7 +226,17 @@ async function prepareRun(client: pg.Client, stack: Stack, ir: IR): Promise<Setu
       );
     }
   }
-  const skip = [ir.tenantTable ?? "", ir.membership.table];
+  // A shared table (tenant: null) is found again only by the prefix the run gives its uuid
+  // keys; one keyed otherwise (country codes, say) gets no generated rows, and its own rows
+  // are compared as they are.
+  const asFound = ir.tables.filter((t) => t.tenant === null && t.read.size > 0 && auditRefusals(model.filter((m) => m.name === t.name), []).length > 0).map((t) => t.name);
+  const existing: Inserted[] = [];
+  for (const table of asFound) {
+    for (const { row } of await rows<{ row: Record<string, unknown> }>(client, `select row_to_json(x) as row from public.${ident(table)} x limit 50`)) {
+      existing.push({ table, row, tenant: undefined });
+    }
+  }
+  const skip = [ir.tenantTable ?? "", ir.membership.table, ...asFound];
   return {
     client,
     stack,
@@ -235,6 +249,8 @@ async function prepareRun(client: pg.Client, stack: Stack, ir: IR): Promise<Setu
     synced: ir.tables.filter((t) => t.read.size > 0).map((t) => t.name),
     hidden: (u) => hiddenFor(ir, u.role),
     gaps: "fail",
+    asFound,
+    existing,
   };
 }
 
@@ -333,7 +349,7 @@ export async function withWorld<T>(s: Run, world: World, fn: (inserted: Inserted
   await s.client.query("begin");
   let inserted: Inserted[];
   try {
-    inserted = await insertWorld(s.client, s.tables, world, s.fixed);
+    inserted = await insertWorld(s.client, s.tables, world, s.fixed, s.existing);
     await s.client.query("commit");
   } catch (e) {
     await s.client.query("rollback").catch(() => {});
@@ -507,6 +523,12 @@ export async function differential(s: Run, options: { runs: number; seed?: numbe
             : [],
     );
   if (untested.length) return fail(`${x.datasets} datasets left tables untested: ${untested.join("; ")}`, x.datasets);
+  const unread = (s.asFound ?? []).filter((t) => !visible.get(t));
+  const notes: Finding[] = unread.map((t) => ({
+    status: "warn",
+    check,
+    detail: `${t} is shared and not keyed by a uuid, so the run generates no rows for it, and no user read any of its rows in the database: it was not compared`,
+  }));
   const users = s.fixed.users.length;
   const complete = s.gaps === "fail" ? ", and every row RLS returns was synced" : "";
   const sum = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0);
@@ -518,6 +540,7 @@ export async function differential(s: Run, options: { runs: number; seed?: numbe
         check,
         detail: `${x.datasets} generated datasets (${sum(inserted)} rows; ${sum(visible)} row reads compared), ${users} users each: every synced row is one RLS returns, with no hidden column${complete}${x.stopped ? " (stopped at the time limit)" : ""}`,
       },
+      ...notes,
     ]),
   };
 }

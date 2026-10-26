@@ -84,7 +84,7 @@ export function draftPolicy(schema: SchemaInfo | null, options: DraftOptions = {
     }
     const tenant = tenantColumn(t, membership.tenant);
     if (!tenant) {
-      skipped.push(`${t.name}: no NOT NULL uuid tenant column`);
+      skipped.push(`${t.name}: no NOT NULL uuid tenant column (if every tenant reads the same rows, add it with tenant: null)`);
       continue;
     }
     const read = t.name === membership.table ? `{ "*": col(${JSON.stringify(membership.user)}).eq(claim.user) }` : `{ "*": true }`;

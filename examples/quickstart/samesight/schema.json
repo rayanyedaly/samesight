@@ -1,6 +1,53 @@
 {
   "tables": [
     {
+      "name": "labels",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "color",
+          "type": "text",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "default": "'active'::text",
+          "identity": false,
+          "generated": false
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indexedColumns": [
+        "id"
+      ],
+      "uniqueColumns": [
+        "id"
+      ],
+      "foreignKeys": []
+    },
+    {
       "name": "members",
       "columns": [
         {

@@ -70,8 +70,14 @@ export function checkStreams(ir: IR, streams: Stream[]): Finding[] {
   const fail = (detail: string) => out.push({ status: "fail", check: "streams", detail });
   const byName = new Map(ir.tables.map((t) => [t.name, t]));
   const tenantClaim = `auth.parameter('${ir.claims.tenant}')`;
-  const tenantGate = (t: IRTable) => `${ident(t.tenant)} = ${tenantClaim}`;
-  const tenantGates = (t: IRTable) => new Set([canonical(tenantGate(t)), canonical(`${tenantClaim} = ${ident(t.tenant)}`)]);
+  const tenantGate = (t: IRTable & { tenant: string }) => `${ident(t.tenant)} = ${tenantClaim}`;
+  const tenantGates = (t: IRTable & { tenant: string }) => new Set([canonical(tenantGate(t)), canonical(`${tenantClaim} = ${ident(t.tenant)}`)]);
+  // Every query and CTE carries the tenant gate, except over a shared table (tenant: null),
+  // whose rows every tenant reads; there, any tenant term is a policy the compiler did not write.
+  const gateProblem = (t: IRTable, q: ParsedQuery): string | null => {
+    if (t.tenant !== null) return q.terms.some((term) => tenantGates(t as IRTable & { tenant: string }).has(term)) ? null : `has no tenant gate (${tenantGate(t as IRTable & { tenant: string })})`;
+    return null;
+  };
   const roleOf = new Map<string, string>();
   for (const r of ir.claims.roles) {
     roleOf.set(canonical(`auth.parameter('${ir.claims.role}') = '${r}'`), r);
@@ -93,7 +99,10 @@ export function checkStreams(ir: IR, streams: Stream[]): Finding[] {
       if (!q) continue;
       const t = byName.get(q.table);
       if (!t) fail(`${where} reads ${q.table}, which the policy does not cover`);
-      else if (!q.terms.some((term) => tenantGates(t).has(term))) fail(`${where} has no tenant gate (${tenantGate(t)})`);
+      else {
+        const problem = gateProblem(t, q);
+        if (problem) fail(`${where} ${problem}`);
+      }
     }
     for (const { label, sql } of stream.queries) {
       const where = `${stream.name}.${label}`;
@@ -104,7 +113,8 @@ export function checkStreams(ir: IR, streams: Stream[]): Finding[] {
         fail(`${where} streams ${q.table}, which the policy does not cover`);
         continue;
       }
-      if (!q.terms.some((term) => tenantGates(t).has(term))) fail(`${where} (${t.name}) has no tenant gate (${tenantGate(t)})`);
+      const problem = gateProblem(t, q);
+      if (problem) fail(`${where} (${t.name}) ${problem}`);
       checkRefs(where, q);
 
       // A query with no role gate (or only gates on unknown roles) sends its rows to every role.
@@ -136,7 +146,7 @@ export function checkStreams(ir: IR, streams: Stream[]): Finding[] {
     out.unshift({
       status: "ok",
       check: "streams",
-      detail: `${queries} queries in ${streams.length} streams carry the tenant gate and reach only roles with a read rule`,
+      detail: `${queries} queries in ${streams.length} streams carry the tenant gate${ir.tables.some((t) => t.tenant === null) ? " (shared tables aside)" : ""} and reach only roles with a read rule`,
     });
   }
   return out;

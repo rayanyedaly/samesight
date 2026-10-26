@@ -13,8 +13,8 @@ export type Rule = true | ConditionNode;
 export interface IRTable {
   name: string;
   columns: ColumnInfo[];
-  /** The tenant column; `"id"` for the tenant table itself. */
-  tenant: string;
+  /** The tenant column; `"id"` for the tenant table itself; null for a shared table. */
+  tenant: string | null;
   /** Per role. A role missing from the map has no access for that operation. */
   read: Map<string, Rule>;
   insert: Map<string, Rule>;
@@ -138,6 +138,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
   for (const t of tables) {
     for (const fk of findTable(schema, t.name)?.foreignKeys ?? []) {
       const parent = byName.get(fk.table);
+      if (t.tenant === null) continue;
       const i = fk.columns.indexOf(t.tenant);
       if (!parent || fk.columns.length !== 2 || i === -1 || fk.references[i] !== parent.tenant) continue;
       // A NULL column skips the foreign key check (MATCH SIMPLE), and RLS hides such a row.
@@ -192,6 +193,8 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
   const membershipSpec = byName.get(m.table);
   if (membershipTable && policyTables.has(m.table) === false) {
     fail(`membership.table: "${m.table}" must be a table in this policy, or it keeps Supabase's default grants and no RLS`);
+  } else if (membershipSpec && membershipSpec.tenant === null) {
+    fail(`membership.table: "${m.table}" holds each user's tenant, so it cannot be a shared table (tenant: null)`);
   } else if (membershipSpec && membershipSpec.read.size === 0) {
     fail(`membership.table: "${m.table}" needs a read rule (each user at least reads their own membership)`);
   }
@@ -239,8 +242,12 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
 
     // Tenant.
-    const tenantCol = findColumn(info, t.tenant);
-    if (!tenantCol) fail(`${name}.tenant: no column "${t.tenant}" in "${name}"`);
+    const shared = t.tenant === null;
+    const tenantCol = shared ? undefined : findColumn(info, t.tenant as string);
+    if (shared) {
+      // Reference data: the same rows for every tenant, written only by the server.
+    } else if (typeof t.tenant !== "string") fail(`${name}.tenant: a column name, or null for a table every tenant shares`);
+    else if (!tenantCol) fail(`${name}.tenant: no column "${t.tenant}" in "${name}"`);
     else if (tenantCol.type !== "uuid") fail(`${name}.tenant: "${t.tenant}" must be uuid, not ${tenantCol.type}`);
     else if (tenantCol.nullable) fail(`${name}.tenant: "${t.tenant}" must be NOT NULL; a row without a tenant has no owner to scope it to`);
     else if (tenantCol.generated) fail(`${name}.tenant: "${t.tenant}" is a generated column, which logical replication does not send: streams would see it as NULL`);
@@ -265,6 +272,19 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     if (t.check) checkCondition(`${name}.check`, t.check, info, false);
 
     const writable = insert.size + update.size + del.size > 0;
+    if (shared) {
+      if (writable) fail(`${name}: a shared table (tenant: null) is read-only to clients; write its rows from a migration or with the service role`);
+      for (const key of ["check", "serverOwned", "immutable", "author", "touch", "appendOnly"] as const) {
+        if (t[key] !== undefined) fail(`${name}.${key}: a shared table (tenant: null) is never written by clients, so ${key} does not apply`);
+      }
+      for (const [role, rule] of read) {
+        if (rule !== true && subqueries(rule).length > 0) {
+          fail(`${name}.read.${role}: a shared table's rule cannot read through via or rowsOf; every tenant reads the same rows`);
+        }
+      }
+    }
+    // Whatever else would be said about writes follows from these.
+    if (shared && problems.length > before) return null;
     // Upserts, PATCH and replay checks read the row back under the caller's SELECT policy.
     for (const role of new Set([...insert.keys(), ...update.keys(), ...del.keys()])) {
       if (!read.has(role)) fail(`${name}: ${role} writes "${name}" but has no read rule on it; writes read the row back`);
@@ -322,7 +342,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
     const serverOwned = unique([
       ...(t.serverOwned ?? []),
-      t.tenant,
+      ...(t.tenant === null ? [] : [t.tenant]),
       ...identityColumns,
       ...info.columns.filter((c) => c.generated).map((c) => c.name),
       ...(t.appendOnly?.order ? [t.appendOnly.order] : []),

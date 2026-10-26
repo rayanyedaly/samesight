@@ -137,7 +137,7 @@ export function policyTables(ir: IR): ScopeTable[] {
     const userColumns = new Set<string>();
     for (const op of [t.read, t.insert, t.update, t.delete]) for (const rule of op.values()) ruleHints(rule, hints, userColumns);
     if (t.check) ruleHints(t.check, hints, userColumns);
-    return { name: t.name, tenant: t.tenant, hints, userColumns };
+    return { name: t.name, ...(t.tenant !== null ? { tenant: t.tenant } : {}), hints, userColumns };
   });
 }
 

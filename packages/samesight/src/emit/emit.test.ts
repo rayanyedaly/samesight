@@ -232,3 +232,61 @@ describe("apply_batch", () => {
     expect(sql).toContain("  return jsonb_array_length(ops);");
   });
 });
+
+describe("shared tables (tenant: null)", () => {
+  const col_ = (name: string, type: string, nullable = false): ColumnInfo => ({ name, type, nullable, default: null, identity: false, generated: false });
+  const plan: TableInfo = {
+    name: "Plan",
+    columns: [col_("id", "text"), col_("name", "text"), col_("tier", "text"), col_("internalCost", "integer", true)],
+    primaryKey: ["id"],
+    indexedColumns: ["id"],
+    uniqueColumns: ["id"],
+    foreignKeys: [],
+  };
+  const schema = { tables: [...fieldbookSchema.tables, plan] };
+  const policy = definePolicy({
+    ...fieldbookPolicy.spec,
+    tables: {
+      ...fieldbookPolicy.spec.tables,
+      Plan: table({ tenant: null, read: { ADMIN: true, "*": col("tier").eq("public") }, hide: { VIEWER: ["internalCost"] } }),
+    },
+  });
+
+  it("reads the same rows in every tenant, with no tenant gate on either side, and is never written", () => {
+    const ir = buildIR(policy, schema);
+    const sync = emitSyncConfig(ir);
+    expect(sync).toContain(`      - SELECT * FROM "Plan" WHERE auth.parameter('app_role') = 'ADMIN'`);
+    expect(sync).toContain(`      - SELECT id, name, tier FROM "Plan" WHERE tier = 'public' AND auth.parameter('app_role') = 'VIEWER'`);
+    const sql = emitMigration(ir);
+    expect(sql).toContain(
+      `create policy "Plan: read" on public."Plan"\n  for select to authenticated\n  using (\n    (\n      (select samesight.app_role()) = 'ADMIN'\n      or ((select samesight.app_role()) in ('INSPECTOR', 'VIEWER') and tier = 'public')\n    )\n  );`,
+    );
+    expect(sql).not.toMatch(/grant (insert|update|delete)[^;]*"Plan"[^;]*to authenticated/);
+    expect(sql).not.toContain('"Plan": {"appendOnly"');
+  });
+
+  it("refuses writes, write-only options and subqueries on a shared table, and a shared membership table", () => {
+    const refused = (tables: Record<string, unknown>) => {
+      try {
+        buildIR(definePolicy({ ...fieldbookPolicy.spec, tables: { ...fieldbookPolicy.spec.tables, ...tables } as never }), schema);
+      } catch (e) {
+        return (e as { problems: string[] }).problems;
+      }
+      return [];
+    };
+    expect(
+      refused({
+        Plan: table({ tenant: null, read: { "*": col("id").in(rowsOf("Site", "name")) }, write: { ADMIN: true }, touch: "name" }),
+      }),
+    ).toEqual([
+      "Plan: a shared table (tenant: null) is read-only to clients; write its rows from a migration or with the service role",
+      "Plan.touch: a shared table (tenant: null) is never written by clients, so touch does not apply",
+      "Plan.read.ADMIN: a shared table's rule cannot read through via or rowsOf; every tenant reads the same rows",
+      "Plan.read.INSPECTOR: a shared table's rule cannot read through via or rowsOf; every tenant reads the same rows",
+      "Plan.read.VIEWER: a shared table's rule cannot read through via or rowsOf; every tenant reads the same rows",
+    ]);
+    expect(refused({ Membership: table({ tenant: null, read: { "*": true } }) })).toContain(
+      'membership.table: "Membership" holds each user\'s tenant, so it cannot be a shared table (tenant: null)',
+    );
+  });
+});

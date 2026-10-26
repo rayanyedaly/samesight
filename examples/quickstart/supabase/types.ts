@@ -5,7 +5,21 @@ export type Database = {
   
   "public": {
           Tables: {
-            "members": {
+            "labels": {
+                  Row: {
+                    "color": string,"id": string,"name": string,"status": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "color": string,"id"?: string,"name": string,"status"?: string
+                  }
+                  Update: {
+                    "color"?: string,"id"?: string,"name"?: string,"status"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
+                },"members": {
                   Row: {
                     "id": string,"org_id": string,"role": string,"user_id": string
                   }
@@ -118,7 +132,7 @@ isOneToOne: false
           }
           Functions: {
             "apply_batch":
-{ Args: { "ops": Json }; Returns: undefined
+{ Args: { "ops": Json }; Returns: number
                            },
 "record_rejection":
 { Args: { "rejections": Json }; Returns: undefined

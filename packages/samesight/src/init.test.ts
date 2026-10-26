@@ -41,10 +41,10 @@ describe("draftPolicy", () => {
       ],
     };
     const draft = draftPolicy(schema);
-    expect(draft.notes).toContain("left out Setting: no NOT NULL uuid tenant column");
+    expect(draft.notes).toContain("left out Setting: no NOT NULL uuid tenant column (if every tenant reads the same rows, add it with tenant: null)");
     expect(draft.notes).toContain('left out Log: the primary key is not a single "id" column');
     expect(draft.notes.some((n) => n.startsWith("roles: ADMIN, MEMBER (placeholders"))).toBe(true);
-    expect(draft.source).toContain("    // Left out: Setting: no NOT NULL uuid tenant column.");
+    expect(draft.source).toContain("    // Left out: Setting: no NOT NULL uuid tenant column (if every tenant reads the same rows, add it with tenant: null).");
     buildIR(await load(draft.source), schema);
   });
 

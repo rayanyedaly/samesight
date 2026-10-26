@@ -59,8 +59,20 @@ Inspection: table({
 Requirements on each table:
 
 - a single primary key column named `id`;
-- a `tenant` column that is uuid and NOT NULL (the tenant table itself says `tenant: "id"`);
+- a `tenant` column that is uuid and NOT NULL (the tenant table itself says `tenant: "id"`), or `tenant: null` for a shared table (below);
 - a name of letters, digits and underscores, at most 48 characters.
+
+### Shared tables
+
+Reference data every tenant reads the same way (plans, countries, categories, labels) has no tenant column. Say so with `tenant: null`:
+
+```ts
+labels: table({ tenant: null, read: { owner: true, member: col("status").eq("active") } }),
+```
+
+Its RLS policy and stream queries carry the role gate and the rule, and no tenant gate. A shared table is read-only to clients: write rules, `check`, `serverOwned`, `immutable`, `author`, `touch` and `appendOnly` are refused, so its rows come from migrations or the service role. Its own read rules cannot use `via` or `rowsOf`, but a tenant table's rules can read through it. The membership table cannot be shared.
+
+The verifier generates rows for a shared table keyed by a uuid `id`, like any other. One keyed otherwise (a country code, say) gets no generated rows: the rows already in the database are compared, and the run warns if no user could read any.
 
 ### Rules
 
@@ -75,7 +87,7 @@ Requirements on each table:
 
 Each takes an object keyed by role, or `"*"` for every role. A value is `true` (every row of the tenant) or a condition. Rules for `"*"` and for a role are ORed. A role with no rule has no access for that operation.
 
-Every rule is ANDed with the tenant gate (`tenant column = the tenant claim`) and the role gate. You never write either.
+Every rule is ANDed with the tenant gate (`tenant column = the tenant claim`) and the role gate. You never write either. A shared table has the role gate only.
 
 A role that writes a table must also read it: upserts and replays read the row back under the SELECT policy. The tenant table cannot be written by clients.
 
