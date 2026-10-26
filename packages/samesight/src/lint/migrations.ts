@@ -19,6 +19,8 @@ export interface Policy extends Located {
   name: string;
   /** all, select, insert, update or delete. */
   command: string;
+  /** AS RESTRICTIVE: it can only narrow what permissive policies allow. */
+  restrictive: boolean;
   /** Lowercased; "public" when the policy names none. */
   roles: string[];
   /** The USING and WITH CHECK expressions as written, outer parentheses removed. */
@@ -53,12 +55,19 @@ const NAME = `(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
 const TABLE = String.raw`(?:(${NAME})\.)?(${NAME})`;
 
 function apply(m: Migrations, text: string, at: Located): void {
-  let x = new RegExp(String.raw`^alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?${TABLE}\s+(enable|disable)\s+row\s+level\s+security$`, "i").exec(text);
+  let x = new RegExp(String.raw`^alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?${TABLE}\s+(.*)$`, "is").exec(text);
   if (x) {
     const table = publicTable(x[1], x[2]);
     if (!table) return;
-    if (x[3]?.toLowerCase() === "enable") m.rls.set(table, at);
-    else m.rls.delete(table);
+    for (const action of topLevelSplit(x[3] ?? "")) {
+      const rls = /^(enable|disable)\s+row\s+level\s+security$/i.exec(action);
+      if (rls) {
+        if (rls[1]?.toLowerCase() === "enable") m.rls.set(table, at);
+        else m.rls.delete(table);
+      }
+      const rename = new RegExp(String.raw`^rename\s+to\s+(${NAME})$`, "i").exec(action);
+      if (rename) move(m, table, name(rename[1] as string));
+    }
     return;
   }
   x = new RegExp(String.raw`^create\s+policy\s+(${NAME})\s+on\s+${TABLE}(.*)$`, "is").exec(text);
@@ -66,11 +75,33 @@ function apply(m: Migrations, text: string, at: Located): void {
     const table = publicTable(x[2], x[3]);
     if (!table) return;
     const rest = x[4] ?? "";
-    const command = /\bfor\s+(all|select|insert|update|delete)\b/i.exec(rest)?.[1]?.toLowerCase() ?? "all";
-    const to = /\bto\s+(.+?)(?=\s+using\b|\s+with\s+check\b|$)/is.exec(rest)?.[1];
-    const roles = to ? to.split(",").map((r) => name(r.trim())) : ["public"];
-    const policy: Policy = { ...at, name: name(x[1] as string), command, roles, using: clause(rest, "using"), check: clause(rest, "with check") };
+    const head = beforeClauses(rest);
+    const command = /\bfor\s+(all|select|insert|update|delete)\b/i.exec(head)?.[1]?.toLowerCase() ?? "all";
+    const policy: Policy = {
+      ...at,
+      name: name(x[1] as string),
+      command,
+      restrictive: /\bas\s+restrictive\b/i.test(head),
+      roles: roles(head) ?? ["public"],
+      using: clause(rest, "using"),
+      check: clause(rest, "with check"),
+    };
     m.policies.set(table, [...(m.policies.get(table) ?? []).filter((p) => p.name !== policy.name), policy]);
+    return;
+  }
+  x = new RegExp(String.raw`^alter\s+policy\s+(${NAME})\s+on\s+${TABLE}(.*)$`, "is").exec(text);
+  if (x) {
+    const table = publicTable(x[2], x[3]);
+    const old = name(x[1] as string);
+    const policies = table ? (m.policies.get(table) ?? []) : [];
+    const p = policies.find((p) => p.name === old);
+    if (!table || !p) return;
+    const rest = x[4] ?? "";
+    const rename = new RegExp(String.raw`^\s*rename\s+to\s+(${NAME})\s*$`, "i").exec(rest);
+    const changed: Policy = rename
+      ? { ...p, name: name(rename[1] as string) }
+      : { ...p, ...at, roles: roles(beforeClauses(rest)) ?? p.roles, using: clause(rest, "using") ?? p.using, check: clause(rest, "with check") ?? p.check };
+    m.policies.set(table, [...policies.filter((q) => q !== p && q.name !== changed.name), changed]);
     return;
   }
   x = new RegExp(String.raw`^drop\s+policy\s+(?:if\s+exists\s+)?(${NAME})\s+on\s+${TABLE}`, "i").exec(text);
@@ -87,6 +118,46 @@ function apply(m: Migrations, text: string, at: Located): void {
       m.policies.delete(table);
     }
   }
+}
+
+/** A table renamed: its RLS and policies go with it. */
+function move(m: Migrations, from: string, to: string): void {
+  const rls = m.rls.get(from);
+  m.rls.delete(from);
+  if (rls) m.rls.set(to, rls);
+  const policies = m.policies.get(from);
+  m.policies.delete(from);
+  if (policies) m.policies.set(to, policies);
+}
+
+/** A policy statement up to its USING or WITH CHECK, where AS, FOR and TO are read. */
+const beforeClauses = (rest: string) => rest.split(/\busing\s*\(|\bwith\s+check\s*\(/i)[0] ?? "";
+
+/** The roles after TO, lowercased; undefined when there is no TO. */
+function roles(head: string): string[] | undefined {
+  const to = /\bto\s+(.+)$/is.exec(head)?.[1];
+  return to ? to.split(",").map((r) => name(r.trim())) : undefined;
+}
+
+/** Parts of `text` split on commas outside parentheses and strings. */
+function topLevelSplit(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "'" || ch === '"') {
+      const end = text.indexOf(ch, i + 1);
+      i = end === -1 ? text.length : end;
+    } else if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      out.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  out.push(text.slice(start).trim());
+  return out.filter(Boolean);
 }
 
 /** The table's name when it is in public (named or by default), else null. */

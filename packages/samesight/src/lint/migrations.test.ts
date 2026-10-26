@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyMigrations, statements } from "./migrations.ts";
+import { applyMigrations, readMigrations, statements } from "./migrations.ts";
 
 describe("statements", () => {
   it("splits on semicolons outside strings, quoted names, dollar bodies and comments, keeping each start line", () => {
@@ -41,9 +44,46 @@ create policy "writers" on lists as permissive for insert to authenticated, anon
       'drop policy if exists everyone on public.lists;\ncreate policy "owners read" on lists for all to "authenticated" using (true) with check (true);',
     );
     expect(m.policies.get("lists")).toEqual([
-      { file: "m0.sql", line: 3, name: "writers", command: "insert", roles: ["authenticated", "anon"], using: null, check: "owner_id = auth.uid()" },
-      { file: "m1.sql", line: 2, name: "owners read", command: "all", roles: ["authenticated"], using: "true", check: "true" },
+      { file: "m0.sql", line: 3, name: "writers", command: "insert", restrictive: false, roles: ["authenticated", "anon"], using: null, check: "owner_id = auth.uid()" },
+      { file: "m1.sql", line: 2, name: "owners read", command: "all", restrictive: false, roles: ["authenticated"], using: "true", check: "true" },
     ]);
+  });
+
+  it("reads every action of one ALTER TABLE, and follows a table renamed", () => {
+    const m = read("alter table lists enable row level security, force row level security;\nalter table notes add column x int, enable row level security;", "alter table lists rename to todo_lists;");
+    expect([...m.rls.keys()]).toEqual(["notes", "todo_lists"]);
+  });
+
+  it("reads AS RESTRICTIVE, and a TO that only USING mentions is no TO", () => {
+    const m = read("create policy r on lists as restrictive for select to authenticated using (true);\ncreate policy s on lists using (note = 'sent to anon');");
+    expect(m.policies.get("lists")?.map((p) => [p.name, p.restrictive, p.roles])).toEqual([
+      ["r", true, ["authenticated"]],
+      ["s", false, ["public"]],
+    ]);
+  });
+
+  it("follows ALTER POLICY: new roles, expressions or name, placed where it changed", () => {
+    const m = read(
+      "create policy own on lists for select to authenticated using (owner_id = auth.uid());\ncreate policy w on lists for insert with check (owner_id = auth.uid());",
+      "alter policy own on lists using (true);\nalter policy w on lists rename to writes;\nalter policy missing on lists using (true);",
+    );
+    expect(m.policies.get("lists")?.map((p) => [p.name, p.roles, p.using, p.check, `${p.file}:${p.line}`])).toEqual([
+      ["own", ["authenticated"], "true", null, "m1.sql:1"],
+      ["writes", ["public"], null, "owner_id = auth.uid()", "m0.sql:2"],
+    ]);
+    expect(read("create policy p on lists using (x);", "alter policy p on lists to anon;").policies.get("lists")?.[0]?.roles).toEqual(["anon"]);
+  });
+
+  it("reads only .sql files from a directory, in name order", () => {
+    const dir = mkdtempSync(join(tmpdir(), "samesight-migrations-"));
+    try {
+      writeFileSync(join(dir, "2_off.sql"), "alter table lists disable row level security;");
+      writeFileSync(join(dir, "1_on.sql"), "alter table lists enable row level security;\nalter table notes enable row level security;");
+      writeFileSync(join(dir, "0_notes.md"), "alter table todos enable row level security;");
+      expect([...readMigrations(dir).rls.keys()]).toEqual(["notes"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("ignores tables outside public", () => {

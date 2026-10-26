@@ -2,7 +2,8 @@
  * rls-open: a policy on a synced table that lets everyone through, `using (true)` or
  * `with check (true)`, for anon, authenticated or public. PowerSync replicates past RLS,
  * so the sync config may well send less; the Supabase API serves what the policy allows.
- * Policies for other roles (supabase_auth_admin, service roles) are not this rule's.
+ * Policies for other roles (supabase_auth_admin, service roles) are not this rule's, and
+ * neither are restrictive ones, which can only narrow what permissive policies allow.
  */
 
 import type { LintFinding } from "../finding.ts";
@@ -39,7 +40,7 @@ export const rlsOpen: LintRule = defineRule(RULE, ({ file, config, migrations, l
     for (const p of migrations.policies.get(table) ?? []) {
       const who = p.roles.filter((r) => CLIENT_ROLES.includes(r));
       const what = opens(p);
-      if (!who.length || !what.length) continue;
+      if (p.restrictive || !who.length || !what.length) continue;
       out.push({
         rule: RULE,
         level: "warning",

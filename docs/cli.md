@@ -99,7 +99,7 @@ Reads a PowerSync sync config (sync streams or legacy sync rules) and, when pres
 ```console
 $ npx samesight lint
 powersync/sync-rules.yaml:5  error    bucket user_info has no parameter query, so every user receives every row of trellouser  (unscoped-query)
-powersync/sync-rules.yaml:5  warning  trellouser is synced, but the migrations never enable row level security on it, so with Supabase's default grants any client can read and change every row through the API  (rls-off)
+powersync/sync-rules.yaml:5  warning  trellouser is synced, but the migrations never enable row level security on it, so unless its grants to anon and authenticated were revoked, any client can read and change every row through the Supabase API  (rls-off)
 powersync/sync-rules.yaml:14  warning  bucket by_workspace, parameters[2] reads nothing from the requesting user's token (request.user_id(), token_parameters), so every user gets every bucket it lists that its fixed filters allow  (unscoped-query)
 powersync/sync-rules.yaml:17  warning  policy "members read" on workspace (supabase/migrations/20260101000000_init.sql:12) lets every signed-in user read every row through the Supabase API, whatever the sync config sends  (rls-open)
 1 error, 3 warnings
@@ -114,10 +114,10 @@ That is PowerSync's Trello demo with a made-up migration.
 | `user-metadata` | error | Access decided by the token's `user_metadata`, which every Supabase user can set on themselves. |
 | `unreadable-query` | warning | A query `samesight-verify audit` cannot attribute to one table, so it would refuse to check it. |
 | `not-auto-subscribed` | info | A stream devices get only when the app subscribes, which audit does not test. |
-| `rls-off` | warning | A synced table whose migrations never enable row level security. Needs migrations. |
-| `rls-open` | warning | A policy on a synced table that lets `anon`, `authenticated` or `public` through with `using (true)` or `with check (true)`. Needs migrations. |
+| `rls-off` | warning | A synced table whose migrations never enable row level security, which leaves it open through the Supabase API unless its grants to `anon` and `authenticated` were revoked. Needs migrations. |
+| `rls-open` | warning | A permissive policy on a synced table that lets `anon`, `authenticated` or `public` through with `using (true)` or `with check (true)`. Needs migrations. |
 
-Lint proves nothing about what reaches a device: it flags known mistakes in seconds. `samesight-verify audit` tests the rows. The migrations reader is best-effort: it follows plain DDL (`alter table ... enable row level security`, `create policy`, `drop policy`, `drop table`) in file order, and does not see RLS changed inside functions, `DO` blocks or dynamic SQL. Without migrations, `rls-off` and `rls-open` do not run, and lint says so.
+Lint proves nothing about what reaches a device: it flags known mistakes in seconds. `samesight-verify audit` tests the rows. The migrations reader is best-effort: it follows plain DDL (`alter table` enabling or disabling row level security or renaming the table, `create policy`, `alter policy`, `drop policy`, `drop table`) in file order, and does not see RLS changed inside functions, `DO` blocks or dynamic SQL. Without migrations, `rls-off` and `rls-open` do not run, and lint says so.
 
 A finding that is deliberate, such as a table public by design, can be accepted with `--allow unscoped-query:customers` (by stream, bucket, table or policy name) or `--allow not-auto-subscribed` (a whole rule). Allowed findings are counted in the output, never dropped silently, and a misspelt rule name is an error.
 
