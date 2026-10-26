@@ -1,0 +1,4 @@
+# Fetched from upstream by scripts/fetch.sh, never committed.
+/upstream/
+/upstream.tmp/
+.env

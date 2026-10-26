@@ -1,0 +1,17 @@
+{
+  "name": "audit-todolist",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runs samesight-verify audit on PowerSync's Supabase to-do list demo, fetched at a pinned commit",
+  "type": "module",
+  "scripts": {
+    "fetch": "bash scripts/fetch.sh",
+    "stack:up": "bash scripts/stack-up.sh",
+    "stack:down": "bash scripts/stack-down.sh",
+    "verify": "samesight-verify audit --project upstream --sync-config upstream/sync-config.yaml --powersync http://127.0.0.1:8081 --compose docker-compose.yml",
+    "verify:planted": "bash scripts/verify-planted.sh"
+  },
+  "devDependencies": {
+    "@samesight/verify": "workspace:*"
+  }
+}
