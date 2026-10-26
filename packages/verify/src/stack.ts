@@ -85,7 +85,12 @@ export function readStack(projectDir: string, powersync: string): Stack {
     if (err.code === "ENOENT") {
       throw new Error("no Supabase CLI found: install it in the project (npm i -D supabase) or on the PATH");
     }
-    const detail = err.stderr?.trim().split(/\r?\n/).at(-1);
+    // The CLI ends with a generic "Try rerunning ... --debug" line; the cause is above it.
+    const detail = err.stderr
+      ?.split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !/^Try rerunning/.test(l))
+      .join("; ");
     throw new Error(`\`supabase status\` failed in ${dir}${detail ? `: ${detail}` : ""}; is the local stack running (supabase start)?`);
   }
   return stackFromStatus(parseEnv(out), powersync);
