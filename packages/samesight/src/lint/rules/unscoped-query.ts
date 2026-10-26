@@ -14,16 +14,16 @@
  * passes. It is a warning when something else filters the rows: fixed values or a column
  * alone (status = 'public', is_public; often public by design); a check on who is asking,
  * such as a role claim or an admin list (auth.user_id() IN (SELECT user_id FROM admins));
- * both, OR'd (public rows for all, every
- * row for admins); or, for sync rules, a parameter query that gives its buckets by a role
- * claim, or a bucket whose parameter queries only admit users passing a fixed check on
- * their own row or a token claim (is_admin = true). Lint cannot tell a role from any other
+ * both, OR'd (public rows for all, every row for admins); or, for sync rules, a parameter
+ * query that gives its buckets by a role claim or lists them by fixed values alone, or a
+ * bucket whose parameter queries only admit users passing a fixed check on their own row
+ * or a token claim (is_admin = true). Lint cannot tell a role from any other
  * fixed check, so the warning says what to confirm. Queries the client alone limits are
  * client-scoped's.
  */
 
 import type { Token } from "../../sync/sql.ts";
-import { bucketAccess, checksClaim, checksEveryToken, filtered, streamAccess } from "../access.ts";
+import { bucketAccess, checksClaim, checksEveryToken, filtered, fixedFiltered, streamAccess } from "../access.ts";
 import type { LintFinding } from "../finding.ts";
 import { defineRule, type LintRule } from "../lint.ts";
 import { readsClient, readsToken, sources, tableOf, tokens } from "../sql.ts";
@@ -97,7 +97,8 @@ export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf 
     for (const p of access.loose.filter((p) => p.via === "nobody")) {
       const t = tokens(p.sql) as Token[];
       const what = reads([t]);
-      const filter = filtered(p.sql);
+      // The buckets it lists go to everyone, its own rows or not: only fixed values narrow them.
+      const filter = fixedFiltered(p.sql);
       if (checksClaim(p.sql)) {
         add(
           p.sql,
