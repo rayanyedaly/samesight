@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseSyncConfig, type SyncConfig } from "../sync/config.ts";
 import type { LintFinding } from "./finding.ts";
+import { unscopedQuery } from "./rules/unscoped-query.ts";
 
 /** Where projects keep their sync config, tried in order when no file is named. */
 export const SYNC_CONFIG_FILES = ["sync-config.yaml", "sync-rules.yaml", "powersync/sync-config.yaml", "powersync/sync-rules.yaml"];
@@ -22,7 +23,7 @@ export interface LintContext {
 
 export type LintRule = (context: LintContext) => LintFinding[];
 
-export const RULES: LintRule[] = [];
+export const RULES: LintRule[] = [unscopedQuery];
 
 /** Every rule's findings for one sync config; throws when the file cannot be read as one. */
 export function lintSyncConfig(text: string, file: string, rules: LintRule[] = RULES): LintFinding[] {
@@ -37,14 +38,32 @@ export function findSyncConfig(dir: string): string | undefined {
 }
 
 /**
- * The 1-based line where `sql` starts in `text`, matched on its first line with spacing
- * ignored. YAML may fold or quote a query, so a query that cannot be found has no line.
+ * The 1-based line where `sql` starts in `text`, found by its full text with all spacing
+ * collapsed on both sides, so a query YAML folded across lines is still found. A query
+ * written twice is placed at its first copy; one that cannot be found (quoted with escapes,
+ * say) has no line.
  */
 export function lineOf(text: string, sql: string): number | undefined {
-  const squash = (s: string) => s.replace(/\s+/g, " ").trim();
-  const first = squash(sql.split("\n").find((l) => l.trim()) ?? "");
-  if (!first) return undefined;
-  const lines = text.split("\n");
-  const at = lines.findIndex((l) => squash(l).includes(first));
-  return at === -1 ? undefined : at + 1;
+  const target = sql.replace(/\s+/g, " ").trim();
+  if (!target) return undefined;
+  let flat = "";
+  const lineAt: number[] = [];
+  let line = 1;
+  let gap = false;
+  for (const ch of text) {
+    if (ch === "\n") line++;
+    if (/\s/.test(ch)) {
+      gap = flat.length > 0;
+      continue;
+    }
+    if (gap) {
+      flat += " ";
+      lineAt.push(line);
+      gap = false;
+    }
+    flat += ch;
+    lineAt.push(line);
+  }
+  const at = flat.indexOf(target);
+  return at === -1 ? undefined : lineAt[at];
 }
