@@ -72,13 +72,15 @@ export async function introspect(url: string): Promise<SchemaInfo> {
       default: string | null;
       identity: boolean;
       generated: boolean;
+      partitioned: boolean;
     }>(`
       select c.relname as table, a.attname as name,
              format_type(a.atttypid, a.atttypmod) as type,
              not a.attnotnull as nullable,
              pg_get_expr(d.adbin, d.adrelid) as default,
              a.attidentity <> '' as identity,
-             a.attgenerated <> '' as generated
+             a.attgenerated <> '' as generated,
+             c.relkind = 'p' as partitioned
         from pg_attribute a
         join pg_class c on c.oid = a.attrelid
         join pg_namespace n on n.oid = c.relnamespace
@@ -118,7 +120,7 @@ export async function introspect(url: string): Promise<SchemaInfo> {
     for (const row of columns.rows) {
       let t = tables.get(row.table);
       if (!t) {
-        t = { name: row.table, columns: [], primaryKey: [], indexedColumns: [], uniqueColumns: [], foreignKeys: [] };
+        t = { name: row.table, columns: [], primaryKey: [], indexedColumns: [], uniqueColumns: [], foreignKeys: [], ...(row.partitioned ? { partitioned: true as const } : {}) };
         tables.set(row.table, t);
       }
       const column: ColumnInfo = {

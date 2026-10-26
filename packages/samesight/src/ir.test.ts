@@ -262,3 +262,82 @@ describe("compile errors", () => {
     ]);
   });
 });
+
+describe("what logical replication and PowerSync see differently", () => {
+  const col_ = (name: string, type: string, extra = {}) => ({ name, type, nullable: true, default: null, identity: false, generated: false, ...extra });
+  const schema = {
+    tables: fieldbookSchema.tables.map((t) =>
+      t.name === "Site"
+        ? {
+            ...t,
+            columns: [
+              ...t.columns,
+              col_("archived", "text", { generated: true }),
+              col_("score", "real"),
+              col_("weight", "double precision"),
+              col_("tags", "text[]"),
+              col_("meta", "jsonb"),
+              col_("email", "citext"),
+              col_("code", "character(3)"),
+            ],
+          }
+        : t,
+    ),
+  };
+  const refused = (tables: PolicySpec["tables"]) => {
+    try {
+      buildIR(definePolicy({ ...base, tables: { Membership: base.tables.Membership, ...tables } }), schema);
+      return [];
+    } catch (e) {
+      if (e instanceof CompileError) return e.problems;
+      throw e;
+    }
+  };
+
+  it("refuses generated columns in read rules, where streams would see NULL", () => {
+    expect(refused({ Site: table({ tenant: "tenantId", read: { ADMIN: col("archived").isNull() } }) })).toEqual([
+      'Site.read.ADMIN: "archived" is a generated column, which logical replication does not send: streams would see it as NULL',
+    ]);
+    // In a write check, Postgres alone evaluates it.
+    expect(refused({ Site: table({ tenant: "tenantId", read: { ADMIN: true }, write: { ADMIN: col("archived").isNull() } }) })).toEqual([]);
+  });
+
+  it("refuses literals the two sides would compare differently", () => {
+    expect(
+      refused({
+        Site: table({
+          tenant: "tenantId",
+          read: {
+            ADMIN: col("score").eq(0.1),
+            INSPECTOR: col("email").eq("a@b.c"),
+            VIEWER: or(col("code").eq("abc"), col("tags").eq("x")),
+          },
+        }),
+      }),
+    ).toEqual([
+      'Site.read.ADMIN: 0.1 does not fit "score" (real); it takes a number a 4-byte float holds exactly (or use double precision)',
+      'Site.read.INSPECTOR: "a@b.c" does not fit "email" (citext); it takes no literal (Postgres and PowerSync compare citext values differently)',
+      'Site.read.VIEWER: "abc" does not fit "code" (character(3)); it takes no literal (Postgres and PowerSync compare character(3) values differently)',
+      'Site.read.VIEWER: "x" does not fit "tags" (text[]); it takes no literal (Postgres and PowerSync compare text[] values differently)',
+    ]);
+    expect(refused({ Site: table({ tenant: "tenantId", read: { ADMIN: col("score").eq(0.5), VIEWER: col("weight").eq(0.1) } }) })).toEqual([]);
+  });
+
+  it("refuses partitioned tables and non-uuid ids on writable tables", () => {
+    const partitioned = {
+      tables: [
+        ...fieldbookSchema.tables,
+        { name: "Event", columns: [col_("id", "bigint", { nullable: false }), col_("tenantId", "uuid", { nullable: false })], primaryKey: ["id"], indexedColumns: ["id"], uniqueColumns: ["id"], foreignKeys: [], partitioned: true as const },
+      ],
+    };
+    try {
+      buildIR(definePolicy({ ...base, tables: { Membership: base.tables.Membership, Event: table({ tenant: "tenantId", read: { ADMIN: true }, write: { ADMIN: true } }) } }), partitioned);
+      expect.unreachable();
+    } catch (e) {
+      expect((e as CompileError).problems).toEqual([
+        "Event: partitioned tables replicate under their partitions' names, which streams do not read; sync a plain table",
+        'Event: clients write this table, so "id" must be uuid (PowerSync clients make the ids), not bigint',
+      ]);
+    }
+  });
+});

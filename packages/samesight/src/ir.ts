@@ -108,8 +108,10 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
   if (!membershipTable) fail(`membership.table: no table "${m.table}" in the database`);
   else {
     for (const key of ["user", "tenant", "role"] as const) {
-      if (!findColumn(membershipTable, m[key])) fail(`membership.${key}: no column "${m[key]}" in "${m.table}"`);
+      const c = findColumn(membershipTable, m[key]);
+      if (!c) fail(`membership.${key}: no column "${m[key]}" in "${m.table}"`);
       else if (!IDENT.test(m[key])) fail(`membership.${key}: "${m[key]}" must be letters, digits and underscores`);
+      else if (key !== "role" && c.type !== "uuid") fail(`membership.${key}: "${m[key]}" must be uuid, not ${c.type}`);
     }
     if (findColumn(membershipTable, m.user) && !membershipTable.uniqueColumns.includes(m.user)) {
       fail(`membership.user: "${m.user}" must be unique (one tenant per user); the token hook would pick one at random`);
@@ -241,6 +243,8 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     if (!tenantCol) fail(`${name}.tenant: no column "${t.tenant}" in "${name}"`);
     else if (tenantCol.type !== "uuid") fail(`${name}.tenant: "${t.tenant}" must be uuid, not ${tenantCol.type}`);
     else if (tenantCol.nullable) fail(`${name}.tenant: "${t.tenant}" must be NOT NULL; a row without a tenant has no owner to scope it to`);
+    else if (tenantCol.generated) fail(`${name}.tenant: "${t.tenant}" is a generated column, which logical replication does not send: streams would see it as NULL`);
+    if (info.partitioned) fail(`${name}: partitioned tables replicate under their partitions' names, which streams do not read; sync a plain table`);
 
     // Rules.
     const read = mergeRules(`${name}.read`, [t.read]);
@@ -308,6 +312,14 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
 
     const identityColumns = info.columns.filter((c) => c.identity).map((c) => c.name);
+    // Names the migration writes as string literals: identity sequences, and the write path's
+    // column lists.
+    for (const c of identityColumns) if (!IDENT.test(c)) fail(`${name}: identity column "${c}" must be letters, digits and underscores`);
+    if (writable) {
+      for (const c of info.columns) if (!IDENT.test(c.name)) fail(`${name}: clients write this table, so its column "${c.name}" must be letters, digits and underscores`);
+      const id = findColumn(info, "id");
+      if (id && id.type !== "uuid") fail(`${name}: clients write this table, so "id" must be uuid (PowerSync clients make the ids), not ${id.type}`);
+    }
     const serverOwned = unique([
       ...(t.serverOwned ?? []),
       t.tenant,
@@ -394,6 +406,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
       const found = findColumn(info, c);
       if (!found) fail(`${path}: no column "${c}" in "${info.name}"`);
       else if (!IDENT.test(c)) fail(`${path}: column "${c}" must be letters, digits and underscores`);
+      else if (isRead && found.generated) fail(`${path}: "${c}" is a generated column, which logical replication does not send: streams would see it as NULL`);
       return found;
     };
     switch (node.kind) {
@@ -427,8 +440,10 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
           return;
         }
         const parent = findTable(schema, node.parent);
-        if (parent && !findColumn(parent, node.parentKey)) fail(`${path}: via key "${node.parentKey}" is not a column of "${node.parent}"`);
+        const key = parent && findColumn(parent, node.parentKey);
+        if (parent && !key) fail(`${path}: via key "${node.parentKey}" is not a column of "${node.parent}"`);
         else if (!IDENT.test(node.parentKey)) fail(`${path}: via key "${node.parentKey}" must be letters, digits and underscores`);
+        else if (isRead && key?.generated) fail(`${path}: via key "${node.parent}.${node.parentKey}" is a generated column, which logical replication does not send: streams would see it as NULL`);
         return;
       }
       case "and":
@@ -492,8 +507,10 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
     const target = findTable(schema, r.table);
     if (!target) return; // reported with the table
-    if (!findColumn(target, r.column)) fail(`${path}: rowsOf: no column "${r.column}" in "${r.table}"`);
+    const column = findColumn(target, r.column);
+    if (!column) fail(`${path}: rowsOf: no column "${r.column}" in "${r.table}"`);
     else if (!IDENT.test(r.column)) fail(`${path}: rowsOf: column "${r.column}" must be letters, digits and underscores`);
+    else if (isRead && column.generated) fail(`${path}: rowsOf: "${r.table}.${r.column}" is a generated column, which logical replication does not send: streams would see it as NULL`);
     if (r.where) {
       checkCondition(`${path} (rowsOf ${r.table})`, r.where, target, isRead);
       // The where goes into the stream's CTE, which cannot hold another subquery.
@@ -525,10 +542,10 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     if (!c) return;
     const kind = typeKind(c.type);
     const want =
-      kind === "number" ? typeof v === "number" && (!/int/.test(c.type) || Number.isInteger(v))
+      kind === "number" ? typeof v === "number" && (!/int/.test(c.type) || Number.isInteger(v)) && (c.type !== "real" || Math.fround(v) === v)
       : kind === "uuid" ? typeof v === "string" && UUID.test(v)
       : kind === "boolean" ? typeof v === "boolean" && !isRead
-      : kind === "time" || kind === "exact" ? false
+      : kind === "time" || kind === "exact" || kind === "opaque" ? false
       : typeof v === "string";
     if (!want) {
       const hint =
@@ -536,7 +553,8 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
         : kind === "boolean" ? (isRead ? "nothing in a read rule (PowerSync syncs booleans as 0/1; use raw)" : "a boolean")
         : kind === "time" ? "no literal (time comparisons differ between Postgres and PowerSync; use a status column)"
         : kind === "exact" ? "no literal (PowerSync syncs exact numerics as text, so comparisons differ; use raw)"
-        : kind === "number" ? (/int/.test(c.type) ? "an integer" : "a number")
+        : kind === "opaque" ? `no literal (Postgres and PowerSync compare ${c.type} values differently)`
+        : kind === "number" ? (/int/.test(c.type) ? "an integer" : c.type === "real" ? "a number a 4-byte float holds exactly (or use double precision)" : "a number")
         : "a string";
       fail(`${path}: ${show} does not fit "${c.name}" (${c.type}); it takes ${hint}`);
     }
@@ -641,7 +659,10 @@ function isCondition(v: unknown): v is ConditionNode {
   return true;
 }
 
-function typeKind(type: string): "number" | "exact" | "uuid" | "boolean" | "time" | "text" {
+function typeKind(type: string): "number" | "exact" | "uuid" | "boolean" | "time" | "text" | "opaque" {
+  // Arrays, json and the types Postgres compares by other rules than text (case-insensitive
+  // citext, blank-padded char(n)): PowerSync compares their synced text as is.
+  if (/\[\]$/.test(type) || /^(json|jsonb|citext)$/.test(type) || /^(character|char|bpchar)(\(\d+\))?$/.test(type)) return "opaque";
   if (/^(smallint|integer|bigint|real|double precision)\b/.test(type)) return "number";
   if (/^(numeric|decimal|money)\b/.test(type)) return "exact";
   if (type === "uuid") return "uuid";

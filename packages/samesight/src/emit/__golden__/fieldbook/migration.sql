@@ -396,8 +396,14 @@ alter table public."Finding" replica identity full;
 alter table public."Photo" replica identity full;
 
 -- Altered in place when it exists, so a running replication slot keeps its publication.
+-- One made FOR ALL TABLES (as PowerSync's own Supabase guide does) cannot be altered to a
+-- table list, so it is replaced; PowerSync picks the new one up when it restarts.
 do $$
 begin
+  if exists (select from pg_publication where pubname = 'powersync' and puballtables) then
+    raise notice 'replacing publication powersync (FOR ALL TABLES) with the synced tables only; restart PowerSync';
+    drop publication powersync;
+  end if;
   if exists (select from pg_publication where pubname = 'powersync') then
     alter publication powersync set table public."Tenant", public."Membership", public."Site", public."Inspection", public."Finding", public."Photo";
   else
@@ -425,8 +431,11 @@ $$;
 -- raises 28000, so the connector refreshes it. Identifiers come only from the allowlist and
 -- are quoted with format('%I'); payload values reach SQL only as a bound jsonb parameter.
 
-create or replace function public.apply_batch(ops jsonb)
-returns void
+-- It returns how many ops it applied: the connector takes a batch out of the queue only
+-- on that answer, so a 2xx with no body (a proxy, a wrong URL) never drops writes.
+drop function if exists public.apply_batch(jsonb);
+create function public.apply_batch(ops jsonb)
+returns integer
 language plpgsql
 security invoker
 set search_path = ''
@@ -485,6 +494,13 @@ begin
       raise exception 'apply_batch: data for % % must be an object', tbl, row_id;
     end if;
     tenant_col := t ->> 'tenant';
+    -- JSON text from the client (PowerSync stores json, jsonb and arrays as text) becomes
+    -- the JSON value jsonb_populate_record expects for those columns.
+    data := data || coalesce((
+      select jsonb_object_agg(c, (data ->> c)::jsonb)
+        from jsonb_array_elements_text(coalesce(t -> 'json', '[]'::jsonb)) c
+       where jsonb_typeof(data -> c) = 'string'
+    ), '{}'::jsonb);
 
     if kind = 'PUT' then
       cols := array(
@@ -503,33 +519,33 @@ begin
       record_json := (
         select coalesce(jsonb_object_agg(key, value), '{}'::jsonb) from jsonb_each(data) where key = any(cols)
       ) || jsonb_build_object('id', row_id, tenant_col, tenant);
-      col_list := (select string_agg(format('%I', c), ', ') from unnest(cols) c);
-      -- Not ON CONFLICT DO UPDATE: that puts the existing row through the caller's UPDATE
-      -- policy and raises when it fails, so a role that may insert but not update this row
-      -- could never replay its own insert.
-      execute format(
-        'insert into public.%I (%s) select %s from jsonb_populate_record(null::public.%I, $1) on conflict (id) do nothing',
-        tbl, col_list, col_list, tbl
-      ) using record_json;
-      get diagnostics affected = row_count;
-      if affected = 0 then
-        -- A replay finds its own row. Finding none (or one this caller cannot read)
-        -- means the id belongs to someone else's row.
-        execute format('select exists (select 1 from public.%I where id = $1)', tbl)
-          into found_row using row_id;
-        if not found_row then
+      -- A row that exists already: a replay of this insert, or a second PUT. Looked up first,
+      -- so the INSERT policy (checked before any conflict) never judges a row that is not
+      -- being inserted, and not ON CONFLICT DO UPDATE, which puts the row through the
+      -- caller's UPDATE policy and raises when it fails: a role that may insert but not
+      -- update a row could never replay its own insert.
+      execute format('select exists (select 1 from public.%I where id = $1)', tbl)
+        into found_row using row_id;
+      if not found_row then
+        col_list := (select string_agg(format('%I', c), ', ') from unnest(cols) c);
+        execute format(
+          'insert into public.%I (%s) select %s from jsonb_populate_record(null::public.%I, $1) on conflict (id) do nothing',
+          tbl, col_list, col_list, tbl
+        ) using record_json;
+        get diagnostics affected = row_count;
+        -- Invisible to the caller and yet taken: the id belongs to someone else's row.
+        if affected = 0 then
           raise exception 'apply_batch: % % conflicts with a row you cannot write', tbl, row_id;
         end if;
+      elsif not (t ->> 'appendOnly')::boolean and cardinality(upd) > 0 then
         -- Last write wins where the caller may update the row. RLS skips a row its UPDATE
         -- policy does not allow (the replay is then a no-op, and the server's copy syncs
         -- back), and still raises on a WITH CHECK violation.
-        if not (t ->> 'appendOnly')::boolean and cardinality(upd) > 0 then
-          col_list := (select string_agg(format('%I', c), ', ') from unnest(upd) c);
-          execute format(
-            'update public.%I as t set (%s) = (select %s from jsonb_populate_record(null::public.%I, $1)) where t.id = $2',
-            tbl, col_list, col_list, tbl
-          ) using (select jsonb_object_agg(key, value) from jsonb_each(data) where key = any(upd)), row_id;
-        end if;
+        col_list := (select string_agg(format('%I', c), ', ') from unnest(upd) c);
+        execute format(
+          'update public.%I as t set (%s) = (select %s from jsonb_populate_record(null::public.%I, $1)) where t.id = $2',
+          tbl, col_list, col_list, tbl
+        ) using (select jsonb_object_agg(key, value) from jsonb_each(data) where key = any(upd)), row_id;
       end if;
 
     elsif kind = 'PATCH' then
@@ -574,6 +590,7 @@ begin
       end if;
     end if;
   end loop;
+  return jsonb_array_length(ops);
 end;
 $$;
 

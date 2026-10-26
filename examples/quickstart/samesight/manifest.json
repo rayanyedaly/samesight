@@ -222,6 +222,6 @@
     "powersync/service.yaml": "bfe50c991437194b79154075b06729914675e327811ffeea01c77c50ff5f67bb",
     "src/samesight/app-schema.ts": "298e935a3d9490a406f84a221325289c0fdfee0d3e40fae1eb02cc99e97bf6b7",
     "src/samesight/policy-types.ts": "ddb115c4f4e0b65c01ee4c431ae14bb0265357d01c3bcfe1220480356a9e8b5e",
-    "migration": "352c524937f7b7522b6ad0047f010553bd56c3f48ef4d9846a95e0403d1518ab"
+    "migration": "f1b4bfda6cf0debd218530abf85559cd65665825bb11f4b1f2cf0f580c7e58c7"
   }
 }
