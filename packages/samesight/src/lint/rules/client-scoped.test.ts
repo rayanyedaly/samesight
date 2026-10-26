@@ -76,7 +76,7 @@ describe("client-scoped on sync streams", () => {
       [
         "error",
         3,
-        "bucket b, parameters[0] selects a value the client sends as a bucket parameter; lint cannot tell whether the user's own rows bound it, so select the column instead (SELECT org_id FROM members WHERE ...)",
+        "bucket b, parameters[0] selects a value the client sends as a bucket parameter; unless the same value is also matched against the user's own rows, any client can ask for any bucket, so select the column instead (SELECT org_id FROM members WHERE ...)",
       ],
     ]);
     for (const where of [

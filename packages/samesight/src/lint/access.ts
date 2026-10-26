@@ -161,7 +161,11 @@ const matches =
   (reads: (t: Token[]) => boolean): Gate =>
   (term) => {
     const s = sides(term);
-    return s !== undefined && s.some((side, i) => reads(side) && !literal(s[1 - i] as Token[]) && !reads(s[1 - i] as Token[]) && !readsAny(s[1 - i] as Token[]));
+    // A side holding a query, ((SELECT ...) UNION (SELECT ...)), is a set, not a value.
+    return (
+      s !== undefined &&
+      s.some((side, i) => reads(side) && !side.some((x) => word(x, "select")) && !literal(s[1 - i] as Token[]) && !reads(s[1 - i] as Token[]) && !readsAny(s[1 - i] as Token[]))
+    );
   };
 
 /** A fixed value on exactly one side: status = 'public', role IN ('a', 'b'). */
@@ -197,8 +201,9 @@ export const everyToken: Gate = (term) => {
 };
 
 /**
- * Reads a claim that tells no user apart: one every user has the same value of (role, aud,
- * iss) or one of a few (is_anonymous, aal, amr).
+ * Reads a claim that tells no user apart: one every user has the same value of (role and
+ * aud, unless a hook changes them, and iss), or one that rarely does (is_anonymous, aal,
+ * amr, which is about how the session signed in).
  */
 const SHARED = /^(\$\.)?(role|aud|iss|is_anonymous|aal|amr)$/;
 const sameForAll = (side: Token[]) => topClaim(side, SHARED);
@@ -249,8 +254,9 @@ function through(
       const left = term.slice(0, i);
       const end = closing(term, i + 1);
       const sub = term.slice(i + 2, end === -1 ? term.length : end);
-      // A UNION may add any rows to the set.
-      if (set && topLevel(sub).some((j) => word(sub[j], "union") || word(sub[j], "intersect") || word(sub[j], "except"))) return false;
+      // A UNION may add any rows to the set, and a set that selects a client value holds
+      // whatever the client sends.
+      if (set && !plainSet(sub)) return false;
       // Not a row on the left: then the set counts only where it selects one column of one
       // source, since SELECT 'admin' FROM ..., SELECT subscription.parameter('u') or a join
       // may hold anything.
@@ -271,6 +277,14 @@ function through(
   return gate;
 }
 
+/** A set with no UNION and no client value among what it selects. */
+function plainSet(sub: Token[]): boolean {
+  const top = topLevel(sub);
+  if (top.some((j) => word(sub[j], "union") || word(sub[j], "intersect") || word(sub[j], "except"))) return false;
+  const end = top.find((j) => word(sub[j], "from") || word(sub[j], "where"));
+  return !readsClient(sub.slice(0, end ?? sub.length));
+}
+
 /** Whether a subquery selects one column of one source, with no join and no UNION. */
 function columnSet(sub: Token[]): boolean {
   const top = topLevel(sub);
@@ -278,7 +292,9 @@ function columnSet(sub: Token[]): boolean {
   const from = top.find((j) => word(sub[j], "from"));
   const end = top.find((j) => word(sub[j], "where"));
   if (from !== undefined && top.some((j) => j > from && (end === undefined || j < end) && sym(sub[j], ","))) return false;
-  const items = splitTop(sub.slice(1, from ?? end ?? sub.length), (x) => sym(x, ","));
+  // SELECT DISTINCT role selects one column all the same.
+  const first = word(sub[1], "distinct") || word(sub[1], "all") ? 2 : 1;
+  const items = splitTop(sub.slice(first, from ?? end ?? sub.length), (x) => sym(x, ","));
   if (items.length !== 1) return false;
   const item = items[0] as Token[];
   const as = topLevel(item).find((j) => word(item[j], "as"));
@@ -301,10 +317,11 @@ function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = f
     const open = new Set<string>();
     return (name: string) => {
       if (!parsed.has(name)) return undefined;
-      if (open.has(name)) return false;
+      const rows = parsed.get(name);
+      if (open.has(name) || !rows || !plainSet(rows)) return false;
       open.add(name);
       try {
-        return queryLimits(parsed.get(name) ?? [], gate());
+        return queryLimits(rows, gate());
       } finally {
         open.delete(name);
       }
@@ -447,7 +464,7 @@ export function dataLimitedBy(sql: string, accept: (name: string) => boolean): b
 
 export interface BucketAccess {
   /** Parameter queries whose bucket parameters, as the data queries use them, are not the user's own. */
-  loose: { label: string; sql: string; via: "client" | "nobody"; bounded: boolean }[];
+  loose: { label: string; sql: string; via: "client" | "nobody"; bounded: boolean; shared: boolean }[];
   /** Data queries no bucket parameter limits: every user the bucket reaches gets all their rows. */
   open: { label: string; sql: string }[];
   /** No data query uses bucket parameters, and every parameter query is a gate that admits a role. */
@@ -469,7 +486,7 @@ export function bucketAccess(parameters: Map<string, string>, data: { label: str
     const failing = bound.filter((d) => !dataLimitedBy(d.sql, (n) => parameterSource(p, n) === "token"));
     if (!failing.length) continue;
     const client = failing.every((d) => dataLimitedBy(d.sql, (n) => parameterSource(p, n) !== "nobody"));
-    loose.push({ label, sql, via: client ? "client" : "nobody", bounded: p.rows === "token" });
+    loose.push({ label, sql, via: client ? "client" : "nobody", bounded: p.rows === "token", shared: [...p.parameters.values()].includes("shared") });
   }
   // A parameter query that gives no bucket parameters only decides who gets the bucket: a
   // gate. It admits a role when it checks, besides who is asking, a fixed value of their own
