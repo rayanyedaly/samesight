@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import fc from "fast-check";
-import { buildIR, loadPolicy, outputPaths, PUBLICATION, plan, resolvePolicyPath, type SchemaInfo } from "samesight/compiler";
+import { buildIR, introspect, loadPolicy, outputPaths, PUBLICATION, plan, resolvePolicyPath, type SchemaInfo } from "samesight/compiler";
 import { audit } from "./audit/run.ts";
 import { connectLocal } from "./db.ts";
 import { differential, setUp, tearDown } from "./differential/run.ts";
@@ -131,9 +131,18 @@ async function main(argv: string[]): Promise<number> {
   const schema = JSON.parse(snapshot) as SchemaInfo;
   const ir = buildIR(policy, schema);
   const manifest = JSON.parse(manifestText) as Manifest;
-  const latest = plan(policy, schema, root).migration.latest;
+  const planned = plan(policy, schema, root);
+  const latest = planned.migration.latest;
   const syncYaml = file(out.syncConfig) ?? "";
   const statics: Finding[] = checkManifest(manifest, (p) => (p === "migration" ? (latest?.content ?? null) : file(p)));
+  // The manifest vouches for the files it lists; the policy itself says what they must be.
+  const stale = [...planned.files].filter(([p, content]) => file(p) !== content).map(([p]) => p);
+  if (latest && latest.content !== planned.migration.content) stale.push(latest.path);
+  statics.push(
+    stale.length
+      ? { status: "fail", check: "generated files", detail: `${stale.join(", ")} differ from what the policy generates; run samesight generate` }
+      : { status: "ok", check: "generated files", detail: "every generated file is what the policy generates" },
+  );
   try {
     statics.push(...checkStreams(ir, parseStreams(syncYaml)));
   } catch (e) {
@@ -157,6 +166,13 @@ async function main(argv: string[]): Promise<number> {
   const db = await connectLocal(stack.db);
   try {
     const catalog = await checkCatalog(db, manifest, PUBLICATION);
+    // The checks above read schema.json; the database must still be what it describes.
+    const live = `${JSON.stringify(await introspect(stack.db), null, 2)}\n`;
+    catalog.unshift(
+      live === snapshot
+        ? { status: "ok", check: "schema", detail: `the database matches ${out.schemaSnapshot}` }
+        : { status: "fail", check: "schema", detail: `the database differs from ${out.schemaSnapshot}; run samesight generate (and apply the migration)` },
+    );
     catalog.push(
       ...(latest
         ? await checkCatalogParity(db, latest.path, latest.content)

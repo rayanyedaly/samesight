@@ -18,7 +18,9 @@ export interface ColumnModel {
   hasDefault: boolean;
   /** Generated, or identity ALWAYS: no one can write it (identity BY DEFAULT counts as a default). */
   computed: boolean;
-  /** From CHECK (col = ANY (ARRAY[...])) or CHECK (col IN (...)). */
+  /** An identity or serial key: left to its sequence, which a generated value would collide with. */
+  autoKey?: boolean;
+  /** From CHECK (col = ANY (ARRAY[...])) or CHECK (col IN (...)), or the labels of an enum type. */
   values?: string[];
   /** From CHECK (col ~ '...'). */
   pattern?: string;
@@ -38,6 +40,40 @@ export interface ScopeTable {
   name: string;
   tenant?: string;
   hints?: Map<string, Set<string>>;
+  /** Columns a rule compares with the signed-in user: they get the run's users as values. */
+  userColumns?: Set<string>;
+}
+
+/**
+ * Literals a piece of SQL compares columns with, and the columns it compares with the
+ * signed-in user (auth.uid() in RLS, auth.user_id() or request.user_id() in streams). Read
+ * from pg_policies and stream queries in audit mode, and from raw rules: without them the
+ * generator would only produce random values, and a branch like `visibility = 'public'`
+ * would never see a row on either side of it. A heuristic: names are not tied to tables,
+ * so a hint applies to every table with that column.
+ */
+export function sqlHints(sql: string): { hints: Map<string, Set<string>>; users: Set<string> } {
+  const hints = new Map<string, Set<string>>();
+  const users = new Set<string>();
+  // The column name alone: unquoted, without a table or alias in front.
+  const bare = (column: string) => column.replace(/^.*\./, "").replace(/^"(.*)"$/, "$1");
+  const add = (column: string, v: string) => {
+    const key = bare(column);
+    if (!hints.has(key)) hints.set(key, new Set());
+    hints.get(key)?.add(v);
+  };
+  const name = String.raw`((?:"[^"]+"|\w+)(?:\.(?:"[^"]+"|\w+))?)`;
+  const value = String.raw`(?:'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|(true|false))(?:::[\w ]+)?`;
+  const pick = (m: RegExpMatchArray, i: number) => (m[i] !== undefined ? literal(m[i]) : m[i + 1] ?? m[i + 2]);
+  for (const m of sql.matchAll(new RegExp(`${name}\\s*(?:=|<>|!=)\\s*${value}`, "gi"))) add(m[1] ?? "", String(pick(m, 2)));
+  for (const m of sql.matchAll(new RegExp(`${value}\\s*(?:=|<>|!=)\\s*${name}`, "gi"))) add(m[4] ?? "", String(pick(m, 1)));
+  for (const m of sql.matchAll(new RegExp(`${name}\\s+(?:not\\s+)?in\\s*\\(([^()]*)\\)`, "gi"))) {
+    for (const v of (m[2] ?? "").matchAll(/'((?:[^']|'')*)'/g)) add(m[1] ?? "", literal(v[1] ?? ""));
+  }
+  const user = String.raw`\(?\s*(?:select\s+)?(?:auth\.uid|auth\.user_id|request\.user_id)\s*\(\s*\)\s*\)?`;
+  for (const m of sql.matchAll(new RegExp(`${name}\\s*=\\s*${user}`, "gi"))) users.add(bare(m[1] ?? ""));
+  for (const m of sql.matchAll(new RegExp(`${user}\\s*=\\s*${name}`, "gi"))) users.add(bare(m[1] ?? ""));
+  return { hints, users };
 }
 
 export interface TableModel {
@@ -65,7 +101,7 @@ export function parseCheck(def: string): { values?: string[]; pattern?: string }
   return {};
 }
 
-function ruleHints(rule: Rule, out: Map<string, Set<string>>): void {
+function ruleHints(rule: Rule, out: Map<string, Set<string>>, users: Set<string>): void {
   if (rule === true) return;
   const add = (column: string, v: unknown) => {
     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
@@ -75,15 +111,22 @@ function ruleHints(rule: Rule, out: Map<string, Set<string>>): void {
   };
   switch (rule.kind) {
     case "eq":
-      add(rule.column, rule.value);
+      if (typeof rule.value === "object") users.add(rule.column);
+      else add(rule.column, rule.value);
       break;
     case "in":
       for (const v of rule.values) add(rule.column, v);
       break;
     case "and":
     case "or":
-      for (const item of rule.items) ruleHints(item, out);
+      for (const item of rule.items) ruleHints(item, out, users);
       break;
+    case "raw": {
+      const found = sqlHints(rule.rls);
+      for (const [column, values] of found.hints) for (const v of values) add(column, v);
+      for (const u of found.users) users.add(u);
+      break;
+    }
   }
 }
 
@@ -91,19 +134,31 @@ function ruleHints(rule: Rule, out: Map<string, Set<string>>): void {
 export function policyTables(ir: IR): ScopeTable[] {
   return ir.tables.map((t) => {
     const hints = new Map<string, Set<string>>();
-    for (const op of [t.read, t.insert, t.update, t.delete]) for (const rule of op.values()) ruleHints(rule, hints);
-    if (t.check) ruleHints(t.check, hints);
-    return { name: t.name, tenant: t.tenant, hints };
+    const userColumns = new Set<string>();
+    for (const op of [t.read, t.insert, t.update, t.delete]) for (const rule of op.values()) ruleHints(rule, hints, userColumns);
+    if (t.check) ruleHints(t.check, hints, userColumns);
+    return { name: t.name, tenant: t.tenant, hints, userColumns };
   });
 }
 
 export async function readModel(client: pg.Client, tables: ScopeTable[]): Promise<TableModel[]> {
   const names = tables.map((t) => t.name);
-  const columns = await rows<{ table: string; name: string; type: string; nullable: boolean; has_default: boolean; computed: boolean; default_expr: string | null }>(
+  const columns = await rows<{
+    table: string;
+    name: string;
+    type: string;
+    nullable: boolean;
+    has_default: boolean;
+    computed: boolean;
+    identity: boolean;
+    default_expr: string | null;
+    labels: string[] | null;
+  }>(
     client,
     `select c.relname as table, a.attname as name, format_type(a.atttypid, a.atttypmod) as type, not a.attnotnull as nullable,
             a.atthasdef or a.attidentity = 'd' as has_default, (a.attidentity = 'a' or a.attgenerated <> '') as computed,
-            pg_get_expr(d.adbin, d.adrelid) as default_expr
+            a.attidentity <> '' as identity, pg_get_expr(d.adbin, d.adrelid) as default_expr,
+            (select array_agg(e.enumlabel order by e.enumsortorder) from pg_enum e where e.enumtypid = a.atttypid)::text[] as labels
        from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
        left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
       where n.nspname = 'public' and c.relname = any($1) and a.attnum > 0 and not a.attisdropped
@@ -140,7 +195,7 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
       .filter((c) => c.table === t.name)
       .map((c) => {
         const checks = mine.filter((k) => k.type === "c" && k.columns.length === 1 && k.columns[0] === c.name).map((k) => parseCheck(k.def));
-        const values = checks.find((k) => k.values)?.values;
+        const values = checks.find((k) => k.values)?.values ?? (c.labels?.length ? c.labels : undefined);
         const pattern = checks.find((k) => k.pattern !== undefined)?.pattern;
         return {
           name: c.name,
@@ -148,6 +203,7 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
           nullable: c.nullable,
           hasDefault: c.has_default,
           computed: c.computed,
+          ...(c.identity || /^nextval\(/.test(c.default_expr ?? "") ? { autoKey: true } : {}),
           ...(values ? { values } : {}),
           ...(pattern !== undefined ? { pattern } : {}),
           hints: [...(hints.get(c.name) ?? [])],
@@ -159,8 +215,10 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
       .map((k) => ({ columns: k.columns, schema: k.ref_schema ?? "", table: k.ref_table ?? "", references: k.ref_columns ?? [] }));
     // Left to its default, auth.uid() is null for the run's own inserts, and NOT NULL would
     // refuse every row; it is given one of the run's users, as a key to auth.users would be.
+    // So is a column a rule compares with the signed-in user: a random uuid never matches one.
     for (const c of columns) {
-      if (c.table !== t.name || c.type !== "uuid" || !/\bauth\.uid\(\)/.test(c.default_expr ?? "")) continue;
+      if (c.table !== t.name || c.type !== "uuid") continue;
+      if (!/\bauth\.uid\(\)/.test(c.default_expr ?? "") && !t.userColumns?.has(c.name)) continue;
       if (foreignKeys.some((fk) => fk.columns.includes(c.name)) || primaryKey.includes(c.name)) continue;
       foreignKeys.push({ columns: [c.name], schema: "auth", table: "users", references: ["id"] });
     }

@@ -26,6 +26,10 @@ The first published release.
 - `samesight-verify audit` for projects with hand-written RLS and a hand-written sync config, with no policy. It reads sync streams and legacy sync rules (`bucket_definitions`), and warns about bucket definitions that read client parameters.
 - Finds the Supabase CLI in the nearest `node_modules/.bin` or on the PATH, with any package manager.
 - Generated data fills uuid columns that default to `auth.uid()` with the run's users, foreign key or not, and a table that gets no rows says what the database refused.
+- The write path forges, for each role, the inserts, updates and deletes in its own tenant that the policy gives it no rule for.
+- A row sent by two streams is compared copy by copy; values come from enum labels and from the literals in hand-written policies and stream queries; defaulted columns are sometimes left to their default; tables still untested get up to three more targeted datasets.
+- The static checks fail when the generated files are not what the policy generates now, and the catalog checks when the database no longer matches the schema snapshot.
+- Audit mode warns about policies and stream queries that read `user_metadata`, and about streams that read client parameters.
 - The offline checks are exported for use in tests.
 
 ### @samesight/supabase

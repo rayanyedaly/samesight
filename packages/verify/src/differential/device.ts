@@ -16,6 +16,11 @@ export interface DeviceRow {
   data: Record<string, unknown>;
   /** Each stream whose buckets sent this row (the part of the bucket name before "|"), with the columns it sent. */
   sources: { stream: string; columns: string[] }[];
+  /**
+   * Every bucket's copy as it came. `data` merges them (the device keeps one row), so a copy
+   * whose values differ from another's is compared on its own too.
+   */
+  copies?: { stream: string; data: Record<string, unknown> }[];
 }
 
 /** One oplog entry, with its bucket's name. */
@@ -81,8 +86,10 @@ export function rowsFromOps(ops: Op[]): DeviceRow[] {
     const stream = streamOfBucket(op.bucket);
     const row = byKey.get(key);
     const source = { stream, columns: Object.keys(data) };
-    if (!row) byKey.set(key, { table: op.row_type, id: op.row_id, data, sources: [source] });
+    const copy = { stream, data: { ...data } };
+    if (!row) byKey.set(key, { table: op.row_type, id: op.row_id, data, sources: [source], copies: [copy] });
     else {
+      row.copies = [...(row.copies ?? []), copy];
       // The same row from several buckets: keep every column any of them sent.
       Object.assign(row.data, data);
       const known = row.sources.find((x) => x.stream === stream);

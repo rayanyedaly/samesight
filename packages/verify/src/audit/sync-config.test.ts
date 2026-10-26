@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { auditScope } from "./scope.ts";
+import { checkUserEditableClaims } from "./catalog.ts";
 import { parseSyncConfig } from "./sync-config.ts";
 
 // PowerSync's to-do list demo, as its sync rules were written before sync streams.
@@ -54,5 +55,34 @@ bucket_definitions:
     expect(() => parseSyncConfig("bucket_definitions:\n  a:\n    data: [1]\n")).toThrow(/data must be a SQL string/);
     expect(() => parseSyncConfig("bucket_definitions:\n  a:\n    query: SELECT 1\n    data: [SELECT * FROM t]\n")).toThrow(/a has query/);
     expect(() => parseSyncConfig("bucket_definitions: {}\nextra: 1\n")).toThrow(/has extra/);
+  });
+});
+
+describe("checkUserEditableClaims", () => {
+  it("fails a policy or stream that reads user_metadata, which users set on themselves", () => {
+    expect(
+      checkUserEditableClaims([
+        { where: 'policy "admins" on lists', sql: "((auth.jwt() -> 'user_metadata') ->> 'role') = 'admin'" },
+        { where: "s.query", sql: "SELECT * FROM lists WHERE owner_id = auth.user_id()" },
+      ]),
+    ).toEqual([
+      {
+        status: "fail",
+        check: "user metadata",
+        detail: 'policy "admins" on lists reads user_metadata, which every user can set on themselves; decide access from app_metadata or a table instead',
+      },
+    ]);
+    expect(checkUserEditableClaims([{ where: "s.query", sql: "SELECT 1" }])[0]?.status).toBe("ok");
+  });
+});
+
+describe("client-chosen stream parameters", () => {
+  it("warns about streams whose rows depend on what the client asks for", () => {
+    const config = parseSyncConfig(
+      "config:\n  edition: 3\nstreams:\n  list:\n    auto_subscribe: true\n    query: SELECT * FROM todos WHERE list_id = connection.parameter('list_id')\n",
+    );
+    expect(config.findings).toEqual([
+      expect.objectContaining({ status: "warn", check: "sync config", detail: expect.stringMatching(/^list reads client parameters \(connection.parameter/) }),
+    ]);
   });
 });
