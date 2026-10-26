@@ -43,7 +43,9 @@ bucket_definitions:
     data: [SELECT * FROM todos WHERE list_id = bucket.list_id]
 `);
     expect(config.findings[0]).toMatchObject({ status: "warn", check: "sync config" });
-    expect(config.findings[0]?.detail).toMatch(/by_list reads request.parameters\(\)/);
+    expect(config.findings[0]?.detail).toMatch(/by_list reads client parameters/);
+    const legacy = parseSyncConfig("bucket_definitions:\n  b:\n    parameters: SELECT user_parameters.list_id AS list_id\n    data: [SELECT * FROM todos WHERE list_id = bucket.list_id]\n");
+    expect(legacy.findings[0]?.status).toBe("warn");
   });
 
   it("refuses what it cannot read in full", () => {

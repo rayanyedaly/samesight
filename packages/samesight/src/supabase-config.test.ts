@@ -30,6 +30,11 @@ describe("checkAuthConfig", () => {
     expect(findings[0]).toMatchObject({ status: "fail", detail: expect.stringMatching(/calls pg-functions:\/\/postgres\/public\/my_hook/) });
   });
 
+  it("reads single-quoted values", () => {
+    const config = readSupabaseConfig(project(`[auth]\nsigning_keys_path = './keys.json'\n[auth.hook.custom_access_token]\nenabled = true\nuri = '${HOOK_URI}'\n`));
+    expect(checkAuthConfig(config).map((f) => f.status)).toEqual(["ok"]);
+  });
+
   it("warns when there is no config.toml", () => {
     expect(checkAuthConfig(readSupabaseConfig(mkdtempSync(join(tmpdir(), "samesight-config-"))))[0]?.status).toBe("warn");
   });

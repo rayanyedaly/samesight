@@ -20,8 +20,11 @@ export interface SyncConfig {
 
 const RULES_TOP_LEVEL = new Set(["config", "bucket_definitions", "event_definitions"]);
 const DEFINITION_KEYS = new Set(["parameters", "data", "priority", "accept_potentially_dangerous_queries"]);
-/** Client parameters: whatever the app passes when it connects, so whatever an attacker passes. */
-const CLIENT_PARAMETERS = /\brequest\s*\.\s*parameters\s*\(/i;
+/**
+ * Client parameters: whatever the app passes when it connects, so whatever an attacker
+ * passes. request.parameters(), and user_parameters.x in older sync rules.
+ */
+const CLIENT_PARAMETERS = /\brequest\s*\.\s*parameters\s*\(|\buser_parameters\s*\./i;
 
 export function parseSyncConfig(yaml: string): SyncConfig {
   const doc = parse(yaml) as unknown;
@@ -46,7 +49,7 @@ export function parseSyncConfig(yaml: string): SyncConfig {
       findings.push({
         status: "warn",
         check: "sync config",
-        detail: `${name} reads request.parameters(), which the client chooses; devices here send none, so the run does not try what a client could ask for. Never let client parameters decide access.`,
+        detail: `${name} reads client parameters (request.parameters() or user_parameters), which the client chooses; devices here send none, so the run does not try what a client could ask for. Never let client parameters decide access.`,
       });
     }
     return {

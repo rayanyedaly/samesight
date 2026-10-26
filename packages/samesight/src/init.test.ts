@@ -54,3 +54,22 @@ describe("draftPolicy", () => {
     expect(none.notes[0]).toMatch(/no membership table found/);
   });
 });
+
+describe("draftPolicy with hostile names", () => {
+  it("never lets a table name end a comment and add a line of code", () => {
+    const column = (name: string) => ({ name, type: "uuid", nullable: false, default: null, identity: false, generated: false });
+    const evil = (name: string) => ({ name, columns: [column("id")], primaryKey: ["id"], indexedColumns: ["id"], uniqueColumns: ["id"], foreignKeys: [] });
+    const draft = draftPolicy({
+      tables: [...fieldbookSchema.tables, evil("x\nconsole.log('PWNED')//"), evil("y\u2028console.log('PWNED')//")],
+    });
+    const lines = draft.source.split(/\r?\n|\u2028|\u2029/);
+    expect(lines.some((l) => l.startsWith("console.log"))).toBe(false);
+    expect(draft.source).toContain('// Left out: "x\\nconsole.log(\'PWNED\')//": the name needs quoting.');
+    expect(draft.source).toContain("\\u2028");
+  });
+
+  it("ignores a membership table whose name is not an identifier", () => {
+    const tables = fieldbookSchema.tables.map((t) => (t.name === "Membership" ? { ...t, name: "Member ship" } : t));
+    expect(findMembership({ tables })).toBeNull();
+  });
+});

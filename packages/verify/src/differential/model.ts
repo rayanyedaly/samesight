@@ -153,6 +153,7 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
           hints: [...(hints.get(c.name) ?? [])],
         };
       });
+    const primaryKey = mine.find((k) => k.type === "p")?.columns ?? ["id"];
     const foreignKeys: ForeignKeyModel[] = mine
       .filter((k) => k.type === "f" && k.ref_schema && k.ref_table && k.ref_columns)
       .map((k) => ({ columns: k.columns, schema: k.ref_schema ?? "", table: k.ref_table ?? "", references: k.ref_columns ?? [] }));
@@ -160,13 +161,13 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
     // refuse every row; it is given one of the run's users, as a key to auth.users would be.
     for (const c of columns) {
       if (c.table !== t.name || c.type !== "uuid" || !/\bauth\.uid\(\)/.test(c.default_expr ?? "")) continue;
-      if (foreignKeys.some((fk) => fk.columns.includes(c.name))) continue;
+      if (foreignKeys.some((fk) => fk.columns.includes(c.name)) || primaryKey.includes(c.name)) continue;
       foreignKeys.push({ columns: [c.name], schema: "auth", table: "users", references: ["id"] });
     }
     return {
       name: t.name,
       ...(t.tenant !== undefined ? { tenant: t.tenant } : {}),
-      primaryKey: mine.find((k) => k.type === "p")?.columns ?? ["id"],
+      primaryKey,
       unique: unique.filter((u) => u.table === t.name).map((u) => u.column),
       columns: cols,
       foreignKeys,
