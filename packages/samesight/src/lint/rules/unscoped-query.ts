@@ -98,7 +98,8 @@ export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf 
       const t = tokens(p.sql) as Token[];
       const what = reads([t]);
       // The buckets it lists go to everyone, its own rows or not: only fixed values narrow them.
-      const filter = fixedFiltered(p.sql);
+      // A claim every user shares gives every user the same bucket, whatever filters its rows.
+      const filter = fixedFiltered(p.sql) && !p.shared;
       if (checksClaim(p.sql)) {
         add(
           p.sql,

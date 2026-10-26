@@ -106,6 +106,9 @@ describe("unscoped-query on sync streams", () => {
       "'admin' IN (SELECT 'admin' FROM users WHERE id = auth.user_id())",
       "auth.user_id() IN (SELECT subscription.parameter('u'))",
       "org_id IN (SELECT org_id FROM members WHERE user_id = auth.user_id() UNION SELECT id FROM orgs)",
+      "org_id IN ((SELECT org_id FROM members WHERE user_id = auth.user_id()) UNION (SELECT id FROM orgs))",
+      // A set that selects the client's value holds whatever the client sends.
+      "org_id IN (SELECT subscription.parameter('org') FROM members WHERE user_id = auth.user_id())",
       "upper(auth.parameter('role')) = 'AUTHENTICATED'",
       "(auth.parameters() -> 'role') = '\"authenticated\"'",
       // Any client passes by sending its own id.
@@ -127,6 +130,19 @@ describe("unscoped-query on sync streams", () => {
     }
     // app_metadata.role is the app's own, so a check on it is a role, not every token.
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.parameter('app_metadata') ->> 'role' = 'authenticated'\n")).map((f) => f[0])).toEqual(["warning"]);
+  });
+
+  it("fails a CTE set that selects a client value or adds rows by UNION", () => {
+    for (const cte of [
+      "SELECT subscription.parameter('org') AS org_id FROM members WHERE user_id = auth.user_id()",
+      "SELECT org_id FROM members WHERE user_id = auth.user_id() UNION SELECT id FROM orgs",
+    ]) {
+      expect(lint(stream(`  s:\n    with:\n      mine: ${cte}\n    query: SELECT * FROM docs WHERE org_id IN mine\n`)).map((f) => f[0]), cte).not.toEqual([]);
+    }
+  });
+
+  it("takes SELECT DISTINCT for one column", () => {
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE 'admin' IN (SELECT DISTINCT role FROM user_roles WHERE user_id = auth.user_id())\n")).map((f) => f[0])).toEqual(["warning"]);
   });
 
   it("fails a literal or client value checked in a CTE anyone's rows fill", () => {
@@ -289,7 +305,12 @@ describe("unscoped-query on sync rules", () => {
   });
 
   it("takes no claim every user shares for a bucket parameter", () => {
-    for (const parameters of ["SELECT request.jwt() ->> 'role' AS r", "SELECT request.jwt() ->> 'aud' AS r FROM users WHERE id = request.user_id()"]) {
+    for (const parameters of [
+      "SELECT request.jwt() ->> 'role' AS r",
+      "SELECT request.jwt() ->> 'aud' AS r FROM users WHERE id = request.user_id()",
+      // A fixed filter on the user's own row still hands everyone the same bucket.
+      "SELECT request.jwt() ->> 'role' AS r FROM users WHERE id = request.user_id() AND deleted = false",
+    ]) {
       expect(lint(`bucket_definitions:\n  b:\n    parameters: ${parameters}\n    data: [SELECT * FROM t WHERE audience = bucket.r]\n`).map((f) => f[0]), parameters).toEqual(["error"]);
     }
   });

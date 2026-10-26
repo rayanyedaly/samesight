@@ -4,8 +4,8 @@
  * Subscription and connection parameters (streams), request.parameters() and
  * user_parameters (sync rules) are whatever the app passes, so whatever anyone passes. A
  * stream query limited by one and by no token value, or a sync rules parameter query whose
- * bucket parameters select one (reported even where the user's own rows may bound it), lets
- * any client ask for any rows. A row compared with a token value too bounds what can be asked, and makes it
+ * bucket parameters come from one, or select one even where the user's own rows may bound
+ * it, lets any client ask for any rows. A row compared with a token value too bounds what can be asked, and makes it
  * fine; one in an OR branch beside the client value does not, and neither does a value
  * that mixes the two (see access.ts). A check on who is asking (a role claim, an admin
  * list) beside the client value makes it a warning: only users who pass can ask, for any
@@ -53,7 +53,7 @@ export const clientScoped: LintRule = defineRule(RULE, ({ file, config, lineOf }
         p.sql,
         [s.name],
         p.bounded
-          ? `bucket ${s.name}, ${p.label} selects a value the client sends as a bucket parameter; lint cannot tell whether the user's own rows bound it, so select the column instead (SELECT org_id FROM members WHERE ...)`
+          ? `bucket ${s.name}, ${p.label} selects a value the client sends as a bucket parameter; unless the same value is also matched against the user's own rows, any client can ask for any bucket, so select the column instead (SELECT org_id FROM members WHERE ...)`
           : `bucket ${s.name}, ${p.label} takes its bucket parameters from what the client sends, and nothing limits them to the requesting user, so any client can ask for any bucket`,
       );
     }
