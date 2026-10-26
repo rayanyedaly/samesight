@@ -18,16 +18,22 @@ describe("user-metadata", () => {
     ).toEqual([expect.stringMatching(/^stream t, with.teams decides access from user_metadata/)]);
   });
 
-  it("fails sync rules that read it through request.jwt() or token_parameters", () => {
+  it("fails sync rules that read it through request.jwt(), and a path into it", () => {
     expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT request.jwt() -> 'user_metadata' ->> 'org' AS org\n    data: [SELECT * FROM t WHERE org = bucket.org]\n").map((f) => f[2])).toEqual([
       expect.stringMatching(/^bucket b, parameters\[0\] decides access/),
     ]);
-    expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT token_parameters.user_metadata ->> 'org' AS org\n    data: [SELECT * FROM t WHERE org = bucket.org]\n")).toHaveLength(1);
+    // PowerSync reads auth.parameter('x') as the JSON path '$.' || x.
+    expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE team_id = auth.parameter('user_metadata.team_id')\n"))).toHaveLength(1);
+    expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE team_id = json_extract(request.jwt(), '$.user_metadata.team')\n"))).toHaveLength(1);
+    expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE team_id = auth.parameters() ->> '$.user_metadata.team'\n"))).toHaveLength(1);
   });
 
-  it("accepts app_metadata and other claims", () => {
+  it("accepts app_metadata, other claims, legacy token_parameters and plain strings", () => {
     expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE team_id = auth.parameter('app_metadata') ->> 'team_id'\n"))).toEqual([]);
     expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE owner_id = auth.user_id()\n"))).toEqual([]);
+    // token_parameters read the token's own "parameters" claim, which Supabase does not set.
+    expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT token_parameters.user_metadata ->> 'org' AS org\n    data: [SELECT * FROM t WHERE org = bucket.org]\n")).toEqual([]);
+    expect(lint(stream("  t:\n    query: SELECT * FROM events WHERE kind = 'user_metadata' AND owner_id = auth.user_id()\n"))).toEqual([]);
   });
 });
 

@@ -3,9 +3,10 @@
  *
  * Supabase puts user_metadata in the token, and every user can set their own
  * (supabase.auth.updateUser), so whatever access it grants, anyone can grant themselves.
- * app_metadata, which only the server sets, or a table is the place for it. Any read of
- * user_metadata in a stream query, CTE or sync rules query counts: auth.parameter(
- * 'user_metadata'), request.jwt() -> 'user_metadata', token_parameters.user_metadata.
+ * app_metadata, which only the server sets, or a table is the place for it. A read of it
+ * from the token in a stream query, CTE or sync rules query counts: auth.parameter(
+ * 'user_metadata') or a path into it ('user_metadata.role'), auth.parameters() or
+ * request.jwt() -> 'user_metadata'. See readsUserMetadata.
  */
 
 import type { LintFinding } from "../finding.ts";
