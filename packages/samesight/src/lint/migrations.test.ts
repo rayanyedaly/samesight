@@ -52,7 +52,9 @@ create policy "writers" on lists as permissive for insert to authenticated, anon
   it("reads every action of one ALTER TABLE, and follows a table renamed", () => {
     const m = read("alter table lists enable row level security, force row level security;\nalter table notes add column x int, enable row level security;", "alter table lists rename to todo_lists;");
     expect([...m.rls.keys()]).toEqual(["notes", "todo_lists"]);
-    expect([...read("alter table lists enable row level security;", "alter table lists set schema private;").rls.keys()]).toEqual([]);
+    const moved = read("alter table lists enable row level security;\ncreate policy p on lists using (true);", "alter table lists set schema private;");
+    expect([[...moved.rls.keys()], moved.policies.has("lists")]).toEqual([[], false]);
+    expect([...read("alter table lists enable row level security;", "alter table lists set schema public;").rls.keys()]).toEqual(["lists"]);
     const renamed = read("create policy p on lists using (true);", "alter table lists rename to todo_lists;");
     expect([renamed.policies.has("lists"), renamed.policies.get("todo_lists")?.map((p) => p.name)]).toEqual([false, ["p"]]);
   });

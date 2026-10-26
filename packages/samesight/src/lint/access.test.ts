@@ -72,3 +72,48 @@ describe("sync rules buckets", () => {
     expect(access).toEqual({ loose: [{ label: "parameters[0]", sql: "SELECT request.parameters() ->> 'id' AS id", via: "client" }], open: [{ label: "data[1]", sql: "SELECT * FROM tags" }], roleGated: false });
   });
 });
+
+describe("gates and bucket parameters, one guard at a time", () => {
+  const rules = (parameters: string, data: string[]) => `bucket_definitions:\n  b:\n    parameters: ${parameters}\n    data:\n${data.map((d) => `      - ${d}\n`).join("")}`;
+
+  it("count a bucket parameter only where a row is compared with it", () => {
+    expect(levels(unscoped(rules("SELECT request.user_id() AS uid", ["SELECT * FROM todos WHERE bucket.uid = bucket.uid"])))).toEqual(["error"]);
+  });
+
+  it("take no parameter query that gives bucket parameters for a role gate", () => {
+    expect(levels(unscoped(rules("SELECT org_id FROM members WHERE user_id = request.user_id() AND accepted = true", ["SELECT * FROM invoices"])))).toEqual(["error"]);
+  });
+
+  it("take no role gate in a bucket whose other data queries use bucket parameters", () => {
+    expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND is_admin", ["SELECT * FROM a WHERE org = bucket.org_id", "SELECT * FROM b"])))).toContain("error");
+  });
+
+  it("take a bare flag column, but not a claim every user passes, for a gate on the user's row", () => {
+    expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND is_admin", ["SELECT * FROM payroll"])))).toEqual(["warning"]);
+    expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND request.jwt() ->> 'role' = 'authenticated'", ["SELECT * FROM payroll"])))).toEqual(["error"]);
+    // A JSON column of the row, not the token: a role kept in the table.
+    expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND users.meta ->> 'role' = 'authenticated'", ["SELECT * FROM payroll"])))).toEqual(["warning"]);
+  });
+
+  it("count open data queries in the message", () => {
+    expect(unscoped(rules("SELECT request.user_id() AS uid", ["SELECT * FROM t WHERE owner = bucket.uid", "SELECT * FROM a", "SELECT * FROM b"])).map((f) => f[2])).toEqual([
+      expect.stringMatching(/^bucket b: 2 of its data queries are not limited/),
+    ]);
+  });
+});
+
+describe("claims every user passes", () => {
+  const every = /checks a claim every ordinary signed-in Supabase user passes/;
+
+  it("are read as a JSON path, and named in the message wherever they sit", () => {
+    for (const where of [
+      "json_extract(auth.parameters(), '$.role') = 'authenticated'",
+      "owner_id = auth.user_id() OR (auth.parameter('role') = 'authenticated' AND 1 = 1)",
+    ]) {
+      expect(unscoped(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[2]), where).toEqual([expect.stringMatching(every)]);
+    }
+    expect(unscoped(stream("  s:\n    with:\n      c: SELECT id FROM lists WHERE auth.parameter('role') = 'authenticated'\n    query: SELECT * FROM todos WHERE list_id IN c\n")).map((f) => f[2])).toEqual([
+      expect.stringMatching(every),
+    ]);
+  });
+});
