@@ -10,10 +10,11 @@
  * - A sync rules parameter query whose bucket parameters, as the data queries use them,
  *   come from neither the token nor the client: it hands its buckets to every user.
  *
- * Unfiltered, it is an error, and so is a check every signed-in user passes. It is a
- * warning when something else filters the rows: fixed values (status = 'public', often
- * public by design); a check on who is asking, such as a role claim or an admin list
- * (auth.user_id() IN (SELECT user_id FROM admins)); both, OR'd (public rows for all, every
+ * Unfiltered, it is an error, and so is a check every signed-in (or non-anonymous) user
+ * passes. It is a warning when something else filters the rows: fixed values or a column
+ * alone (status = 'public', is_public; often public by design); a check on who is asking,
+ * such as a role claim or an admin list (auth.user_id() IN (SELECT user_id FROM admins));
+ * both, OR'd (public rows for all, every
  * row for admins); or, for sync rules, a parameter query that gives its buckets by a role
  * claim, or a bucket whose parameter queries only admit users passing a fixed check on
  * their own row or a token claim (is_admin = true). Lint cannot tell a role from any other

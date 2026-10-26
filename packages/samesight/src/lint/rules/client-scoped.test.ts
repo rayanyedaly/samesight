@@ -68,10 +68,18 @@ describe("client-scoped on sync streams", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE org_id = subscription.parameter('org') AND org_id IN (SELECT org_id FROM members WHERE user_id = auth.user_id())\n"))).toEqual([]);
   });
 
-  it("accepts a sync rules parameter the client names but the user's own rows pin", () => {
-    expect(
-      lint("bucket_definitions:\n  b:\n    parameters: SELECT request.parameters() ->> 'org' AS org_id FROM members WHERE org_id = request.parameters() ->> 'org' AND user_id = request.user_id()\n    data: [SELECT * FROM t WHERE org = bucket.org_id]\n"),
-    ).toEqual([]);
+  it("fails a sync rules parameter the client names, even where the user's own rows bound it", () => {
+    const org = "request.parameters() ->> 'org'";
+    for (const where of [
+      // Safe, but lint does not tell it from the leaks below; select org_id from the rows instead.
+      `org_id = ${org} AND user_id = request.user_id()`,
+      `user_id = request.user_id() AND NOT org_id = ${org}`,
+      `user_id = request.user_id() AND (true OR org_id = ${org})`,
+    ]) {
+      expect(levels(lint(`bucket_definitions:\n  b:\n    parameters: SELECT ${org} AS org_id FROM members WHERE ${where}\n    data: [SELECT * FROM t WHERE org = bucket.org_id]\n`)), where).toEqual(["error"]);
+    }
+    const uid = "coalesce(request.parameters() ->> 'uid', request.user_id())";
+    expect(levels(lint(`bucket_definitions:\n  b:\n    parameters: SELECT ${uid} AS uid FROM users WHERE id = request.user_id() AND NOT id = ${uid}\n    data: [SELECT * FROM t WHERE owner = bucket.uid]\n`))).toEqual(["error"]);
   });
 
   it("leaves a query reading an unreadable CTE in a subquery to unreadable-query", () => {
