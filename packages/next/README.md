@@ -52,6 +52,11 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 [Fieldbook](https://github.com/rayanyedaly/samesight/tree/main/examples/fieldbook) is a complete app built on it, including the service worker setup and Turbopack's prebuilt-worker option (`createEncryptedStore({ worker: "/@powersync/worker.js" })`).
 
-One tab at a time: the store does not coordinate an unlock across tabs yet.
+## Requirements and limits
+
+- **Password sign-in, with the session in localStorage.** The store key comes from the sign-in password, and the offline paths read the session from localStorage under `authStorageKey`. Create the Supabase client with `createClient(url, key, { auth: { storageKey: authStorageKey, persistSession: true } })` and the default storage; cookie storage (`@supabase/ssr`'s browser client) does not work, and the provider warns in the console when it finds the session elsewhere.
+- **OAuth, magic links and password-reset links** produce a session without a password, so there is no key to open the store with; the provider asks for a password the user may not have. Use them outside the provider, or sign in with a password afterwards.
+- **What the encryption protects:** the data at rest, if the device is lost while locked. It does not protect the account: the Supabase refresh token in localStorage is not encrypted, and anyone holding the unlocked browser profile can use it.
+- **One tab at a time:** the store does not coordinate an unlock across tabs yet.
 
 MIT

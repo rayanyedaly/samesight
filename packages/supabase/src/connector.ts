@@ -10,6 +10,8 @@ import { type CrudOpPayload, type RejectedUpload, recordRejectedLocally } from "
 /** record_rejection accepts at most 100 entries per call. */
 const RECORD_CHUNK = 100;
 const UPLOAD_TIMEOUT_MS = 30_000;
+/** Failed attempts at one batch before onStuck says so (it keeps retrying). */
+const ATTEMPTS_BEFORE_STUCK = 8;
 
 /** A batch held in the queue because discarding it would be worse (see `UploadOutcome`). */
 export interface StuckUpload {
@@ -64,6 +66,8 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
   private readonly applyBatch: string;
   private readonly recordRejection: string;
   private refreshedForNoTenant = false;
+  /** The batch being retried and how many times it failed, to notice one that never goes through. */
+  private attempts: { id: number; count: number } | null = null;
 
   constructor(private readonly options: SupabaseConnectorOptions) {
     this.applyBatch = options.functions?.applyBatch ?? "apply_batch";
@@ -119,27 +123,42 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
 
     const response = await call(this.applyBatch, { ops });
     const { status } = response;
-    // postgrest-js turns some non-JSON 404s (a wrong URL, a proxy) into an empty success,
-    // so require a 2xx as well before taking the batch out of the queue.
-    const error =
-      response.error ??
-      (status >= 200 && status < 300 ? null : { code: "", message: `unexpected status ${status}` });
-    if (!error) {
+    if (!response.error && response.data === ops.length) {
       this.refreshedForNoTenant = false;
+      this.attempts = null;
       await transaction.complete();
       this.options.onUploaded?.();
       return;
     }
+    // apply_batch answers with the number of ops it applied. postgrest-js turns some 404s
+    // (a wrong URL, a proxy, a service worker) into an empty success, so a 2xx without that
+    // answer did not reach the database: hold the batch and say so.
+    const error = response.error ?? {
+      code: "",
+      message:
+        status >= 200 && status < 300
+          ? `answered ${status} without confirming the ${ops.length} op(s); is the Supabase URL right, and is apply_batch current?`
+          : `unexpected status ${status}`,
+    };
+    const unconfirmed = !response.error && status >= 200 && status < 300;
 
     const code = error.code || null;
-    const outcome = classifyUploadError({ status, code });
+    const outcome = unconfirmed ? "stuck" : classifyUploadError({ status, code, message: error.message });
     const label = `${this.applyBatch} failed (${code ?? status}): ${error.message}`;
+    const stuck = () => this.options.onStuck?.({ status, code, message: error.message, opCount: ops.length });
+    // A batch that keeps failing (a statement that always times out, a token the server
+    // keeps refusing) is retried as before, but someone is told once it has failed a while.
+    if (outcome === "retry" || outcome === "reauth") {
+      const id = transaction.transactionId ?? -1;
+      this.attempts = this.attempts?.id === id ? { id, count: this.attempts.count + 1 } : { id, count: 1 };
+      if (this.attempts.count === ATTEMPTS_BEFORE_STUCK) stuck();
+    }
 
     if (outcome === "reauth") {
       // A token without a tenant (28000) that a refresh did not fix: the user has no
       // membership. Hold and tell someone, rather than refreshing every few seconds.
       if (code === "28000" && this.refreshedForNoTenant) {
-        this.options.onStuck?.({ status, code, message: error.message, opCount: ops.length });
+        stuck();
         throw new Error(`${label}; held in the queue`);
       }
       this.refreshedForNoTenant = code === "28000";
@@ -147,14 +166,20 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
       throw new Error(`${label}; session refreshed, will retry`);
     }
     if (outcome === "stuck") {
-      this.options.onStuck?.({ status, code, message: error.message, opCount: ops.length });
+      stuck();
       throw new Error(`${label}; held in the queue`);
     }
     if (outcome === "retry") throw new Error(`${label}; will retry`);
 
     const info: RejectedUpload = { status, code, message: error.message, ops };
-    // Deliberately not caught: if the local record fails, the batch stays queued.
-    await (this.options.onRejected ?? recordRejectedLocally)(db, info);
+    // If the local record fails, the batch stays queued (rethrown), and someone is told: it
+    // will fail the same way next time (a schema without the RejectedWrite table).
+    try {
+      await (this.options.onRejected ?? recordRejectedLocally)(db, info);
+    } catch (e) {
+      this.options.onStuck?.({ status, code, message: `refused, but could not be recorded locally: ${(e as Error).message}`, opCount: ops.length });
+      throw e;
+    }
     // Best effort: the server copy lets an admin see what failed across the team. The
     // local record is the one that matters, so a failure here is only logged.
     const rejections = ops.map((op) => ({ ...op, code, message: error.message, status }));

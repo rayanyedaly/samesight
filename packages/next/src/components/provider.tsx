@@ -128,7 +128,19 @@ export function SamesightProvider({
     // failing refresh for several seconds.
     const cached = storedSession(authStorageKey);
     setSession(cached);
-    void auth.getSession().then(({ data }) => setSession(data.session ?? storedSession(authStorageKey)));
+    void auth.getSession().then(({ data }) => {
+      if (data.session && !storedSession(authStorageKey)) {
+        // The offline paths (unlock after a reload, an expired token with no network) read
+        // the session from localStorage under this key; without it every reload asks for
+        // the password and fails. Cookie storage (@supabase/ssr) and a different storageKey
+        // both end here.
+        console.warn(
+          `@samesight/next: Supabase has a session, but none is stored in localStorage under "${authStorageKey}". ` +
+            "Create the client with auth: { storageKey: authStorageKey, persistSession: true } and the default localStorage storage.",
+        );
+      }
+      setSession(data.session ?? storedSession(authStorageKey));
+    });
     const { data } = auth.onAuthStateChange((event, next) =>
       setSession(next ?? (event === "SIGNED_OUT" ? null : storedSession(authStorageKey))),
     );
