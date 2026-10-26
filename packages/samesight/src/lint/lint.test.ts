@@ -1,11 +1,21 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { defineRule, findSyncConfig, lineOf, lintSyncConfig, RULE_NAMES, RULES } from "./lint.ts";
 import { applyMigrations } from "./migrations.ts";
+
+const temps: string[] = [];
+const tempDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+  temps.push(dir);
+  return dir;
+};
+afterAll(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const streams = "config:\n  edition: 3\n\nstreams:\n  user_data:\n    auto_subscribe: true\n    queries:\n      - SELECT * FROM lists WHERE owner_id = auth.user_id()\n";
 
@@ -70,7 +80,7 @@ describe("lineOf", () => {
 
 describe("findSyncConfig", () => {
   it("takes the first usual path that exists", () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+    const dir = tempDir();
     expect(findSyncConfig(dir)).toBeUndefined();
     mkdirSync(join(dir, "powersync"));
     writeFileSync(join(dir, "powersync", "sync-rules.yaml"), "");
@@ -85,7 +95,7 @@ describe("samesight lint", () => {
   const run = (cwd: string, ...args: string[]) => spawnSync(process.execPath, [cli, "lint", ...args], { cwd, encoding: "utf8" });
 
   it("exits 0 on a clean config, and 2 when there is no config or it cannot be read", () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+    const dir = tempDir();
     const none = run(dir);
     expect(none.status).toBe(2);
     expect(none.stderr).toMatch(/No sync config found/);
@@ -97,10 +107,14 @@ describe("samesight lint", () => {
     expect(bad.status).toBe(2);
     expect(bad.stdout).toBe("");
     expect(bad.stderr).toMatch(/bad.yaml: cannot be read as a sync config.*\n1 of 2 file\(s\) could not be read/);
+    // Findings in the readable file still print; the unreadable one still fails the run.
+    writeFileSync(join(dir, "open.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
+    const mixed = run(dir, "open.yaml", "bad.yaml");
+    expect([mixed.status, mixed.stdout]).toEqual([2, expect.stringMatching(/^open.yaml:6 {2}error .*\n1 error\n$/)]);
   });
 
   it("accepts --allow for a known rule, reports what it allowed, and refuses an unknown rule", () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+    const dir = tempDir();
     writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
     expect(run(dir).status).toBe(1);
     const allowed = run(dir, "--allow", "unscoped-query:customers");
@@ -110,7 +124,7 @@ describe("samesight lint", () => {
   });
 
   it("prints one JSON object on stdout with --format json, keeping notes on stderr", () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+    const dir = tempDir();
     writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
     writeFileSync(join(dir, "bad.yaml"), "streams: [1]\n");
     const out = run(dir, "sync-config.yaml", "bad.yaml", "--format", "json");
