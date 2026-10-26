@@ -52,6 +52,9 @@ create policy "writers" on lists as permissive for insert to authenticated, anon
   it("reads every action of one ALTER TABLE, and follows a table renamed", () => {
     const m = read("alter table lists enable row level security, force row level security;\nalter table notes add column x int, enable row level security;", "alter table lists rename to todo_lists;");
     expect([...m.rls.keys()]).toEqual(["notes", "todo_lists"]);
+    expect([...read("alter table lists enable row level security;", "alter table lists set schema private;").rls.keys()]).toEqual([]);
+    const renamed = read("create policy p on lists using (true);", "alter table lists rename to todo_lists;");
+    expect([renamed.policies.has("lists"), renamed.policies.get("todo_lists")?.map((p) => p.name)]).toEqual([false, ["p"]]);
   });
 
   it("reads AS RESTRICTIVE, and a TO that only USING mentions is no TO", () => {
@@ -72,6 +75,7 @@ create policy "writers" on lists as permissive for insert to authenticated, anon
       ["writes", ["public"], null, "owner_id = auth.uid()", "m0.sql:2"],
     ]);
     expect(read("create policy p on lists using (x);", "alter policy p on lists to anon;").policies.get("lists")?.[0]?.roles).toEqual(["anon"]);
+    expect(read("create policy w on lists for insert with check (owner_id = auth.uid());", "alter policy w on lists with check (true);").policies.get("lists")?.[0]?.check).toBe("true");
   });
 
   it("reads only .sql files from a directory, in name order", () => {

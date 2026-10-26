@@ -67,6 +67,12 @@ function apply(m: Migrations, text: string, at: Located): void {
       }
       const rename = new RegExp(String.raw`^rename\s+to\s+(${NAME})$`, "i").exec(action);
       if (rename) move(m, table, name(rename[1] as string));
+      // Moved out of public: a later public table of that name starts afresh.
+      const schema = new RegExp(String.raw`^set\s+schema\s+(${NAME})$`, "i").exec(action);
+      if (schema && name(schema[1] as string) !== "public") {
+        m.rls.delete(table);
+        m.policies.delete(table);
+      }
     }
     return;
   }
