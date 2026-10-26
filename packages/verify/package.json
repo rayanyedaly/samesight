@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "test": "vitest run",
-    "test:stack": "vitest run --config vitest.stack.config.ts"
+    "test:stack": "vitest run --config vitest.stack.config.ts",
+    "test:audit": "vitest run --config vitest.audit.config.ts"
   },
   "dependencies": {
     "@powersync/common": "2.4.0",
