@@ -181,7 +181,7 @@ async function init(given: string | undefined, db: string): Promise<number> {
   }
   const dir = dirname(path);
   const types = TYPES_FILES.find((f) => existsSync(join(dir, f)));
-  const typesImport = `./${(types ?? TYPES_FILES[0]).replace(/\.ts$/, "")}`;
+  const typesFile = types ?? TYPES_FILES[0];
   let schema: SchemaInfo | null = null;
   let roles: string[] = [];
   try {
@@ -192,7 +192,7 @@ async function init(given: string | undefined, db: string): Promise<number> {
     console.log(`Could not read the local database (${(e as Error).message}); writing a template instead.`);
     console.log("Start it (supabase start) and rerun init for a policy drafted from your schema.");
   }
-  const draft = draftPolicy(schema?.tables.length ? schema : null, { typesImport, roles });
+  const draft = draftPolicy(schema?.tables.length ? schema : null, { typesFile, roles });
   mkdirSync(dir, { recursive: true });
   writeFileSync(path, draft.source);
   for (const n of draft.notes) console.log(`  ${n}`);
