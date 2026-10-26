@@ -5,8 +5,10 @@
  * user_parameters (sync rules) are whatever the app passes, so whatever anyone passes. A
  * stream query limited by one and by no token value, or a sync rules parameter query whose
  * bucket parameters come from one and are not bounded by the token, lets any client ask for
- * any rows. A token value that also limits the rows bounds what can be asked, and makes it
- * fine; one in an OR branch beside the client value does not (see access.ts).
+ * any rows. A row compared with a token value too bounds what can be asked, and makes it
+ * fine; one in an OR branch beside the client value does not (see access.ts). A check on
+ * a token claim (a role) beside the client value makes it a warning: only users who pass
+ * can ask, for any row.
  */
 
 import { bucketAccess, streamAccess } from "../access.ts";
@@ -29,11 +31,19 @@ export const clientScoped: LintRule = defineRule(RULE, ({ file, config, lineOf }
         if ([...s.ctes].some(([k, sql]) => read.includes(k.toLowerCase()) && !tokens(sql))) continue;
         const access = streamAccess(q.sql, s.ctes);
         if (!access?.tokenOrClient || access.token) continue;
-        add(
-          q.sql,
-          [s.name, tableOf(q.sql)],
-          `stream ${s.name}, ${q.label} picks its ${tableOf(q.sql)} rows by a parameter the client sends, and nothing limits them to the requesting user, so any client can ask for any of them`,
-        );
+        const table = tableOf(q.sql);
+        if (access.claim) {
+          out.push({
+            rule: RULE,
+            level: "warning",
+            file,
+            line: lineOf(q.sql),
+            subjects: [s.name, table],
+            message: `stream ${s.name}, ${q.label} picks which rows of ${table} it sends by a parameter the client sends; only users who pass its check on who is asking (a role claim, or a list such as admins) can ask, and they can ask for any of them; fine if that is meant`,
+          });
+          continue;
+        }
+        add(q.sql, [s.name, table], `stream ${s.name}, ${q.label} picks which rows of ${table} it sends by a parameter the client sends, and nothing limits them to the requesting user, so any client can ask for any of them`);
       }
       continue;
     }

@@ -9,9 +9,22 @@ const stream = (body: string) => `config:\n  edition: 3\nstreams:\n${body}`;
 describe("client-scoped on sync streams", () => {
   it("fails rows picked by a subscription or connection parameter alone", () => {
     expect(lint(stream("  list:\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')\n"))).toEqual([
-      ["error", 5, "stream list, query picks its todos rows by a parameter the client sends, and nothing limits them to the requesting user, so any client can ask for any of them"],
+      ["error", 5, "stream list, query picks which rows of todos it sends by a parameter the client sends, and nothing limits them to the requesting user, so any client can ask for any of them"],
     ]);
     expect(lint(stream("  doc:\n    with:\n      d: SELECT id FROM documents WHERE id = connection.parameter('doc')\n    query: SELECT * FROM documents WHERE id IN d\n")).map((f) => f[0])).toEqual(["error"]);
+  });
+
+  it("fails a client parameter beside a claim every token passes, and warns beside a role", () => {
+    expect(
+      lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND auth.parameter('role') = 'authenticated'\n")).map((f) => f[0]),
+    ).toEqual(["error"]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND auth.parameter('app_metadata') ->> 'role' = 'admin'\n"))).toEqual([
+      [
+        "warning",
+        5,
+        "stream s, query picks which rows of docs it sends by a parameter the client sends; only users who pass its check on who is asking (a role claim, or a list such as admins) can ask, and they can ask for any of them; fine if that is meant",
+      ],
+    ]);
   });
 
   it("fails a client parameter in an OR branch beside the token check", () => {

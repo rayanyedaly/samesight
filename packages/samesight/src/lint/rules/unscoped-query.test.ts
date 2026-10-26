@@ -9,11 +9,17 @@ const stream = (body: string) => `config:\n  edition: 3\nstreams:\n${body}`;
 describe("unscoped-query on sync streams", () => {
   it("fails a query that reads no token value, and warns when only fixed values filter it", () => {
     expect(lint(stream("  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n"))).toEqual([
-      ["error", 6, "stream all, query sends every customers row to every user: nothing in it reads the requesting user (auth.user_id()) or a token claim"],
+      ["error", 6, "stream all, query sends every row of customers to every user: nothing in it reads the requesting user (auth.user_id()) or a token claim"],
     ]);
     expect(lint(stream("  pub:\n    query: SELECT * FROM posts WHERE status = 'published'\n"))).toEqual([
-      ["warning", 5, "stream pub, query sends every user the same posts rows, filtered only by fixed values; fine if they are public by design"],
+      ["warning", 5, "stream pub, query sends every user the rows of posts its fixed filters allow, whatever their token says; fine if those are public by design"],
     ]);
+  });
+
+  it("does not take a comparison of two columns, or of two literals, for a filter", () => {
+    for (const where of ["1 = 1", "id = id", "created_by = updated_by"]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
+    }
   });
 
   it("accepts a query tied to the token, directly, through a join or through a CTE", () => {
@@ -21,17 +27,32 @@ describe("unscoped-query on sync streams", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM projects WHERE org_id = auth.parameter('org_id')\n"))).toEqual([]);
     expect(lint(stream("  s:\n    query: SELECT todos.* FROM todos JOIN lists ON todos.list_id = lists.id AND lists.owner_id = auth.user_id()\n"))).toEqual([]);
     expect(lint(stream("  s:\n    with:\n      mine: SELECT id FROM lists WHERE owner_id = auth.user_id()\n    query: SELECT * FROM todos WHERE list_id IN mine\n"))).toEqual([]);
+    expect(
+      lint(stream("  s:\n    with:\n      mine: SELECT org_id FROM members WHERE user_id = auth.user_id()\n    query: SELECT * FROM projects WHERE org_id IN (SELECT org_id FROM mine)\n")),
+    ).toEqual([]);
   });
 
-  it("counts a token value only where it limits the rows", () => {
+  it("counts a token value only where a row is compared with it", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM lists WHERE owner_id = auth.user_id() OR true\n"))).toEqual([
-      ["error", 5, "stream s, query reads the requesting user's token, but not in a way that limits its lists rows, so every user gets every row"],
+      ["error", 5, "stream s, query reads the requesting user's token, but not in a way that limits which rows of lists it sends, so every user gets every row"],
     ]);
-    expect(lint(stream("  s:\n    query: SELECT * FROM lists WHERE auth.user_id() IS NOT NULL\n")).map((f) => f[0])).toEqual(["error"]);
-    expect(lint(stream("  s:\n    query: SELECT * FROM lists WHERE NOT owner_id = auth.user_id()\n")).map((f) => f[0])).toEqual(["error"]);
+    for (const where of [
+      "auth.user_id() IS NOT NULL",
+      "NOT owner_id = auth.user_id()",
+      "auth.user_id() = auth.user_id()",
+      "owner_id = auth.user_id() OR owner_id = owner_id",
+      "author_id NOT IN (SELECT blocked_id FROM blocks WHERE user_id = auth.user_id())",
+    ]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM lists WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
+    }
+    // left() is a function, not a join that ends the WHERE.
+    expect(lint(stream("  s:\n    query: SELECT * FROM lists WHERE left(name, 1) = 'a' AND owner_id = auth.user_id()\n"))).toEqual([]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM lists WHERE owner_id = auth.user_id() OR left(name, 1) = 'a'\n")).map((f) => f[0])).toEqual(["warning"]);
     expect(lint(stream("  s:\n    query: SELECT * FROM lists WHERE auth.user_id() IS NOT NULL AND status = 'open'\n"))).toEqual([
-      ["warning", 5, "stream s, query reads the requesting user's token, but not in a way that limits its lists rows, so every user gets the same rows, filtered only by fixed values"],
+      ["warning", 5, "stream s, query sends every user the rows of lists its fixed filters allow, whatever their token says; fine if those are public by design"],
     ]);
+    // Their own rows and every public one: the public ones reach everyone.
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE owner_id = auth.user_id() OR status = 'public'\n")).map((f) => f[0])).toEqual(["warning"]);
     // An outer join keeps every todo, whatever its ON says.
     expect(
       lint(stream("  s:\n    query: SELECT todos.* FROM todos LEFT JOIN lists ON todos.list_id = lists.id AND lists.owner_id = auth.user_id()\n")).map((f) => f[0]),
@@ -44,15 +65,37 @@ describe("unscoped-query on sync streams", () => {
     ]);
   });
 
-  it("accepts every OR branch tied to the user, a subquery that is, and a role gate", () => {
+  it("fails a claim every signed-in Supabase token passes", () => {
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.parameter('role') = 'authenticated'\n"))).toEqual([
+      ["error", 5, "stream s, query checks a claim every signed-in Supabase token passes (role or aud = 'authenticated'), so every user gets every row of docs"],
+    ]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE owner_id = auth.user_id() OR auth.parameters() ->> 'aud' = 'authenticated'\n")).map((f) => f[0])).toEqual(["error"]);
+  });
+
+  it("warns about rows sent to whoever passes a role claim or an admin list", () => {
+    const message = "stream s, query sends every row of customers to every user who passes its check on who is asking (a role claim, or a list such as admins), not each user their own; fine if only users meant to see them all pass it";
+    expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE auth.parameter('app_metadata') ->> 'role' = 'admin'\n"))).toEqual([["warning", 5, message]]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE auth.user_id() IN (SELECT user_id FROM admins)\n"))).toEqual([["warning", 5, message]]);
+    // Own rows, or all of them for an admin.
+    expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE owner_id = auth.user_id() OR auth.parameter('app_metadata') ->> 'role' = 'admin'\n")).map((f) => f[0])).toEqual([
+      "warning",
+    ]);
+  });
+
+  it("accepts every OR branch tied to the user, and a subquery that is", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM chats WHERE (a_id = auth.user_id() OR b_id = auth.user_id())\n"))).toEqual([]);
     expect(lint(stream("  s:\n    query: SELECT * FROM todos WHERE list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())\n"))).toEqual([]);
-    expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE auth.parameter('role') = 'admin'\n"))).toEqual([]);
   });
 
   it("leaves queries the client scopes, and words inside strings, to other rules", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')\n"))).toEqual([]);
     expect(lint(stream("  s:\n    query: SELECT * FROM notes WHERE body = 'auth.user_id()'\n")).map((f) => f[0])).toEqual(["warning"]);
+  });
+
+  it("names the table plainly when it cannot tell which", () => {
+    expect(lint(stream("  s:\n    query: SELECT * FROM a LEFT JOIN b ON a.id = b.id\n")).map((f) => f[2])).toEqual([
+      "stream s, query sends every row of its table to every user: nothing in it reads the requesting user (auth.user_id()) or a token claim",
+    ]);
   });
 });
 
@@ -87,10 +130,28 @@ describe("unscoped-query on sync rules", () => {
       [
         "warning",
         4,
-        "bucket admin: its data queries are not limited by a bucket parameter, so every user its parameter queries admit receives every row of customers; fine if they admit only a role (such as admins) meant to see it all",
+        "bucket admin: its data queries are not limited by a bucket parameter, so every user its parameter queries admit receives every row of customers; fine if their checks (such as is_admin = true, or a role claim) admit only users meant to see it all",
       ],
     ]);
-    expect(lint("bucket_definitions:\n  admin:\n    parameters: SELECT WHERE request.jwt() ->> 'role' = 'admin'\n    data: [SELECT * FROM customers]\n").map((f) => f[0])).toEqual(["warning"]);
+    for (const gate of ["SELECT FROM users WHERE users.id = request.user_id() AND users.is_admin", "SELECT WHERE request.jwt() ->> 'role' = 'admin'"]) {
+      expect(lint(`bucket_definitions:\n  admin:\n    parameters: ${gate}\n    data: [SELECT * FROM customers]\n`).map((f) => f[0]), gate).toEqual(["warning"]);
+    }
+  });
+
+  it("fails open data behind a gate that is no role: a client value, a claim every token passes, a bucket that also scopes", () => {
+    for (const gate of [
+      "SELECT FROM users WHERE id = request.user_id() AND request.parameters() ->> 'admin' = 'yes'",
+      "SELECT FROM users WHERE id = request.user_id() AND 1 = 1",
+      "SELECT WHERE request.jwt() ->> 'role' = 'authenticated'",
+    ]) {
+      expect(lint(`bucket_definitions:\n  b:\n    parameters: ${gate}\n    data: [SELECT * FROM payroll]\n`).map((f) => f[0]), gate).toEqual(["error"]);
+    }
+    // A membership filter beside a per-org bucket is no role: invoices go to every member of anything.
+    expect(
+      lint(
+        "bucket_definitions:\n  by_org:\n    parameters: SELECT org_id FROM members WHERE user_id = request.user_id() AND accepted = true\n    data:\n      - SELECT * FROM projects WHERE org_id = bucket.org_id\n      - SELECT * FROM invoices\n",
+      ),
+    ).toEqual([["error", 6, "bucket by_org: 1 of its data queries is not limited by a bucket parameter, so every user it reaches receives every row of invoices"]]);
   });
 
   it("accepts a bucket tied to the token, and leaves client parameters to client-scoped", () => {
@@ -110,7 +171,7 @@ describe("unscoped-query on the corpus", () => {
     expect(corpusFindings("real", [unscopedQuery])).toEqual([
       "powersync-dart-trello-global-legacy.yaml:8 error",
       "powersync-dart-trello-legacy.yaml:5 error",
-      "powersync-dart-trello-legacy.yaml:14 warning",
+      "powersync-dart-trello-legacy.yaml:14 error",
       "powersync-js-nextjs.yaml:11 error",
     ]);
   });
