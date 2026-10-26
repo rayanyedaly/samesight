@@ -14,14 +14,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { DEFAULT_IDLE_MS, IdleLock } from "../session/idle-lock";
-import { endSession, lockStore, signOutAndWipe, signOutKeeping, unsyncedCount } from "../session/session-client";
-import { storedSession } from "../session/stored-session";
-import type { EncryptedStore } from "../store/db";
-import { getSessionUserId, hasSessionKey } from "../store/session-key";
-import { deriveAndHoldKey, tryUnlock, type UnlockResult } from "../store/unlock";
-import { RecoverScreen, type RecoverScreenCopy } from "./recover-screen";
-import { type LockReason, UnlockScreen, type UnlockScreenCopy } from "./unlock-screen";
+import { DEFAULT_IDLE_MS, IdleLock } from "../session/idle-lock.tsx";
+import { endSession, lockStore, signOutAndWipe, signOutKeeping, unsyncedCount } from "../session/session-client.ts";
+import { storedSession } from "../session/stored-session.ts";
+import type { EncryptedStore } from "../store/db.ts";
+import { getSessionUserId, hasSessionKey } from "../store/session-key.ts";
+import { deriveAndHoldKey, tryUnlock, type UnlockResult } from "../store/unlock.ts";
+import { RecoverScreen, type RecoverScreenCopy } from "./recover-screen.tsx";
+import { type LockReason, UnlockScreen, type UnlockScreenCopy } from "./unlock-screen.tsx";
 
 /**
  * What the app renders against:

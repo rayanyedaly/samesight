@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SYNC_COPY, resolveChipStatus, resolveSyncState, SYNC_STATUSES } from "./sync-state";
+import { DEFAULT_SYNC_COPY, resolveChipStatus, resolveSyncState, SYNC_STATUSES } from "./sync-state.ts";
 
 describe("resolveSyncState", () => {
   it("resolves all three states with an icon and a label", () => {

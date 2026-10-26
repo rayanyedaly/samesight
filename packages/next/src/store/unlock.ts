@@ -1,7 +1,7 @@
-import type { EncryptedStore } from "./db";
-import { deriveStoreKey } from "./kdf";
-import { getOrCreateSalt, peekSalt } from "./kdf-salt";
-import { clearSessionKey, setSessionKey } from "./session-key";
+import type { EncryptedStore } from "./db.ts";
+import { deriveStoreKey } from "./kdf.ts";
+import { getOrCreateSalt, peekSalt } from "./kdf-salt.ts";
+import { clearSessionKey, setSessionKey } from "./session-key.ts";
 
 /**
  * Sign-in: derive the store key from the password (creating this user's salt on their

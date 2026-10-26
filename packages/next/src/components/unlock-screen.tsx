@@ -1,8 +1,8 @@
 "use client";
 
 import { type FormEvent, useId, useState } from "react";
-import type { UnlockResult } from "../store/unlock";
-import { ConfirmDialog } from "./confirm-dialog";
+import type { UnlockResult } from "../store/unlock.ts";
+import { ConfirmDialog } from "./confirm-dialog.tsx";
 
 /** Why the store is locked: a reload, the idle lock, or a password changed on another device. */
 export type LockReason = "reload" | "idle" | "password-changed";

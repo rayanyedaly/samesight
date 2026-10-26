@@ -4,8 +4,8 @@ import type {
   PowerSyncCredentials,
 } from "@powersync/common";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { classifyUploadError } from "./errors";
-import { type CrudOpPayload, type RejectedUpload, recordRejectedLocally } from "./rejected-writes";
+import { classifyUploadError } from "./errors.ts";
+import { type CrudOpPayload, type RejectedUpload, recordRejectedLocally } from "./rejected-writes.ts";
 
 /** record_rejection accepts at most 100 entries per call. */
 const RECORD_CHUNK = 100;

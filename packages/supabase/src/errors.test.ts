@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyUploadError } from "./errors";
+import { classifyUploadError } from "./errors.ts";
 
 // The write-path table: what the connector does with each kind of failed apply_batch.
 describe("classifyUploadError", () => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * samesight init | generate | check | doctor
+ * samesight init | generate | check | doctor | explain
  *
  * Runs on Node's built-in TypeScript support (type stripping), so a policy file is
  * imported as written. Paths in the policy's `output` are relative to the policy file.
@@ -10,44 +10,75 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
+import { explainPolicy } from "./explain.ts";
 import { outputPaths, plan } from "./generate.ts";
-import { DEFAULT_DB_URL, introspect } from "./introspect.ts";
+import { draftPolicy, findMembership, roleValues } from "./init.ts";
+import { DEFAULT_DB_URL, introspect, withLocalClient } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
-import { loadPolicy } from "./load.ts";
+import { loadPolicy, POLICY_FILES, resolvePolicyPath, tsIsModule } from "./load.ts";
 import type { Policy } from "./policy.ts";
 import type { SchemaInfo } from "./schema.ts";
+
+const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 const USAGE = `Usage: samesight <command> [options]
 
 Commands:
-  init       write a starter samesight.policy.ts
+  init       draft samesight.policy.ts from the local database (a template without one)
   generate   read the local database, write the migration, sync config and client files
   check      regenerate from the saved schema snapshot and fail if anything on disk differs
   doctor     check the local database against the policy (RLS, publication, hook, replication lag)
+  explain    print who can read and write what, in plain words, from the saved schema snapshot
 
 Options:
-  --policy <file>   policy file (default: samesight.policy.ts)
+  --policy <file>   policy file (default: samesight.policy.ts, or samesight.policy.mts)
   --db <url>        local database URL (default: $SAMESIGHT_DB_URL or the Supabase CLI database)
+  --table <name>    explain: one table only
+  -v, --version     print the version
+  -h, --help        print this help
+
+Docs: https://github.com/rayanyedaly/samesight#readme
 `;
 
 async function main(argv: string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { policy: { type: "string" }, db: { type: "string" }, help: { type: "boolean", short: "h" } },
+    options: {
+      policy: { type: "string" },
+      db: { type: "string" },
+      table: { type: "string" },
+      help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
+    },
   });
   const command = positionals[0];
+  if (values.version) {
+    process.stdout.write(`${VERSION}\n`);
+    return 0;
+  }
   if (values.help || !command) {
     process.stdout.write(USAGE);
     return command || values.help ? 0 : 1;
   }
-  const policyPath = resolve(values.policy ?? "samesight.policy.ts");
+  const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? DEFAULT_DB_URL;
 
   switch (command) {
     case "init":
-      return init(policyPath);
+      return init(values.policy, db);
+    case "explain": {
+      const policy = await loadPolicy(policyPath);
+      const snapshot = join(root, outputPaths(policy).schemaSnapshot);
+      if (!existsSync(snapshot)) {
+        console.error(`No schema snapshot at ${snapshot}; run \`samesight generate\` first.`);
+        return 1;
+      }
+      const ir = buildIR(policy, JSON.parse(readFileSync(snapshot, "utf8")) as SchemaInfo);
+      process.stdout.write(explainPolicy(ir, values.table));
+      return 0;
+    }
     case "generate": {
       const policy = await loadPolicy(policyPath);
       const schema = await introspect(db);
@@ -137,34 +168,43 @@ function check(policy: Policy, schema: SchemaInfo, root: string): number {
   return 0;
 }
 
-function init(path: string): number {
-  if (existsSync(path)) {
-    console.error(`${path} already exists.`);
-    return 1;
+async function init(given: string | undefined, db: string): Promise<number> {
+  const cwd = process.cwd();
+  const existing = given === undefined ? POLICY_FILES.map((f) => join(cwd, f)).find((p) => existsSync(p)) : undefined;
+  // A .ts policy outside a "type": "module" package would load as CommonJS; .mts never does.
+  const path = given !== undefined ? resolve(given) : join(cwd, tsIsModule(cwd) ? POLICY_FILES[0] : POLICY_FILES[1]);
+  for (const p of [existing, path]) {
+    if (p && existsSync(p)) {
+      console.error(`${p} already exists.`);
+      return 1;
+    }
   }
-  writeFileSync(
-    path,
-    `import { claim, col, definePolicy, table } from "samesight";
-// Generate with: supabase gen types typescript --local > supabase/types.ts
-import type { Database } from "./supabase/types";
-
-export default definePolicy<Database>({
-  auth: "supabase",
-  claims: {
-    tenant: claim.uuid("tenant_id"),
-    role: claim.oneOf("app_role", ["ADMIN", "MEMBER"]),
-  },
-  // Where the access token hook finds a signing-in user's tenant and role.
-  membership: { table: "Membership", user: "userId", tenant: "tenantId", role: "role" },
-  tables: {
-    // Membership: table({ tenant: "tenantId", read: { ADMIN: true, MEMBER: col("userId").eq(claim.user) } }),
-  },
-});
-`,
-  );
-  console.log(`wrote ${path}. Fill in the tables, then run \`samesight generate\`.`);
+  const dir = dirname(path);
+  const types = TYPES_FILES.find((f) => existsSync(join(dir, f)));
+  const typesImport = `./${(types ?? TYPES_FILES[0]).replace(/\.ts$/, "")}`;
+  let schema: SchemaInfo | null = null;
+  let roles: string[] = [];
+  try {
+    schema = await introspect(db);
+    const membership = findMembership(schema);
+    if (membership) roles = await withLocalClient(db, (client) => roleValues(client, membership.table, membership.role));
+  } catch (e) {
+    console.log(`Could not read the local database (${(e as Error).message}); writing a template instead.`);
+    console.log("Start it (supabase start) and rerun init for a policy drafted from your schema.");
+  }
+  const draft = draftPolicy(schema?.tables.length ? schema : null, { typesImport, roles });
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path, draft.source);
+  for (const n of draft.notes) console.log(`  ${n}`);
+  console.log(`wrote ${path}`);
+  console.log("\nNext:");
+  if (!types) console.log(`  supabase gen types typescript --local --schema public > ${TYPES_FILES[0]}`);
+  console.log("  edit the rules, then: samesight generate && samesight explain");
   return 0;
 }
+
+/** Where projects usually keep `supabase gen types` output, relative to the policy file. */
+const TYPES_FILES = ["supabase/types.ts", "src/types/supabase.ts", "types/supabase.ts", "database.types.ts", "src/database.types.ts", "lib/database.types.ts"];
 
 main(process.argv.slice(2)).then(
   (code) => {
