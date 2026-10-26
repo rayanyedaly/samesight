@@ -16,3 +16,4 @@ export type { ColumnInfo, ForeignKey, SchemaInfo, TableInfo } from "./schema.ts"
 export { parseSyncConfig, type SyncConfig } from "./sync/config.ts";
 export { type ParsedQuery, parseQuery, render, sqlText, type Token, tokenize } from "./sync/sql.ts";
 export { parseStreams, type Stream } from "./sync/streams.ts";
+export { type AuditScope, auditScope, outputTable, tablesNamed } from "./sync/scope.ts";

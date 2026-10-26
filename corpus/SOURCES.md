@@ -28,7 +28,7 @@ Commits:
 
 `powersync-js-todolist.yaml` is the same file `examples/audit-todolist` fetches and audits.
 
-The test in `packages/verify/src/audit/corpus.test.ts` snapshots what audit makes of each
+The test in `packages/samesight/src/sync/corpus.test.ts` snapshots what audit makes of each
 file. For the files in `real/`, a `warn` or `fail` there is not a verdict on the demo: it
 is audit noting a client parameter it does not try, a stream no device subscribes to by
 default, or that no stream it can compare is left.
