@@ -8,9 +8,12 @@ real.
 - [`supabase/migrations/20261026000000_schema.sql`](supabase/migrations/20261026000000_schema.sql):
   organizations, members (one row per user, with an `owner` or `member` role), projects and
   tasks. `created_by` defaults to `auth.uid()` with no foreign key, as many schemas have it.
-- [`samesight.policy.ts`](samesight.policy.ts): everyone in an organization reads its
-  projects and tasks; owners manage projects; anyone adds tasks, members change only the
-  tasks assigned to them, and only owners delete.
+- [`supabase/migrations/20261026090000_project_members.sql`](supabase/migrations/20261026090000_project_members.sql):
+  which members were added to which projects.
+- [`samesight.policy.ts`](samesight.policy.ts): owners see and manage everything in their
+  organization; members see only the projects they were added to (through
+  `rowsOf("project_members", ...)`) and those projects' tasks, add tasks there, and change
+  only the tasks assigned to them.
 - `supabase/config.toml` as `supabase init` wrote it, with three changes from the guide:
   the ports moved to 563xx (so it runs beside the other examples), an Auth signing key,
   and the access token hook turned on.
@@ -26,9 +29,10 @@ pnpm --filter quickstart stack:down
 `npx samesight explain` on this policy:
 
 ```text
-               owner   member
-organizations  R---    R---
-members        R---    r---
-projects       RIUD    R---
-tasks          rIUD    rIu-
+                 owner   member
+organizations    R---    R---
+members          R---    r---
+project_members  RIUD    r---
+projects         RIUD    r---
+tasks            RIUD    riu-
 ```

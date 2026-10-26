@@ -91,6 +91,76 @@
       "foreignKeys": []
     },
     {
+      "name": "project_members",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "org_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "project_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "default": null,
+          "identity": false,
+          "generated": false
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indexedColumns": [
+        "id",
+        "project_id",
+        "user_id"
+      ],
+      "uniqueColumns": [
+        "id"
+      ],
+      "foreignKeys": [
+        {
+          "columns": [
+            "org_id"
+          ],
+          "table": "organizations",
+          "references": [
+            "id"
+          ]
+        },
+        {
+          "columns": [
+            "org_id",
+            "project_id"
+          ],
+          "table": "projects",
+          "references": [
+            "org_id",
+            "id"
+          ]
+        }
+      ]
+    },
+    {
       "name": "projects",
       "columns": [
         {

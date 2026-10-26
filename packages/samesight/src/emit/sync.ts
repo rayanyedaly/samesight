@@ -5,7 +5,8 @@
  *   - one auto-subscribed stream per role, every query gated on the role claim;
  *   - the tenant gate on every query and CTE;
  *   - a via rule (a child is visible when its parent is) as a CTE of the parent's rows
- *     under the same role's rule, plus IN;
+ *     under the same role's rule, plus IN; a rowsOf rule the same way, over the rows of
+ *     its table this role reads that match its where;
  *   - value lists as OR chains;
  *   - columns hidden from a role left out of its projection.
  */
@@ -14,7 +15,7 @@ import { type IR, type IRTable, snake } from "../ir.ts";
 import type { ConditionNode } from "../policy.ts";
 import { ident, literal, sync } from "./expr.ts";
 
-type Via = Extract<ConditionNode, { kind: "via" }>;
+type Sub = Extract<ConditionNode, { kind: "via" | "inRows" }>;
 
 export function emitSyncConfig(ir: IR): string {
   const out: string[] = [
@@ -36,30 +37,38 @@ export function emitSyncConfig(ir: IR): string {
     if (tables.length === 0) continue;
     const roleGate = `auth.parameter(${literal(ir.claims.role)}) = ${literal(role)}`;
 
-    // One CTE per (parent, key) reached through via: the parent rows this role reads.
-    // Keyed by the pair, never by the name, so two parents can never share a CTE; names
-    // that collide with each other or with a table get a numeric suffix.
+    // One CTE per subquery: (parent, key) for a via, (table, column, where) for a rowsOf.
+    // The rows this role reads of that table. Keyed by the subquery, never by the name, so
+    // two subqueries can never share a CTE; names that collide with each other or with a
+    // table get a numeric suffix.
     const ctes = new Map<string, { name: string; sql: string }>();
     const taken = new Set(ir.tables.map((t) => t.name.toLowerCase()));
-    const cteName = (v: Via) => {
-      const key = JSON.stringify([v.parent, v.parentKey]);
+    const cteName = (n: Sub) => {
+      const target = n.kind === "via" ? n.parent : n.rows.table;
+      const column = n.kind === "via" ? n.parentKey : n.rows.column;
+      const key = JSON.stringify(n.kind === "via" ? ["via", target, column] : ["rows", target, column, n.rows.where ?? null]);
       const existing = ctes.get(key);
       if (existing) return existing.name;
-      const parent = byName.get(v.parent);
-      if (!parent) throw new Error(`via parent ${v.parent} is not in the policy`);
-      const rule = parent.read.get(role);
-      if (rule === undefined) throw new Error(`${role} cannot read ${v.parent}`);
-      const base = `${snake(v.parent)}_${v.parentKey === "id" ? "" : `${snake(v.parentKey)}_`}visible`;
+      const table = byName.get(target);
+      if (!table) throw new Error(`${target} is not in the policy`);
+      const rule = table.read.get(role);
+      if (rule === undefined) throw new Error(`${role} cannot read ${target}`);
+      const base =
+        n.kind === "via"
+          ? `${snake(target)}_${column === "id" ? "" : `${snake(column)}_`}visible`
+          : `${snake(target)}_${snake(column)}_rows`;
       let name = base;
-      for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
+      for (let i = 2; taken.has(name); i++) name = `${base}_${i}`;
       taken.add(name);
       const where = [
-        tenantGate(parent),
+        tenantGate(table),
         // NULL never matches on the RLS side; say so rather than rely on how streams treat it.
-        ...(v.parentKey === "id" ? [] : [`${ident(v.parentKey)} IS NOT NULL`]),
-        ...(rule === true ? [] : [wrap(rule, sync(rule, noVia))]),
+        ...(column === "id" || table.columns.find((c) => c.name === column)?.nullable === false ? [] : [`${ident(column)} IS NOT NULL`]),
+        ...(rule === true ? [] : [wrap(rule, sync(rule, noSub))]),
+        ...(n.kind === "inRows" && n.rows.where ? [wrap(n.rows.where, sync(n.rows.where, noSub))] : []),
       ];
-      ctes.set(key, { name, sql: `SELECT ${ident(v.parentKey)} FROM ${ident(parent.name)}\n        WHERE ${where.join(" AND ")}` });
+      // A where that repeats the table's own rule (rowsOf(..., col("userId").eq(claim.user))) says it once.
+      ctes.set(key, { name, sql: `SELECT ${ident(column)} FROM ${ident(table.name)}\n        WHERE ${[...new Set(where)].join(" AND ")}` });
       return name;
     };
 
@@ -104,9 +113,9 @@ function linkedAway(t: IRTable, rule: true | ConditionNode, role: string, byName
   return items.length === 0 ? true : items.length === 1 ? items[0] : { kind: "and", items };
 }
 
-const noVia = (v: Via): string => {
-  // Refused by the compiler: a parent rule reached through via has no via of its own.
-  throw new Error(`nested via on ${v.column}`);
+const noSub = (n: Sub): string => {
+  // Refused by the compiler: a table reached through via or rowsOf has no subquery of its own.
+  throw new Error(`nested ${n.kind === "via" ? "via" : "rowsOf"} on ${n.column}`);
 };
 
 function wrap(node: ConditionNode, text: string): string {

@@ -89,9 +89,9 @@ function syncValue(v: Value): string {
 
 /**
  * A condition in sync-stream SQL. Streams have no IN over a literal list, so a list is
- * an OR chain; a via is IN over the CTE named by `cte`.
+ * an OR chain; a via or rowsOf is IN over the CTE named by `cte`.
  */
-export function sync(node: ConditionNode, cte: (via: Extract<ConditionNode, { kind: "via" }>) => string): string {
+export function sync(node: ConditionNode, cte: (sub: Extract<ConditionNode, { kind: "via" | "inRows" }>) => string): string {
   switch (node.kind) {
     case "eq":
       return `${ident(node.column)} = ${syncValue(node.value)}`;
@@ -102,8 +102,6 @@ export function sync(node: ConditionNode, cte: (via: Extract<ConditionNode, { ki
     case "isNull":
       return `${ident(node.column)} IS ${node.negate ? "NOT " : ""}NULL`;
     case "inRows":
-      // The compiler refuses inRows in read rules, the only rules streams carry.
-      throw new Error(`inRows on "${node.column}" cannot be expressed in a sync stream`);
     case "via":
       return `${ident(node.column)} IN ${cte(node)}`;
     case "and":

@@ -12,6 +12,7 @@ export function isAppRole(value: unknown): value is AppRole {
 
 /** Tables a client writes through apply_batch, and the columns it may set. */
 export const WRITABLE = {
+  project_members: { insert: ["project_id", "user_id"], update: [], appendOnly: false },
   projects: { insert: ["name"], update: ["name"], appendOnly: false },
   tasks: { insert: ["project_id", "title", "status", "assignee_id"], update: ["title", "status", "assignee_id"], appendOnly: false },
 } as const;

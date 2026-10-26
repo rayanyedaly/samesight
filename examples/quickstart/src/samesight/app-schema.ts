@@ -14,6 +14,12 @@ const members = new Table({
   role: column.text,
 });
 
+const project_members = new Table({
+  org_id: column.text,
+  project_id: column.text,
+  user_id: column.text,
+});
+
 const projects = new Table({
   org_id: column.text,
   name: column.text,
@@ -35,6 +41,7 @@ const tasks = new Table({
 export const AppSchema = new Schema({
   organizations,
   members,
+  project_members,
   projects,
   tasks,
   RejectedWrite: rejectedWriteTable,
@@ -43,5 +50,6 @@ export const AppSchema = new Schema({
 export type Database = (typeof AppSchema)["types"];
 export type organizationsRecord = Database["organizations"];
 export type membersRecord = Database["members"];
+export type project_membersRecord = Database["project_members"];
 export type projectsRecord = Database["projects"];
 export type tasksRecord = Database["tasks"];

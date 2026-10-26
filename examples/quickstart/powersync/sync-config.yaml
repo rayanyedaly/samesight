@@ -12,11 +12,16 @@ streams:
     queries:
       - SELECT * FROM organizations WHERE id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
       - SELECT * FROM members WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
+      - SELECT * FROM project_members WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
       - SELECT * FROM projects WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
       - SELECT * FROM tasks WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
 
   member:
     auto_subscribe: true
+    with:
+      project_members_project_id_rows: |
+        SELECT project_id FROM project_members
+        WHERE org_id = auth.parameter('tenant_id') AND user_id = auth.user_id()
     queries:
       - SELECT * FROM organizations WHERE id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'member'
       - |
@@ -25,5 +30,21 @@ streams:
         WHERE org_id = auth.parameter('tenant_id')
           AND user_id = auth.user_id()
           AND auth.parameter('app_role') = 'member'
-      - SELECT * FROM projects WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'member'
-      - SELECT * FROM tasks WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'member'
+      - |
+        SELECT *
+        FROM project_members
+        WHERE org_id = auth.parameter('tenant_id')
+          AND user_id = auth.user_id()
+          AND auth.parameter('app_role') = 'member'
+      - |
+        SELECT *
+        FROM projects
+        WHERE org_id = auth.parameter('tenant_id')
+          AND id IN project_members_project_id_rows
+          AND auth.parameter('app_role') = 'member'
+      - |
+        SELECT *
+        FROM tasks
+        WHERE org_id = auth.parameter('tenant_id')
+          AND project_id IN project_members_project_id_rows
+          AND auth.parameter('app_role') = 'member'
