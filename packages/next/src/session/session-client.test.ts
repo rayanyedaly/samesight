@@ -21,4 +21,9 @@ describe("unsyncedCount", () => {
     await expect(unsyncedCount(storeWith({ getUploadQueueStats: async () => ({ count: 4 }) }))).resolves.toBe(4);
     await expect(unsyncedCount(storeWith({ getUploadQueueStats: async () => ({ count: 0 }) }))).resolves.toBe(0);
   });
+
+  it("counts refused writes the user has not acknowledged, the only copy left on the device", async () => {
+    const db = { getUploadQueueStats: async () => ({ count: 4 }), getAll: async () => [{ n: 2 }] };
+    await expect(unsyncedCount(storeWith(db))).resolves.toBe(6);
+  });
 });

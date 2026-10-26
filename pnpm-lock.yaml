@@ -105,10 +105,6 @@ importers:
         version: link:../../packages/verify
 
   packages/next:
-    dependencies:
-      '@samesight/supabase':
-        specifier: workspace:^
-        version: link:../supabase
     devDependencies:
       '@powersync/common':
         specifier: ^2.4.0
@@ -119,6 +115,9 @@ importers:
       '@powersync/web':
         specifier: ^2.5.0
         version: 2.5.0(@powersync/common@2.4.0)(@powersync/shared-internals@1.4.0(@powersync/common@2.4.0))
+      '@samesight/supabase':
+        specifier: workspace:*
+        version: link:../supabase
       '@supabase/supabase-js':
         specifier: ^2.118.0
         version: 2.118.0

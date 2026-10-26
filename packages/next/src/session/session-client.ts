@@ -1,3 +1,4 @@
+import { UNACKNOWLEDGED_REJECTIONS_SQL } from "@samesight/supabase";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { EncryptedStore } from "../store/db.ts";
 import { clearStoredSession, storedSession } from "./stored-session.ts";
@@ -55,17 +56,27 @@ export async function signOutAndWipe(store: EncryptedStore, target: SessionTarge
 }
 
 /**
- * Local writes not yet accepted by the server; consult before any wipe. Null when the
- * queue cannot be read, which callers must treat as "there may be unsynced work".
+ * Local writes a wipe would destroy, consult before any: those not yet accepted by the
+ * server, and refused writes the user has not acknowledged (the banner's records are the
+ * only copy left on this device). Null when the queue cannot be read, which callers must
+ * treat as "there may be unsynced work".
  */
 export async function unsyncedCount(store: EncryptedStore): Promise<number | null> {
   const db = store.current();
   // No open database (closing, locked, or never opened): the queue cannot be read.
   if (!db) return null;
+  let queued: number;
   try {
     const stats = await db.getUploadQueueStats(false);
-    return stats?.count ?? 0;
+    queued = stats?.count ?? 0;
   } catch {
     return null;
+  }
+  try {
+    const [row] = await db.getAll<{ n: number }>(`SELECT count(*) AS n FROM (${UNACKNOWLEDGED_REJECTIONS_SQL})`);
+    return queued + Number(row?.n ?? 0);
+  } catch {
+    // A schema without the RejectedWrite table has none to lose.
+    return queued;
   }
 }

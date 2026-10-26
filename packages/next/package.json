@@ -44,10 +44,8 @@
   "sideEffects": [
     "*.css"
   ],
-  "dependencies": {
-    "@samesight/supabase": "workspace:^"
-  },
   "peerDependencies": {
+    "@samesight/supabase": "workspace:^",
     "@powersync/common": "^2.4.0",
     "@powersync/react": "^2.1.0",
     "@powersync/web": "^2.5.0",
@@ -55,6 +53,7 @@
     "react": "^19.0.0"
   },
   "devDependencies": {
+    "@samesight/supabase": "workspace:*",
     "@powersync/common": "^2.4.0",
     "@powersync/react": "^2.1.0",
     "@powersync/web": "^2.5.0",
