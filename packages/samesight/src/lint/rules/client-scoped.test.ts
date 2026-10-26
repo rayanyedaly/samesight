@@ -82,6 +82,18 @@ describe("client-scoped on sync streams", () => {
     expect(levels(lint(`bucket_definitions:\n  b:\n    parameters: SELECT ${uid} AS uid FROM users WHERE id = request.user_id() AND NOT id = ${uid}\n    data: [SELECT * FROM t WHERE owner = bucket.uid]\n`))).toEqual(["error"]);
   });
 
+  it("checks a client value only against the user's own set, by subquery or CTE", () => {
+    const own = "    with:\n      mine: SELECT org_id FROM members WHERE user_id = auth.user_id()\n";
+    const all = "    with:\n      every: SELECT id FROM orgs\n";
+    const pick = "org_id = subscription.parameter('org') AND subscription.parameter('org')";
+    expect(levels(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${pick} IN (SELECT id FROM orgs WHERE id = subscription.parameter('org'))\n`)))).toEqual(["error"]);
+    expect(
+      levels(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${pick} IN (SELECT org_id FROM members WHERE user_id = coalesce(subscription.parameter('u'), auth.user_id()))\n`))),
+    ).toEqual(["error"]);
+    expect(levels(lint(stream(`  s:\n${own}    query: SELECT * FROM docs WHERE ${pick} IN mine\n`)))).toEqual(["warning"]);
+    expect(levels(lint(stream(`  s:\n${all}    query: SELECT * FROM docs WHERE ${pick} IN every\n`)))).toEqual(["error"]);
+  });
+
   it("leaves a query reading an unreadable CTE in a subquery to unreadable-query", () => {
     expect(lint(stream("  s:\n    with:\n      mine: SELECT org_id FROM m WHERE x = E'y'\n    query: SELECT * FROM p WHERE org_id IN (SELECT org_id FROM mine) AND id = subscription.parameter('id')\n"))).toEqual([]);
   });

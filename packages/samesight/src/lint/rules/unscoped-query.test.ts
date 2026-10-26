@@ -85,6 +85,9 @@ describe("unscoped-query on sync streams", () => {
       // A client-picked value in one branch is no filter beside an admin check or public rows.
       "org_id = subscription.parameter('org') OR auth.user_id() IN (SELECT user_id FROM admins)",
       "org_id = subscription.parameter('org') OR status = 'public'",
+      // A client can name an admin, or pick its own rows beside an admin check.
+      "coalesce(subscription.parameter('u'), auth.user_id()) IN (SELECT user_id FROM admins)",
+      "owner = coalesce(subscription.parameter('u'), auth.user_id()) OR auth.user_id() IN (SELECT user_id FROM admins)",
       // Every user's role is the same: a column compared with it tells no user apart.
       "public_to = auth.parameter('role')",
       "upper(auth.parameter('role')) = 'AUTHENTICATED'",
@@ -97,6 +100,10 @@ describe("unscoped-query on sync streams", () => {
       "subscription.parameter('org') IN (SELECT id FROM orgs)",
     ]) {
       expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
+    }
+    // A role kept under another key is the app's, not the one every token carries.
+    for (const where of ["auth.parameters() -> 'app_metadata' ->> 'role' = 'authenticated'", "json_extract(auth.parameters(), '$.app_metadata') ->> 'role' = 'authenticated'"]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["warning"]);
     }
     // Nobody's role is 'AUTHENTICATED', and is_anonymous is no string: checks, not every user.
     for (const where of ["auth.parameter('role') = 'AUTHENTICATED'", "auth.parameter('is_anonymous') = 'false'"]) {
@@ -130,6 +137,13 @@ describe("unscoped-query on sync streams", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE status = 'public' AND auth.parameter('app_metadata') ->> 'role' = 'admin'\n")).map((f) => f[2])).toEqual([
       expect.stringMatching(/^stream s, query sends the rows of docs its fixed filters allow to every user who passes its check on who is asking/),
     ]);
+  });
+
+  it("leaves a query reading an unreadable CTE by JOIN or by quoted name to unreadable-query", () => {
+    const bad = (name: string) => `    with:\n      ${name}: SELECT org_id FROM m WHERE x = E'y'\n`;
+    expect(lint(stream(`  s:\n${bad("mine")}    query: SELECT docs.* FROM docs JOIN mine ON mine.org_id = docs.org_id\n`))).toEqual([]);
+    expect(lint(stream(`  s:\n${bad("mine")}    query: SELECT * FROM docs WHERE org_id IN "mine"\n`))).toEqual([]);
+    expect(lint(stream(`  s:\n${bad("Mine")}    query: SELECT * FROM docs WHERE org_id IN "Mine"\n`))).toEqual([]);
   });
 
   it("still reports a query that only mentions an unreadable CTE's name", () => {
@@ -246,6 +260,12 @@ describe("unscoped-query on sync rules", () => {
         "bucket_definitions:\n  by_org:\n    parameters: SELECT org_id FROM members WHERE user_id = request.user_id() AND accepted = true\n    data:\n      - SELECT * FROM projects WHERE org_id = bucket.org_id\n      - SELECT * FROM invoices\n",
       ),
     ).toEqual([["error", 6, "bucket by_org: 1 of its data queries is not limited by a bucket parameter, so every user it reaches receives every row of invoices"]]);
+  });
+
+  it("takes no token flag for a filter of rows", () => {
+    expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT id AS org_id FROM orgs WHERE token_parameters.is_admin\n    data: [SELECT * FROM t WHERE org = bucket.org_id]\n").map((f) => f[0])).toEqual([
+      "error",
+    ]);
   });
 
   it("warns about a parameter query that gives its buckets to whoever passes a role claim", () => {
