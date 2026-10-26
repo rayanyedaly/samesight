@@ -75,6 +75,8 @@ describe("lineOf", () => {
       "",
     ].join("\n");
     expect(lineOf(text, "SELECT * FROM todos")).toBe(6);
+    // The same query twice is placed at its first copy.
+    expect(lineOf("a:\n  query: SELECT 1\nb:\n  query: SELECT 1\n", "SELECT 1")).toBe(2);
   });
 });
 
