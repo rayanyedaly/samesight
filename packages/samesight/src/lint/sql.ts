@@ -4,6 +4,7 @@
  * the rules skip it, and unreadable-query reports it.
  */
 
+import type { SyncConfig } from "../sync/config.ts";
 import { outputTable } from "../sync/scope.ts";
 import { type Token, tokenize } from "../sync/sql.ts";
 
@@ -81,4 +82,22 @@ export function tableOf(sql: string): string {
   } catch {
     return "its table";
   }
+}
+
+/**
+ * Each table the config sends to devices, with the first query that sends it. Queries
+ * audit cannot read are left out (unreadable-query reports them). Names are as Postgres
+ * resolves them, so they match a migration's.
+ */
+export function sentTables(config: SyncConfig): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const s of config.streams) {
+    for (const q of s.queries) {
+      try {
+        const { table } = outputTable(q.sql);
+        if (!out.has(table)) out.set(table, q.sql);
+      } catch {}
+    }
+  }
+  return out;
 }

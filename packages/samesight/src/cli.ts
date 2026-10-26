@@ -12,7 +12,8 @@ import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
 import { exitCode, formatLint, type LintFinding } from "./lint/finding.ts";
-import { findSyncConfig, lintSyncConfig, SYNC_CONFIG_FILES } from "./lint/lint.ts";
+import { findSyncConfig, lintSyncConfig, MIGRATIONS_DIR, SYNC_CONFIG_FILES } from "./lint/lint.ts";
+import { type Migrations, readMigrations } from "./lint/migrations.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
@@ -41,6 +42,8 @@ Options:
   --db <url>        local database URL (default: $SAMESIGHT_DB_URL, else the [db] port in
                     supabase/config.toml, else 54322)
   --table <name>    explain: one table only
+  --migrations <dir>
+                    lint: the SQL migrations to read RLS from (default: supabase/migrations)
   -v, --version     print the version
   -h, --help        print this help
 
@@ -55,6 +58,7 @@ async function main(argv: string[]): Promise<number> {
       policy: { type: "string" },
       db: { type: "string" },
       table: { type: "string" },
+      migrations: { type: "string" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
     },
@@ -69,7 +73,7 @@ async function main(argv: string[]): Promise<number> {
     return command || values.help ? 0 : 1;
   }
   // Lint needs no policy: it is for any PowerSync project.
-  if (command === "lint") return lint(positionals.slice(1));
+  if (command === "lint") return lint(positionals.slice(1), values.migrations);
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);
@@ -140,17 +144,26 @@ async function main(argv: string[]): Promise<number> {
 }
 
 /** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read. */
-function lint(given: string[]): number {
+function lint(given: string[], migrationsDir: string | undefined): number {
   const found = given.length ? given : [findSyncConfig(process.cwd())].filter((f): f is string => f !== undefined);
   if (found.length === 0) {
     console.error(`No sync config found (tried ${SYNC_CONFIG_FILES.join(", ")}); name one: samesight lint <file>`);
     return 2;
   }
+  const dir = migrationsDir ?? (existsSync(MIGRATIONS_DIR) ? MIGRATIONS_DIR : undefined);
+  let migrations: Migrations | undefined;
+  if (dir) {
+    if (!existsSync(dir)) {
+      console.error(`No migrations directory at ${dir}.`);
+      return 2;
+    }
+    migrations = readMigrations(dir);
+  } else console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run; pass --migrations <dir> to check them`);
   const findings: LintFinding[] = [];
   let unreadable = 0;
   for (const file of found) {
     try {
-      findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file));
+      findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file, undefined, migrations));
     } catch (e) {
       console.error(`${file}: cannot be read as a sync config: ${(e as Error).message}`);
       unreadable++;

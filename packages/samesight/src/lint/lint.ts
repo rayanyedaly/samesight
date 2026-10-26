@@ -8,8 +8,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseSyncConfig, type SyncConfig } from "../sync/config.ts";
 import type { LintFinding } from "./finding.ts";
+import type { Migrations } from "./migrations.ts";
 import { clientScoped } from "./rules/client-scoped.ts";
 import { notAutoSubscribed } from "./rules/not-auto-subscribed.ts";
+import { rlsOff } from "./rules/rls-off.ts";
 import { unreadableQuery } from "./rules/unreadable-query.ts";
 import { unscopedQuery } from "./rules/unscoped-query.ts";
 import { userMetadata } from "./rules/user-metadata.ts";
@@ -21,20 +23,25 @@ export interface LintContext {
   file: string;
   text: string;
   config: SyncConfig;
+  /** The project's migrations as read, when lint was given or found them. */
+  migrations?: Migrations;
   /** The line a query starts on, found by its text; undefined when it cannot be placed. */
   lineOf: (sql: string) => number | undefined;
 }
 
 export type LintRule = (context: LintContext) => LintFinding[];
 
-export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed];
+export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed, rlsOff];
 
 /** Every rule's findings for one sync config; throws when the file cannot be read as one. */
-export function lintSyncConfig(text: string, file: string, rules: LintRule[] = RULES): LintFinding[] {
+export function lintSyncConfig(text: string, file: string, rules: LintRule[] = RULES, migrations?: Migrations): LintFinding[] {
   const config = parseSyncConfig(text);
-  const context: LintContext = { file, text, config, lineOf: (sql) => lineOf(text, sql) };
+  const context: LintContext = { file, text, config, lineOf: (sql) => lineOf(text, sql), ...(migrations ? { migrations } : {}) };
   return rules.flatMap((rule) => rule(context));
 }
+
+/** Where Supabase keeps migrations, read when no --migrations is given. */
+export const MIGRATIONS_DIR = "supabase/migrations";
 
 /** The first of the usual sync config paths that exists under `dir`. */
 export function findSyncConfig(dir: string): string | undefined {
