@@ -67,6 +67,24 @@ export function render(tokens: Token[]): string {
   return tokens.map((t) => (t.kind === "string" ? `'${t.text.replaceAll("'", "''")}'` : t.kind === "quoted" ? ident(t.text) : t.text)).join(" ");
 }
 
+const KEYWORDS = new Set(["select", "from", "where", "and", "or", "not", "in", "is", "on", "as"]);
+
+/** Tokens back to SQL as a person writes it: auth.parameter('x'), a, b, x::text. */
+export function sqlText(tokens: Token[]): string {
+  let out = "";
+  let prev: Token | undefined;
+  for (const t of tokens) {
+    const text = render([t]);
+    const tight = (p: Token | undefined, x: Token) =>
+      (x.kind === "symbol" && [")", ",", ".", "::"].includes(x.text)) ||
+      (p?.kind === "symbol" && ["(", ".", "::"].includes(p.text)) ||
+      (x.kind === "symbol" && x.text === "(" && (p?.kind === "quoted" || (p?.kind === "word" && !KEYWORDS.has(p.text))));
+    out += !prev || tight(prev, t) ? text : ` ${text}`;
+    prev = t;
+  }
+  return out;
+}
+
 export interface ParsedQuery {
   table: string;
   /** "*", or the projected expressions in canonical spelling. */
