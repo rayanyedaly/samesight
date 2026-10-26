@@ -1,0 +1,54 @@
+# Publishes the four packages to npm when a version tag (v0.1.0) is pushed.
+#
+# The tag must match every package's version (scripts/version.mjs sets them together).
+# Nothing is published unless the checks, the unit tests and the packed-package smoke
+# test pass on the tagged commit. Packages carry npm provenance, which links each
+# tarball to this workflow run.
+#
+# Needs an NPM_TOKEN secret: an npm automation token, or a granular token with publish
+# rights on samesight and the @samesight scope.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write # the GitHub release
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/version.mjs --check "$GITHUB_REF_NAME"
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm --filter fieldbook policy:check
+      - run: pnpm smoke
+      # prepack builds each package; workspace:^ ranges become the released version.
+      # A version with a prerelease part (0.2.0-rc.1) goes to the "next" tag, not "latest".
+      - name: Publish
+        run: |
+          tag=latest
+          case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
+          pnpm publish --recursive --filter "./packages/*" --access public --tag "$tag" --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+      - name: GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/CHANGELOG.md)." $([[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease)
+        env:
+          GH_TOKEN: ${{ github.token }}
