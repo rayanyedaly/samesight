@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fieldbookPolicy, fieldbookSchema } from "../fixtures/fieldbook.ts";
 import { buildIR } from "../ir.ts";
-import { claim, col, definePolicy, raw, table, via } from "../policy.ts";
+import { claim, col, definePolicy, raw, rowsOf, table, via } from "../policy.ts";
 import type { ColumnInfo, TableInfo } from "../schema.ts";
 import { emitClientSchema, emitManifest, emitPolicyTypes, emitServiceConfig } from "./client.ts";
 import { ident, rls, sync } from "./expr.ts";
@@ -190,5 +190,31 @@ describe("via CTEs", () => {
       tables: { B: table({ tenant: "tenantId", read: { MEMBER: raw({ rls: "true -- x", sync: "true" }) } }) },
     });
     expect(() => buildIR(policy, schema)).toThrow(/raw rules cannot contain comments[\s\S]*"Member" must be a table in this policy/);
+  });
+});
+
+describe("rowsOf in a read rule", () => {
+  it("becomes a CTE repeating the target's rule for the role, and a subquery under its RLS", () => {
+    const policy = definePolicy({
+      ...fieldbookPolicy.spec,
+      tables: {
+        ...fieldbookPolicy.spec.tables,
+        Inspection: table({
+          tenant: "tenantId",
+          read: { ADMIN: true, INSPECTOR: col("id").in(rowsOf("Finding", "inspectionId", col("severity").eq("HIGH"))), VIEWER: true },
+        }),
+        Finding: table({ tenant: "tenantId", read: { "*": col("createdBy").eq(claim.user) } }),
+        Photo: undefined,
+      },
+    });
+    const ir = buildIR(policy, fieldbookSchema);
+    const sync = emitSyncConfig(ir);
+    expect(sync).toContain(
+      "      finding_inspection_id_rows: |\n        SELECT \"inspectionId\" FROM \"Finding\"\n        WHERE \"tenantId\" = auth.parameter('tenant_id') AND \"createdBy\" = auth.user_id() AND severity = 'HIGH'",
+    );
+    expect(sync).toContain("AND id IN finding_inspection_id_rows");
+    expect(emitMigration(ir)).toContain(
+      `(select samesight.app_role()) = 'INSPECTOR' and id in (select f."inspectionId" from public."Finding" f where f.severity = 'HIGH')`,
+    );
   });
 });

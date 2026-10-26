@@ -152,14 +152,36 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
         const parentRule = parent.read.get(role);
         if (parentRule === undefined) {
           fail(`${t.name}.read.${role}: reads through via("${v.column}", "${v.parent}"), but ${role} has no read rule on "${v.parent}"`);
-        } else if (parentRule !== true && vias(parentRule).length > 0) {
+        } else if (parentRule !== true && subqueries(parentRule).length > 0) {
           fail(
-            `${t.name}.read.${role}: via("${v.column}", "${v.parent}") reaches a parent whose own ${role} rule uses via; sync streams cannot nest them`,
+            `${t.name}.read.${role}: via("${v.column}", "${v.parent}") reaches a parent whose own ${role} rule uses via or rowsOf; sync streams cannot nest them`,
           );
         }
         const childInfo = findTable(schema, t.name);
         if (childInfo && !childInfo.indexedColumns.includes(v.column) && childInfo.primaryKey[0] !== v.column) {
           warnings.push(`${t.name}: via("${v.column}", "${v.parent}") has no index on "${v.column}"; RLS checks will scan`);
+        }
+      }
+      // rowsOf in a read rule: the target's rows this role reads, so the stream repeats the
+      // target's rule for the role in a CTE, as for via.
+      for (const r of subqueries(rule)) {
+        if (r.kind !== "inRows") continue;
+        const target = byName.get(r.rows.table);
+        if (!target) continue; // reported in checkCondition
+        const targetRule = target.read.get(role);
+        const call = `rowsOf("${r.rows.table}", "${r.rows.column}")`;
+        if (targetRule === undefined) {
+          fail(`${t.name}.read.${role}: reads through ${call}, but ${role} has no read rule on "${r.rows.table}"`);
+        } else if (targetRule !== true && subqueries(targetRule).length > 0) {
+          fail(`${t.name}.read.${role}: ${call} reaches a table whose own ${role} rule uses via or rowsOf; sync streams cannot nest them`);
+        }
+        const targetInfo = findTable(schema, r.rows.table);
+        if (r.rows.where && targetInfo) {
+          for (const c of conditionColumns(r.rows.where)) {
+            if (!targetInfo.indexedColumns.includes(c) && targetInfo.primaryKey[0] !== c) {
+              warnings.push(`${t.name}: ${call} filters on "${r.rows.table}.${c}", which has no index; RLS checks will scan`);
+            }
+          }
         }
       }
     }
@@ -396,10 +418,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
         return;
       case "inRows":
         has(node.column);
-        if (isRead) {
-          fail(`${path}: col("${node.column}").in(rowsOf(...)) is for write checks only; sync streams cannot express it in a read rule`);
-        }
-        rows(path, node.rows);
+        rows(path, node.rows, isRead);
         return;
       case "via": {
         has(node.column);
@@ -448,17 +467,23 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
   }
 
-  /** Read rules carry at most one via, alone or as a term of a top-level and(): streams take a CTE IN only there. */
+  /**
+   * Read rules carry at most one via or rowsOf, alone or as a term of a top-level and():
+   * streams take a CTE IN only there.
+   */
   function checkViaPlacement(path: string, rule: ConditionNode): void {
-    const all = vias(rule);
+    const all = subqueries(rule);
     if (all.length === 0) return;
-    const top = rule.kind === "via" ? [rule] : rule.kind === "and" ? rule.items.filter((i) => i.kind === "via") : [];
+    const isSub = (n: ConditionNode) => n.kind === "via" || n.kind === "inRows";
+    const top = isSub(rule) ? [rule] : rule.kind === "and" ? rule.items.filter(isSub) : [];
     if (all.length !== top.length) {
-      fail(`${path}: via must stand alone or be a term of a top-level and(); sync streams cannot put it under or() (rules for "*" and for a role are ORed together)`);
-    } else if (all.length > 1) fail(`${path}: one via per read rule`);
+      fail(
+        `${path}: via and rowsOf must stand alone or be a term of a top-level and(); sync streams cannot put them under or() (rules for "*" and for a role are ORed together)`,
+      );
+    } else if (all.length > 1) fail(`${path}: one via or rowsOf per read rule`);
   }
 
-  function rows(path: string, r: RowsOf): void {
+  function rows(path: string, r: RowsOf, isRead: boolean): void {
     // The subquery runs under the caller's RLS on the target; only policy tables are
     // tenant-scoped by this policy, so only they may be the target.
     if (!policyTables.has(r.table)) {
@@ -469,7 +494,11 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     if (!target) return; // reported with the table
     if (!findColumn(target, r.column)) fail(`${path}: rowsOf: no column "${r.column}" in "${r.table}"`);
     else if (!IDENT.test(r.column)) fail(`${path}: rowsOf: column "${r.column}" must be letters, digits and underscores`);
-    if (r.where) checkCondition(`${path} (rowsOf ${r.table})`, r.where, target, false);
+    if (r.where) {
+      checkCondition(`${path} (rowsOf ${r.table})`, r.where, target, isRead);
+      // The where goes into the stream's CTE, which cannot hold another subquery.
+      if (isRead && subqueries(r.where).length > 0) fail(`${path}: rowsOf("${r.table}", ...) in a read rule cannot filter with via or rowsOf`);
+    }
   }
 
   /**
@@ -569,6 +598,19 @@ export function snake(name: string): string {
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[^A-Za-z0-9_]/g, "_")
     .toLowerCase();
+}
+
+/** Every via and rowsOf in a condition, not counting those inside a rowsOf's where. */
+export function subqueries(node: ConditionNode): Extract<ConditionNode, { kind: "via" | "inRows" }>[] {
+  if (node.kind === "via" || node.kind === "inRows") return [node];
+  if (node.kind === "and" || node.kind === "or") return node.items.flatMap(subqueries);
+  return [];
+}
+
+/** The columns a condition compares, for index warnings. */
+function conditionColumns(node: ConditionNode): string[] {
+  if (node.kind === "and" || node.kind === "or") return node.items.flatMap(conditionColumns);
+  return node.kind === "raw" ? [] : [node.column];
 }
 
 /** Every via in a condition. */

@@ -85,7 +85,7 @@ A role that writes a table must also read it: upserts and replays read the row b
 | --- | --- | --- |
 | `col("c").eq(value)` | `c = value` | `value` is a literal, or `claim.user` (the signed-in user's id; the column must be uuid). |
 | `col("c").in([a, b])` | `c` is one of a fixed list | An empty list is refused. |
-| `col("c").in(rowsOf("T", "k", where?))` | `c` is the `k` of a row of `T` the user can read, optionally matching `where` | Writes and `check` only: sync streams cannot express it. `T` must be in the policy. |
+| `col("c").in(rowsOf("T", "k", where?))` | `c` is the `k` of a row of `T` the user can read, optionally matching `where` | For sharing and assignment tables. `T` must be in the policy. In read rules, limited like `via` (below). |
 | `col("c").isNull()`, `.isNotNull()` | | |
 | `via("c", "Parent", { key? })` | Readable when the `Parent` row that `c` points to (by `key`, default `id`) is readable by the same user | See below. |
 | `and(...)`, `or(...)` | | Nested groups are flattened. |
@@ -115,12 +115,24 @@ Finding: table({
 
 A finding is readable exactly when its inspection is. In RLS that is an `IN (select id from "Inspection")` that runs under the parent's own policy; in the sync streams it is a CTE with the parent's rule for the same role. Because the streams have to express it, `via` is limited:
 
-- at most one `via` per read rule, standing alone or as a term of a top-level `and()`, never under `or()` (rules for `"*"` and for a role are ORed, so a `via` for `"*"` and another rule for a role do not mix);
-- the parent's rule for the same role cannot itself use `via`;
+- at most one `via` or `rowsOf` per read rule, standing alone or as a term of a top-level `and()`, never under `or()` (rules for `"*"` and for a role are ORed, so a `via` for `"*"` and another rule for a role do not mix);
+- the parent's rule for the same role cannot itself use `via` or `rowsOf`;
 - the parent must be in the policy, and the role must have a read rule on it;
 - tables cannot reach each other in a cycle through `via` or `rowsOf`.
 
 Index the `via` column; the compiler warns when it is not. A composite foreign key `(tenant, column) -> parent (tenant, id)` on a NOT NULL column lets the generated stream drop the subquery where the parent is read entirely, and lets the verifier prove the shortcut is safe.
+
+### Reading through a sharing table: `rowsOf`
+
+```ts
+const myProjects = rowsOf("project_members", "project_id", col("user_id").eq(claim.user));
+
+projects: table({ tenant: "org_id", read: { owner: true, member: col("id").in(myProjects) } }),
+tasks: table({ tenant: "org_id", read: { owner: true, member: col("project_id").in(myProjects) } }),
+project_members: table({ tenant: "org_id", read: { owner: true, member: col("user_id").eq(claim.user) } }),
+```
+
+A member reads the projects they were added to, and those projects' tasks. `rowsOf(table, column, where)` is the `column` of the rows of `table` the user can read that match `where`: in RLS a subquery that runs under that table's own policy, in the streams a CTE that repeats that table's rule for the role plus `where`. The limits are `via`'s, and `where` cannot use `via` or `rowsOf` itself. The verifier proves the CTE and the subquery agree, like any other rule; index the columns `where` filters on (the compiler warns otherwise). [The quickstart](../examples/quickstart) uses exactly this.
 
 ### Escape hatch: `raw`
 

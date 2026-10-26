@@ -1,4 +1,4 @@
-import { claim, col, definePolicy, table, via } from "samesight";
+import { and, claim, col, definePolicy, rowsOf, table } from "samesight";
 // Regenerate after a schema migration: supabase gen types typescript --local --schema public > supabase/types.ts
 import type { Database } from "./supabase/types.ts";
 
@@ -6,6 +6,9 @@ import type { Database } from "./supabase/types.ts";
 // every row of its own tenant, each user reads their own members row, and
 // clients write nothing. Narrow the read rules and add write rules (write, insert,
 // update, delete), then run `samesight generate`. `samesight explain` prints the result.
+
+/** The projects a member was added to. */
+const myProjects = rowsOf("project_members", "project_id", col("user_id").eq(claim.user));
 
 export default definePolicy<Database>({
   auth: "supabase",
@@ -18,12 +21,23 @@ export default definePolicy<Database>({
   tables: {
     organizations: table({ tenant: "id", read: { "*": true } }),
     members: table({ tenant: "org_id", read: { owner: true, member: col("user_id").eq(claim.user) } }),
-    projects: table({ tenant: "org_id", read: { "*": true }, write: { owner: true }, serverOwned: ["created_at"] }),
+    project_members: table({
+      tenant: "org_id",
+      read: { owner: true, member: col("user_id").eq(claim.user) },
+      write: { owner: true },
+      immutable: ["project_id", "user_id"],
+    }),
+    projects: table({
+      tenant: "org_id",
+      read: { owner: true, member: col("id").in(myProjects) },
+      write: { owner: true },
+      serverOwned: ["created_at"],
+    }),
     tasks: table({
       tenant: "org_id",
-      read: { "*": via("project_id", "projects") },
-      insert: { "*": true },
-      update: { owner: true, member: col("assignee_id").eq(claim.user) },
+      read: { owner: true, member: col("project_id").in(myProjects) },
+      insert: { owner: true, member: col("project_id").in(myProjects) },
+      update: { owner: true, member: and(col("assignee_id").eq(claim.user), col("project_id").in(myProjects)) },
       delete: { owner: true },
       author: "created_by",
       serverOwned: ["created_at"],

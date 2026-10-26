@@ -55,11 +55,57 @@
       "appendOnly": null
     },
     {
+      "name": "project_members",
+      "tenant": "org_id",
+      "read": {
+        "owner": "all",
+        "member": {
+          "kind": "eq",
+          "column": "user_id",
+          "value": {
+            "kind": "user"
+          }
+        }
+      },
+      "insert": {
+        "owner": "all"
+      },
+      "update": {
+        "owner": "all"
+      },
+      "delete": {
+        "owner": "all"
+      },
+      "check": null,
+      "hide": {},
+      "insertColumns": [
+        "project_id",
+        "user_id"
+      ],
+      "updateColumns": [],
+      "appendOnly": null
+    },
+    {
       "name": "projects",
       "tenant": "org_id",
       "read": {
         "owner": "all",
-        "member": "all"
+        "member": {
+          "kind": "inRows",
+          "column": "id",
+          "rows": {
+            "kind": "rows",
+            "table": "project_members",
+            "column": "project_id",
+            "where": {
+              "kind": "eq",
+              "column": "user_id",
+              "value": {
+                "kind": "user"
+              }
+            }
+          }
+        }
       },
       "insert": {
         "owner": "all"
@@ -84,31 +130,72 @@
       "name": "tasks",
       "tenant": "org_id",
       "read": {
-        "owner": {
-          "kind": "via",
-          "column": "project_id",
-          "parent": "projects",
-          "parentKey": "id"
-        },
+        "owner": "all",
         "member": {
-          "kind": "via",
+          "kind": "inRows",
           "column": "project_id",
-          "parent": "projects",
-          "parentKey": "id"
+          "rows": {
+            "kind": "rows",
+            "table": "project_members",
+            "column": "project_id",
+            "where": {
+              "kind": "eq",
+              "column": "user_id",
+              "value": {
+                "kind": "user"
+              }
+            }
+          }
         }
       },
       "insert": {
         "owner": "all",
-        "member": "all"
+        "member": {
+          "kind": "inRows",
+          "column": "project_id",
+          "rows": {
+            "kind": "rows",
+            "table": "project_members",
+            "column": "project_id",
+            "where": {
+              "kind": "eq",
+              "column": "user_id",
+              "value": {
+                "kind": "user"
+              }
+            }
+          }
+        }
       },
       "update": {
         "owner": "all",
         "member": {
-          "kind": "eq",
-          "column": "assignee_id",
-          "value": {
-            "kind": "user"
-          }
+          "kind": "and",
+          "items": [
+            {
+              "kind": "eq",
+              "column": "assignee_id",
+              "value": {
+                "kind": "user"
+              }
+            },
+            {
+              "kind": "inRows",
+              "column": "project_id",
+              "rows": {
+                "kind": "rows",
+                "table": "project_members",
+                "column": "project_id",
+                "where": {
+                  "kind": "eq",
+                  "column": "user_id",
+                  "value": {
+                    "kind": "user"
+                  }
+                }
+              }
+            }
+          ]
         }
       },
       "delete": {
@@ -131,10 +218,10 @@
     }
   ],
   "outputs": {
-    "powersync/sync-config.yaml": "1a38205f8482ae68615e1553cf2f6780f612af944232014b96b95aee8ca0f8a6",
+    "powersync/sync-config.yaml": "c46e26b3ef61e3d126a899b57ad68ce2015412bd3ee69ee477e6e3026341ffbb",
     "powersync/service.yaml": "bfe50c991437194b79154075b06729914675e327811ffeea01c77c50ff5f67bb",
-    "src/samesight/app-schema.ts": "b9a8d7c115ec6a8c2ce84b291a84602f2fd83503b179c312c7e24c800aeffbdd",
-    "src/samesight/policy-types.ts": "46e1320b8ae3d192108d3e6f2b91becbc6f09665cd478d957fd65b05fa819097",
-    "migration": "864094fba180bcd60e3e79ea354f514568804df0d7e4d4479d6429b20bc3e824"
+    "src/samesight/app-schema.ts": "298e935a3d9490a406f84a221325289c0fdfee0d3e40fae1eb02cc99e97bf6b7",
+    "src/samesight/policy-types.ts": "ddb115c4f4e0b65c01ee4c431ae14bb0265357d01c3bcfe1220480356a9e8b5e",
+    "migration": "352c524937f7b7522b6ad0047f010553bd56c3f48ef4d9846a95e0403d1518ab"
   }
 }

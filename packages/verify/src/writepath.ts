@@ -171,7 +171,15 @@ export async function forgeBatches(s: Setup, prepare?: (client: pg.Client) => Pr
         // sent twice. Rows whose values this user may not insert are refused; the next is tried.
         // Columns no one can set (generated, identity ALWAYS) are left to Postgres.
         const forgeable = t.serverOwned.filter((c) => c !== "id" && c !== t.tenant && !model(t.name, c)?.computed);
-        for (const row of own.slice(0, 4)) {
+        // A copy of a row can only break a unique key over client columns, as a membership's
+        // (project, user) does; copies naming another user of the tenant in the keys to
+        // auth.users are tried too.
+        const userKeys = (s.model.find((m) => m.name === t.name)?.foreignKeys ?? [])
+          .filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1 && t.insertColumns.includes(fk.columns[0] as string))
+          .map((fk) => fk.columns[0] as string);
+        const peers = s.fixed.users.filter((u) => u.tenant === user.tenant);
+        const copies = own.slice(0, 4).flatMap((row) => [row, ...(userKeys.length ? peers.map((p) => ({ ...row, ...Object.fromEntries(userKeys.map((k) => [k, p.id])) })) : [])]);
+        for (const row of copies.slice(0, 12)) {
           const c = await run(user, `${t.name}: insert with forged server-owned columns, then replay`, `PUT ${t.name} with forged ${forgeable.join(", ") || "nothing"}, twice`, async (claims) => {
             const id = prefixedUuid(s.fixed.prefix);
             const fakes = Object.fromEntries(forgeable.map((col) => [col, forged(t, col, user)]).filter(([, v]) => v !== undefined));

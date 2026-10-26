@@ -39,6 +39,32 @@ isOneToOne: false
                   Relationships: [
                     
                   ]
+                },"project_members": {
+                  Row: {
+                    "id": string,"org_id": string,"project_id": string,"user_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "id"?: string,"org_id": string,"project_id": string,"user_id": string
+                  }
+                  Update: {
+                    "id"?: string,"org_id"?: string,"project_id"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "project_members_org_id_fkey"
+      columns: ["org_id"]
+isOneToOne: false
+      referencedRelation: "organizations"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "project_members_org_id_project_id_fkey"
+      columns: ["org_id","project_id"]
+isOneToOne: false
+      referencedRelation: "projects"
+      referencedColumns: ["org_id","id"]
+    }
+                  ]
                 },"projects": {
                   Row: {
                     "created_at": string,"id": string,"name": string,"org_id": string
@@ -91,7 +117,12 @@ isOneToOne: false
             [_ in never]: never
           }
           Functions: {
-            [_ in never]: never
+            "apply_batch":
+{ Args: { "ops": Json }; Returns: undefined
+                           },
+"record_rejection":
+{ Args: { "rejections": Json }; Returns: undefined
+                           }
           }
           Enums: {
             [_ in never]: never

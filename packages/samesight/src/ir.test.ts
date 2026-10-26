@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fieldbookPolicy, fieldbookSchema } from "./fixtures/fieldbook.ts";
 import { buildIR, CompileError } from "./ir.ts";
-import { claim, col, definePolicy, or, type PolicySpec, raw, rowsOf, table, via } from "./policy.ts";
+import { and, claim, col, definePolicy, or, type PolicySpec, raw, rowsOf, table, via } from "./policy.ts";
 
 const base = fieldbookPolicy.spec;
 function compile(tables: PolicySpec["tables"], extra: Partial<PolicySpec> = {}) {
@@ -74,13 +74,9 @@ describe("compile errors", () => {
     expect(
       problems({
         Membership: table({ tenant: "tenantId", read: { ADMIN: true } }),
-        Inspection: table({ tenant: "tenantId", read: { ADMIN: col("assigneeId").in(rowsOf("Membership", "userId")) } }),
         Site: table({ tenant: "tenantId", read: { ADMIN: raw({ rls: "\"createdAt\" > now() - interval '1 day'", sync: "true" }) } }),
       }),
-    ).toEqual([
-      'Inspection.read.ADMIN: col("assigneeId").in(rowsOf(...)) is for write checks only; sync streams cannot express it in a read rule',
-      "Site.read.ADMIN: raw rule depends on the clock; sync buckets cannot re-evaluate on time, so scope by status instead",
-    ]);
+    ).toEqual(["Site.read.ADMIN: raw rule depends on the clock; sync buckets cannot re-evaluate on time, so scope by status instead"]);
   });
 
   it("refuses raw rules that could escape the parentheses around them", () => {
@@ -111,7 +107,7 @@ describe("compile errors", () => {
       }),
     ).toEqual([
       'Inspection.read.VIEWER: reads through via("siteId", "Site"), but VIEWER has no read rule on "Site"',
-      'Finding.read.VIEWER: via("inspectionId", "Inspection") reaches a parent whose own VIEWER rule uses via; sync streams cannot nest them',
+      'Finding.read.VIEWER: via("inspectionId", "Inspection") reaches a parent whose own VIEWER rule uses via or rowsOf; sync streams cannot nest them',
     ]);
   });
 
@@ -203,7 +199,38 @@ describe("compile errors", () => {
       }),
     ).toEqual([
       'Inspection.check: rowsOf("Site", ...): "Site" is not a table in this policy, so its rows are not tenant-scoped',
-      "Finding.read.ADMIN: via must stand alone or be a term of a top-level and(); sync streams cannot put it under or() (rules for \"*\" and for a role are ORed together)",
+      "Finding.read.ADMIN: via and rowsOf must stand alone or be a term of a top-level and(); sync streams cannot put them under or() (rules for \"*\" and for a role are ORed together)",
+    ]);
+  });
+
+  it("reads through rowsOf where the target's rule for the role can be repeated in a stream", () => {
+    const membership = table({ tenant: "tenantId", read: { ADMIN: true, INSPECTOR: col("userId").eq(claim.user) } });
+    const site = table({ tenant: "tenantId", read: { ADMIN: true, INSPECTOR: true } });
+    expect(
+      problems({
+        Membership: membership,
+        Inspection: table({ tenant: "tenantId", read: { INSPECTOR: or(col("status").eq("DRAFT"), col("assigneeId").in(rowsOf("Membership", "userId"))) } }),
+        Finding: table({ tenant: "tenantId", read: { ADMIN: col("inspectionId").in(rowsOf("Site", "id", via("id", "Site"))) } }),
+      }),
+    ).toEqual([
+      'Inspection.read.INSPECTOR: via and rowsOf must stand alone or be a term of a top-level and(); sync streams cannot put them under or() (rules for "*" and for a role are ORed together)',
+      'Finding.read.ADMIN: rowsOf("Site", ...): "Site" is not a table in this policy, so its rows are not tenant-scoped',
+    ]);
+    expect(
+      problems({
+        Membership: membership,
+        Site: site,
+        Inspection: table({
+          tenant: "tenantId",
+          read: { ADMIN: and(col("status").eq("PUBLISHED"), via("siteId", "Site")), VIEWER: col("assigneeId").in(rowsOf("Membership", "userId")) },
+        }),
+        Finding: table({ tenant: "tenantId", read: { ADMIN: col("inspectionId").in(rowsOf("Inspection", "id")) } }),
+        Photo: table({ tenant: "tenantId", read: { ADMIN: col("inspectionId").in(rowsOf("Inspection", "id", via("siteId", "Site"))) } }),
+      }),
+    ).toEqual([
+      'Photo.read.ADMIN: rowsOf("Inspection", ...) in a read rule cannot filter with via or rowsOf',
+      'Inspection.read.VIEWER: reads through rowsOf("Membership", "userId"), but VIEWER has no read rule on "Membership"',
+      'Finding.read.ADMIN: rowsOf("Inspection", "id") reaches a table whose own ADMIN rule uses via or rowsOf; sync streams cannot nest them',
     ]);
   });
 
