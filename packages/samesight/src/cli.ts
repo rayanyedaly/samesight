@@ -174,7 +174,7 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
       migrations = readMigrations(dir);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      console.error(code === "ENOENT" ? `No migrations directory at ${dir}.` : code === "ENOTDIR" ? `${dir} is not a directory; --migrations takes the directory that holds the .sql files.` : `Cannot read the migrations in ${dir}: ${(e as Error).message}`);
+      console.error(code === "ENOENT" ? `No migrations directory at ${dir}.` : code === "ENOTDIR" ? `${dir} is not a directory${migrationsDir ? "; --migrations takes the directory that holds the .sql files" : ""}.` : `Cannot read the migrations in ${dir}: ${(e as Error).message}`);
       return 2;
     }
   } else console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run; pass --migrations <dir> to check them`);
