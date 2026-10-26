@@ -9,9 +9,13 @@ const stream = (body: string) => `config:\n  edition: 3\nstreams:\n${body}`;
 describe("client-scoped on sync streams", () => {
   it("fails rows picked by a subscription or connection parameter alone", () => {
     expect(lint(stream("  list:\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')\n"))).toEqual([
-      ["error", 5, "stream list, query picks its todos rows by a parameter the client sends, and nothing checks the requesting user, so any client can ask for any of them"],
+      ["error", 5, "stream list, query picks its todos rows by a parameter the client sends, and nothing limits them to the requesting user, so any client can ask for any of them"],
     ]);
     expect(lint(stream("  doc:\n    with:\n      d: SELECT id FROM documents WHERE id = connection.parameter('doc')\n    query: SELECT * FROM documents WHERE id IN d\n")).map((f) => f[0])).toEqual(["error"]);
+  });
+
+  it("fails a client parameter in an OR branch beside the token check", () => {
+    expect(lint(stream("  s:\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list') OR owner_id = auth.user_id()\n")).map((f) => f[0])).toEqual(["error"]);
   });
 
   it("accepts a client parameter bounded by a token check, and a query with neither", () => {
@@ -27,9 +31,17 @@ describe("client-scoped on sync streams", () => {
 describe("client-scoped on sync rules", () => {
   it("fails a parameter query that reads request.parameters() or user_parameters and no token value", () => {
     expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT request.parameters() ->> 'id' AS id\n    data: [SELECT * FROM lists WHERE id = bucket.id]\n")).toEqual([
-      ["error", 3, "bucket b, parameters[0] takes its bucket parameters from what the client sends, and nothing checks the requesting user, so any client can ask for any bucket"],
+      ["error", 3, "bucket b, parameters[0] takes its bucket parameters from what the client sends, and nothing limits them to the requesting user, so any client can ask for any bucket"],
     ]);
     expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT user_parameters.id AS id\n    data: [SELECT * FROM lists WHERE id = bucket.id]\n").map((f) => f[0])).toEqual(["error"]);
+  });
+
+  it("fails a parameter query whose token check sits in an OR branch", () => {
+    expect(
+      lint("bucket_definitions:\n  b:\n    parameters: SELECT id FROM lists WHERE id = request.parameters() ->> 'id' OR owner_id = request.user_id()\n    data: [SELECT * FROM lists WHERE id = bucket.id]\n").map(
+        (f) => f[0],
+      ),
+    ).toEqual(["error"]);
   });
 
   it("accepts a parameter query that checks the token too", () => {

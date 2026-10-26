@@ -109,8 +109,8 @@ That is PowerSync's Trello demo with a made-up migration.
 
 | Rule | Level | Catches |
 | --- | --- | --- |
-| `unscoped-query` | error, or warning when only fixed values filter the rows | Rows every user receives: a stream query that reads no token value (`auth.user_id()`, `auth.parameter()`), directly or through a CTE; a sync rules parameter query that reads none; a data query that reads no bucket parameter. |
-| `client-scoped` | error | Rows picked by what the client sends (`subscription.parameter()`, `connection.parameter()`, `request.parameters()`, `user_parameters`) with no token check, so any client can ask for any rows. |
+| `unscoped-query` | error, or warning when fixed values filter the rows, or only a role reaches them | Rows every user receives: a stream query no token value (`auth.user_id()`, `auth.parameter()`) limits, directly, through a CTE or through a subquery; a sync rules data query no bucket parameter limits; a parameter query whose bucket parameters, as the data queries use them, come from neither the token nor the client. A token value counts only where it limits rows: `owner_id = auth.user_id() OR true`, `auth.user_id() IS NOT NULL` and an outer join's `ON` do not. |
+| `client-scoped` | error | Rows picked by what the client sends (`subscription.parameter()`, `connection.parameter()`, `request.parameters()`, `user_parameters`) and not limited by a token value too, so any client can ask for any rows. A token check in an `OR` branch beside the client value does not bound it. |
 | `user-metadata` | error | Access decided by the token's `user_metadata`, which every Supabase user can set on themselves. |
 | `unreadable-query` | warning | A query `samesight-verify audit` cannot attribute to one table, so it would refuse to check it. |
 | `not-auto-subscribed` | info | A stream devices get only when the app subscribes, which audit does not test. |
