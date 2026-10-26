@@ -79,6 +79,12 @@ describe("unscoped-query on sync streams", () => {
       "auth.parameter('role') = CAST('authenticated' AS text)",
       "auth.parameter('is_anonymous') = false",
       "auth.parameter('is_anonymous') = 0",
+      "(auth.parameters()) ->> 'role' = 'authenticated'",
+      "auth.parameters()::json ->> 'role' = 'authenticated'",
+      "auth.parameter('role') = 'authenticated'::\"text\"",
+      // A client-picked value in one branch is no filter beside an admin check or public rows.
+      "org_id = subscription.parameter('org') OR auth.user_id() IN (SELECT user_id FROM admins)",
+      "org_id = subscription.parameter('org') OR status = 'public'",
       "upper(auth.parameter('role')) = 'AUTHENTICATED'",
       "(auth.parameters() -> 'role') = '\"authenticated\"'",
       // Any client passes by sending its own id.
@@ -94,12 +100,25 @@ describe("unscoped-query on sync streams", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.parameter('app_metadata') ->> 'role' = 'authenticated'\n")).map((f) => f[0])).toEqual(["warning"]);
   });
 
-  it("keeps a fixed filter a filter when its value is cast", () => {
-    expect(lint(stream("  s:\n    query: SELECT * FROM posts WHERE status = 'public'::text\n")).map((f) => f[0])).toEqual(["warning"]);
+  it("keeps a fixed filter a filter when its value is cast, and takes a flag column for one", () => {
+    for (const where of ["status = 'public'::text", "status = 'active'::\"Status\"", "is_public"]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM posts WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["warning"]);
+    }
+  });
+
+  it("says only the filtered rows go to whoever passes a role check beside a filter", () => {
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE status = 'public' AND auth.parameter('app_metadata') ->> 'role' = 'admin'\n")).map((f) => f[2])).toEqual([
+      expect.stringMatching(/^stream s, query sends the rows of docs its fixed filters allow to every user who passes its check on who is asking/),
+    ]);
   });
 
   it("still reports a query that only mentions an unreadable CTE's name", () => {
     expect(lint(stream("  s:\n    with:\n      owner: SELECT id FROM x WHERE a = E'b'\n    query: SELECT * FROM docs WHERE owner = owner\n")).map((f) => f[0])).toEqual(["error"]);
+  });
+
+  it("takes a CTE that reads itself for no limit, and a CTE read twice for the same limit", () => {
+    expect(lint(stream("  s:\n    with:\n      a: SELECT id FROM docs WHERE id IN a\n    query: SELECT * FROM docs WHERE id IN a\n")).map((f) => f[0])).toEqual(["error"]);
+    expect(lint(stream("  s:\n    with:\n      mine: SELECT id FROM lists WHERE owner_id = auth.user_id()\n    query: SELECT * FROM todos WHERE list_id IN mine OR parent_list_id IN mine\n"))).toEqual([]);
   });
 
   it("survives a CTE that reads itself", () => {
@@ -125,6 +144,9 @@ describe("unscoped-query on sync streams", () => {
         5,
         "stream s, query sends every user the rows of docs its fixed filters allow, and every row to users who pass its check on who is asking (a role claim, or a list such as admins); fine if those rows are public and only users meant to see them all pass the check",
       ],
+    ]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.parameter('app_metadata') ->> 'role' = 'admin' OR status = 'public'\n")).map((f) => f[2])).toEqual([
+      expect.stringMatching(/its fixed filters allow, and every row to users who pass/),
     ]);
     // Own rows, or all of them for an admin.
     expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE owner_id = auth.user_id() OR auth.parameter('app_metadata') ->> 'role' = 'admin'\n")).map((f) => f[0])).toEqual([

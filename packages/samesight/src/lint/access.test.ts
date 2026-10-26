@@ -85,7 +85,9 @@ describe("gates and bucket parameters, one guard at a time", () => {
   });
 
   it("take no role gate in a bucket whose other data queries use bucket parameters", () => {
-    expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND is_admin", ["SELECT * FROM a WHERE org = bucket.org_id", "SELECT * FROM b"])))).toContain("error");
+    expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND is_admin", ["SELECT * FROM a WHERE org = bucket.org_id", "SELECT * FROM b"])))).toEqual(["warning", "error"]);
+    // A flag on a row nobody's token picks: every user passes.
+    expect(levels(unscoped(rules("SELECT FROM settings WHERE is_public", ["SELECT * FROM payroll"])))).toEqual(["error"]);
   });
 
   it("take a bare flag column, but not a claim every user passes, for a gate on the user's row", () => {
