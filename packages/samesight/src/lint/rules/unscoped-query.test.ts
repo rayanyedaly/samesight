@@ -111,6 +111,13 @@ describe("unscoped-query on sync streams", () => {
       expect(lint(stream(`  s:\n    with:\n      pub: SELECT id FROM orgs WHERE status = 'active'\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
     }
     expect(lint(stream("  s:\n    with:\n      mine: SELECT role FROM user_roles WHERE user_id = auth.user_id()\n    query: SELECT * FROM docs WHERE 'admin' IN mine\n")).map((f) => f[0])).toEqual(["warning"]);
+    // The user's own set read through a CTE inside a subquery, or a CTE that reads another.
+    expect(lint(stream("  s:\n    with:\n      mine: SELECT role FROM user_roles WHERE user_id = auth.user_id()\n    query: SELECT * FROM docs WHERE 'admin' IN (SELECT role FROM mine)\n")).map((f) => f[0])).toEqual([
+      "warning",
+    ]);
+    expect(
+      lint(stream("  s:\n    with:\n      me: SELECT id FROM users WHERE id = auth.user_id()\n      mine: SELECT role FROM user_roles WHERE user_id IN me\n    query: SELECT * FROM docs WHERE 'admin' IN mine\n")).map((f) => f[0]),
+    ).toEqual(["warning"]);
   });
 
   it("keeps a fixed filter a filter when its value is cast, and takes a flag column for one", () => {

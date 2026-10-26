@@ -225,7 +225,13 @@ const claimCheck: Gate = (term) => fixed(term) && readsToken(term) && !readsClie
  * The token on the left (auth.user_id() IN (SELECT user_id FROM admins)) checks who is
  * asking, not which rows: it counts only for a gate that takes checks (`checks`).
  */
-function through(base: Gate, cte: (name: string) => boolean | undefined, checks = false, own: (name: string) => boolean = () => false): Gate {
+function through(
+  base: Gate,
+  cte: (name: string) => boolean | undefined,
+  checks = false,
+  own: (name: string) => boolean = () => false,
+  ownRows: (rows: Token[]) => boolean = (rows) => queryLimits(rows, valueGate(ownToken)),
+): Gate {
   const gate: Gate = (term) => {
     for (const i of topLevel(term).filter((i) => isIn(term, i))) {
       const next = term[i + 1];
@@ -240,7 +246,7 @@ function through(base: Gate, cte: (name: string) => boolean | undefined, checks 
       // for IN their orgs) when the set is the user's own. In a set anyone is in, it checks
       // nothing: any client sends a value that is in it.
       if (readsToken(left) && !readsClient(left)) return checks;
-      if (readsClient(left) || literal(left)) return checks && (named !== undefined ? own((next as Token).text.toLowerCase()) : queryLimits(sub, valueGate(ownToken)));
+      if (readsClient(left) || literal(left)) return checks && (named !== undefined ? own((next as Token).text.toLowerCase()) : ownRows(sub));
       if (named !== undefined) return named;
       // A subquery that reads a CTE: SELECT org_id FROM mine.
       const from = topLevel(sub).find((j) => word(sub[j], "from"));
@@ -255,24 +261,36 @@ function through(base: Gate, cte: (name: string) => boolean | undefined, checks 
 /** Whether `base` limits a query's rows, followed through its stream CTEs and subqueries. */
 function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = false): boolean {
   const parsed = new Map([...ctes].map(([name, s]) => [name.toLowerCase(), parse(s)]));
-  // A CTE that reads itself, directly or round a loop, limits nothing the second time.
-  const open = new Set<string>();
-  const cte = (name: string) => {
-    if (!parsed.has(name)) return undefined;
-    if (open.has(name)) return false;
-    open.add(name);
-    try {
-      return queryLimits(parsed.get(name) ?? [], gate);
-    } finally {
-      open.delete(name);
-    }
+  // A CTE's rows judged by a gate. A CTE that reads itself, directly or round a loop,
+  // limits nothing the second time.
+  const resolver = (gate: () => Gate) => {
+    const open = new Set<string>();
+    return (name: string) => {
+      if (!parsed.has(name)) return undefined;
+      if (open.has(name)) return false;
+      open.add(name);
+      try {
+        return queryLimits(parsed.get(name) ?? [], gate());
+      } finally {
+        open.delete(name);
+      }
+    };
   };
-  // Whether a CTE's rows are the user's own: the set a literal or client value is checked in.
-  const own = (name: string) => {
-    const c = parsed.get(name);
-    return c != null && queryLimits(c, valueGate(ownToken));
-  };
-  const gate: Gate = through(base, cte, checks, own);
+  // Whether a set is the user's own rows, through CTEs too: where a literal or client value
+  // checked in it is a check on who is asking.
+  const ownCte = resolver(() => ownGate);
+  const ownGate: Gate = through(matches(ownToken), ownCte);
+  const gate: Gate = through(
+    base,
+    resolver(() => gate),
+    checks,
+    (name) => ownCte(name) === true,
+    (rows) => {
+      // SELECT role FROM mine: the CTE it reads may be the user's own.
+      const from = topLevel(rows).find((j) => word(rows[j], "from"));
+      return (from !== undefined && isName(rows[from + 1]) && ownCte((rows[from + 1] as Token).text.toLowerCase()) === true) || queryLimits(rows, ownGate);
+    },
+  );
   return queryLimits(t, gate);
 }
 
