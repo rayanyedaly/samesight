@@ -236,9 +236,9 @@ const claimCheck: Gate = (term) => fixed(term) && readsToken(term) && !readsClie
 function through(
   base: Gate,
   cte: (name: string) => boolean | undefined,
-  checks = false,
-  own: (name: string) => boolean = () => false,
-  ownRows: (rows: Token[]) => boolean = (rows) => queryLimits(rows, valueGate(ownToken)),
+  checks: boolean,
+  own: (name: string) => boolean,
+  ownRows: (rows: Token[]) => boolean,
 ): Gate {
   const gate: Gate = (term) => {
     for (const i of topLevel(term).filter((i) => isIn(term, i))) {
@@ -313,7 +313,7 @@ function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = f
   // Whether a set is the user's own rows, through CTEs too: where a literal or client value
   // checked in it is a check on who is asking.
   const ownCte = resolver(() => ownGate);
-  const ownGate: Gate = through(matches(ownToken), ownCte);
+  const ownGate: Gate = through(matches(ownToken), ownCte, false, () => false, () => false);
   const gate: Gate = through(
     base,
     resolver(() => gate),
@@ -330,7 +330,7 @@ function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = f
 
 /** The gate for a value: a row compared with it, followed through subqueries. */
 export function valueGate(reads: (term: Token[]) => boolean): Gate {
-  return through(matches(reads), () => undefined);
+  return through(matches(reads), () => undefined, false, () => false, () => false);
 }
 
 /**

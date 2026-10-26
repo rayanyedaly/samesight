@@ -95,6 +95,11 @@ describe("unscoped-query on sync streams", () => {
       // Every user's role is the same: a column compared with it tells no user apart.
       "public_to = auth.parameter('role')",
       "tenant = auth.parameter('iss')",
+      "public_to = auth.parameter('aud')",
+      "public_to = auth.parameter('is_anonymous')",
+      "tier = auth.parameter('aal')",
+      "method = auth.parameter('amr')",
+      "auth.parameter('role') = lower('AUTHENTICATED')",
       // A client value IN the user's own set only proves the set is not empty.
       "subscription.parameter('org') IN (SELECT org_id FROM members WHERE user_id = auth.user_id())",
       // A set that holds anything: a literal, the client's value, a UNION.
@@ -129,7 +134,11 @@ describe("unscoped-query on sync streams", () => {
       expect(lint(stream(`  s:\n    with:\n      pub: SELECT id FROM orgs WHERE status = 'active'\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
     }
     expect(lint(stream("  s:\n    with:\n      mine: SELECT role FROM user_roles WHERE user_id = auth.user_id()\n    query: SELECT * FROM docs WHERE 'admin' IN mine\n")).map((f) => f[0])).toEqual(["warning"]);
-    // The user's own set read through a CTE inside a subquery, or a CTE that reads another.
+    // The user's own set read through a CTE inside a subquery, its conditions or its FROM,
+    // or a CTE that reads another.
+    expect(
+      lint(stream("  s:\n    with:\n      me: SELECT id FROM users WHERE id = auth.user_id()\n    query: SELECT * FROM docs WHERE 'admin' IN (SELECT role FROM user_roles WHERE user_id IN me)\n")).map((f) => f[0]),
+    ).toEqual(["warning"]);
     expect(lint(stream("  s:\n    with:\n      mine: SELECT role FROM user_roles WHERE user_id = auth.user_id()\n    query: SELECT * FROM docs WHERE 'admin' IN (SELECT role FROM mine)\n")).map((f) => f[0])).toEqual([
       "warning",
     ]);
@@ -271,6 +280,12 @@ describe("unscoped-query on sync rules", () => {
         "bucket_definitions:\n  by_org:\n    parameters: SELECT org_id FROM members WHERE user_id = request.user_id() AND accepted = true\n    data:\n      - SELECT * FROM projects WHERE org_id = bucket.org_id\n      - SELECT * FROM invoices\n",
       ),
     ).toEqual([["error", 6, "bucket by_org: 1 of its data queries is not limited by a bucket parameter, so every user it reaches receives every row of invoices"]]);
+  });
+
+  it("takes rows picked by a claim every user shares for nobody's, not the client's", () => {
+    expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT id AS org_id FROM orgs WHERE public_to = request.jwt() ->> 'role'\n    data: [SELECT * FROM t WHERE org = bucket.org_id]\n").map((f) => f[0])).toEqual([
+      "error",
+    ]);
   });
 
   it("takes no claim every user shares for a bucket parameter", () => {
