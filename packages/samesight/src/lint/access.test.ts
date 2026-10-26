@@ -30,6 +30,10 @@ describe("comparisons", () => {
 });
 
 describe("unreadable queries", () => {
+  it("are left to unreadable-query, also when a subquery reads the CTE", () => {
+    expect(unscoped(stream("  s:\n    with:\n      mine: SELECT org_id FROM m WHERE x = E'y'\n    query: SELECT * FROM p WHERE org_id IN (SELECT org_id FROM mine)\n"))).toEqual([]);
+  });
+
   it("are left to unreadable-query, not reported as leaks", () => {
     expect(
       unscoped("bucket_definitions:\n  b:\n    parameters: SELECT request.user_id() AS user_id\n    data:\n      - SELECT * FROM lists WHERE owner_id = bucket.user_id\n      - SELECT * FROM notes WHERE x = E'y'\n"),

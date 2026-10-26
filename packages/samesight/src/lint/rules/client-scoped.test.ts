@@ -27,6 +27,23 @@ describe("client-scoped on sync streams", () => {
     ]);
   });
 
+  it("is not bounded by the token compared with another client value, or by a cast claim", () => {
+    expect(
+      lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND auth.user_id() = subscription.parameter('uid')\n")).map((f) => f[0]),
+    ).toEqual(["error"]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND auth.parameter('role') = 'authenticated'::text\n")).map((f) => f[0])).toEqual([
+      "error",
+    ]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND auth.parameter('app_metadata') ->> 'role' = 'admin'::text\n")).map((f) => f[0])).toEqual([
+      "warning",
+    ]);
+    expect(
+      lint("bucket_definitions:\n  b:\n    parameters: SELECT id AS org_id FROM orgs WHERE id = request.parameters() ->> 'org' AND request.user_id() = request.parameters() ->> 'uid'\n    data: [SELECT * FROM t WHERE org_id = bucket.org_id]\n").map(
+        (f) => f[0],
+      ),
+    ).toEqual(["error"]);
+  });
+
   it("fails a client parameter in an OR branch beside the token check", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list') OR owner_id = auth.user_id()\n")).map((f) => f[0])).toEqual(["error"]);
   });

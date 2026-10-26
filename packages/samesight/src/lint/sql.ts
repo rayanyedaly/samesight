@@ -75,9 +75,9 @@ export function hasWhere(t: Token[]): boolean {
   return t.some((x) => word(x, "where"));
 }
 
-/** Names after IN that are not a parenthesised list: the CTEs a stream query reads. */
-export function inNames(t: Token[]): string[] {
-  return t.flatMap((x, i) => (word(x, "in") && (t[i + 1]?.kind === "word" || t[i + 1]?.kind === "quoted") ? [(t[i + 1] as Token).text.toLowerCase()] : []));
+/** Every name a query mentions, lowercased: the CTEs it may read, by IN or in a subquery's FROM. */
+export function names(t: Token[]): Set<string> {
+  return new Set(t.flatMap((x) => (x.kind === "word" || x.kind === "quoted" ? [x.text.toLowerCase()] : [])));
 }
 
 /** The table a query sends, for messages; "its table" when the query is not one audit reads. */

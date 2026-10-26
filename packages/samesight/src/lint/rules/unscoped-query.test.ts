@@ -65,17 +65,56 @@ describe("unscoped-query on sync streams", () => {
     ]);
   });
 
-  it("fails a claim every signed-in Supabase token passes", () => {
+  it("fails a claim every ordinary signed-in Supabase user passes, however the value is written", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.parameter('role') = 'authenticated'\n"))).toEqual([
-      ["error", 5, "stream s, query checks a claim every signed-in Supabase token passes (role or aud = 'authenticated'), so every user gets every row of docs"],
+      [
+        "error",
+        5,
+        "stream s, query checks a claim every ordinary signed-in Supabase user passes (role or aud = 'authenticated', is_anonymous = false), so every user gets every row of docs",
+      ],
     ]);
-    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE owner_id = auth.user_id() OR auth.parameters() ->> 'aud' = 'authenticated'\n")).map((f) => f[0])).toEqual(["error"]);
+    for (const where of [
+      "owner_id = auth.user_id() OR auth.parameters() ->> 'aud' = 'authenticated'",
+      "auth.parameter('role') = 'authenticated'::text",
+      "auth.parameter('role') = CAST('authenticated' AS text)",
+      "auth.parameter('is_anonymous') = false",
+      // Any client passes by sending its own id.
+      "auth.user_id() = subscription.parameter('uid')",
+    ]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
+    }
+    // app_metadata.role is the app's own, so a check on it is a role, not every token.
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.parameter('app_metadata') ->> 'role' = 'authenticated'\n")).map((f) => f[0])).toEqual(["warning"]);
+  });
+
+  it("keeps a fixed filter a filter when its value is cast", () => {
+    expect(lint(stream("  s:\n    query: SELECT * FROM posts WHERE status = 'public'::text\n")).map((f) => f[0])).toEqual(["warning"]);
+  });
+
+  it("survives a CTE that reads itself", () => {
+    expect(lint(stream("  s:\n    with:\n      a: SELECT id FROM docs WHERE id IN a\n    query: SELECT * FROM docs WHERE id IN a AND owner_id = auth.user_id()\n"))).toEqual([]);
   });
 
   it("warns about rows sent to whoever passes a role claim or an admin list", () => {
     const message = "stream s, query sends every row of customers to every user who passes its check on who is asking (a role claim, or a list such as admins), not each user their own; fine if only users meant to see them all pass it";
     expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE auth.parameter('app_metadata') ->> 'role' = 'admin'\n"))).toEqual([["warning", 5, message]]);
     expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE auth.user_id() IN (SELECT user_id FROM admins)\n"))).toEqual([["warning", 5, message]]);
+    for (const where of [
+      "auth.parameter('app_metadata') ->> 'role' = 'admin'::text",
+      "auth.parameter('app_metadata') ->> 'role' = lower('ADMIN')",
+      "'admin' IN (SELECT role FROM user_roles WHERE user_id = auth.user_id())",
+      // One named user gets every row.
+      "auth.user_id() = '1b6c'::uuid",
+    ]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM customers WHERE ${where}\n`)), where).toEqual([["warning", 5, message]]);
+    }
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.user_id() IN (SELECT user_id FROM admins) OR status = 'public'\n"))).toEqual([
+      [
+        "warning",
+        5,
+        "stream s, query sends every user the rows of docs its fixed filters allow, and every row to users who pass its check on who is asking (a role claim, or a list such as admins); fine if those rows are public and only users meant to see them all pass the check",
+      ],
+    ]);
     // Own rows, or all of them for an admin.
     expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE owner_id = auth.user_id() OR auth.parameter('app_metadata') ->> 'role' = 'admin'\n")).map((f) => f[0])).toEqual([
       "warning",
@@ -133,7 +172,7 @@ describe("unscoped-query on sync rules", () => {
         "bucket admin: its data queries are not limited by a bucket parameter, so every user its parameter queries admit receives every row of customers; fine if their checks (such as is_admin = true, or a role claim) admit only users meant to see it all",
       ],
     ]);
-    for (const gate of ["SELECT FROM users WHERE users.id = request.user_id() AND users.is_admin", "SELECT WHERE request.jwt() ->> 'role' = 'admin'"]) {
+    for (const gate of ["SELECT FROM users WHERE users.id = request.user_id() AND users.is_admin", "SELECT WHERE request.jwt() ->> 'role' = 'admin'", "SELECT WHERE token_parameters.is_admin"]) {
       expect(lint(`bucket_definitions:\n  admin:\n    parameters: ${gate}\n    data: [SELECT * FROM customers]\n`).map((f) => f[0]), gate).toEqual(["warning"]);
     }
   });
@@ -143,6 +182,8 @@ describe("unscoped-query on sync rules", () => {
       "SELECT FROM users WHERE id = request.user_id() AND request.parameters() ->> 'admin' = 'yes'",
       "SELECT FROM users WHERE id = request.user_id() AND 1 = 1",
       "SELECT WHERE request.jwt() ->> 'role' = 'authenticated'",
+      "SELECT WHERE request.jwt() ->> 'is_anonymous' = 'false'",
+      "SELECT FROM users WHERE id = request.user_id() AND true",
     ]) {
       expect(lint(`bucket_definitions:\n  b:\n    parameters: ${gate}\n    data: [SELECT * FROM payroll]\n`).map((f) => f[0]), gate).toEqual(["error"]);
     }
@@ -152,6 +193,22 @@ describe("unscoped-query on sync rules", () => {
         "bucket_definitions:\n  by_org:\n    parameters: SELECT org_id FROM members WHERE user_id = request.user_id() AND accepted = true\n    data:\n      - SELECT * FROM projects WHERE org_id = bucket.org_id\n      - SELECT * FROM invoices\n",
       ),
     ).toEqual([["error", 6, "bucket by_org: 1 of its data queries is not limited by a bucket parameter, so every user it reaches receives every row of invoices"]]);
+  });
+
+  it("warns about a parameter query that gives its buckets to whoever passes a role claim", () => {
+    expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT id AS org_id FROM orgs WHERE request.jwt() ->> 'role' = 'admin'\n    data: [SELECT * FROM projects WHERE org_id = bucket.org_id]\n")).toEqual([
+      [
+        "warning",
+        3,
+        "bucket b, parameters[0] gives every bucket it lists to every user who passes its check on who is asking (a role claim), not each user their own; fine if only users meant to see them all pass it",
+      ],
+    ]);
+    // The token against a client value checks nothing: every bucket goes to everyone.
+    expect(
+      lint("bucket_definitions:\n  b:\n    parameters: SELECT id AS org_id FROM orgs WHERE request.user_id() = request.parameters() ->> 'uid'\n    data: [SELECT * FROM projects WHERE org_id = bucket.org_id]\n").map(
+        (f) => f[0],
+      ),
+    ).toEqual(["error"]);
   });
 
   it("accepts a bucket tied to the token, and leaves client parameters to client-scoped", () => {
