@@ -133,11 +133,21 @@ step("samesight check catches drift", () => {
     writeFileSync(path, original);
   }
 });
-step("samesight lint on Fieldbook", () => expectIn(samesight("lint"), "No problems found.", "lint"));
+step("samesight lint on Fieldbook", () => {
+  expectIn(samesight("lint"), "No problems found.", "lint");
+  // The RLS rules ran too: lint found the copied migrations.
+  const report = JSON.parse(samesight("lint", "--format", "json"));
+  if (!report.rlsChecked || report.exitCode !== 0) throw new Error(`lint --format json: ${JSON.stringify(report)}`);
+});
 step("samesight lint catches a leak", () => {
   writeFileSync(join(cli, "leaky.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM inspections\n");
   try {
-    expectIn(runFailing("npx", ["--no-install", "samesight", "lint", "leaky.yaml"], { cwd: cli }), "(unscoped-query)", "lint leak");
+    run("npx", ["--no-install", "samesight", "lint", "leaky.yaml"], { cwd: cli });
+    throw new Error("lint passed a leak");
+  } catch (e) {
+    // Exit 1 is findings; 2 would mean lint could not run.
+    if (e.status !== 1) throw e;
+    expectIn(e.stdout, "(unscoped-query)", "lint leak");
   } finally {
     rmSync(join(cli, "leaky.yaml"));
   }
