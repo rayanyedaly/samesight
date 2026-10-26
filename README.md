@@ -82,7 +82,13 @@ npx samesight-verify       # prove devices and RLS agree, against the local stac
 
 The [getting started guide](docs/getting-started.md) walks through it, including the Supabase hook and the PowerSync service.
 
-Already running PowerSync with hand-written RLS? Point the verifier at your project:
+Already running PowerSync with hand-written RLS? Lint your sync config in seconds, with nothing to set up:
+
+```bash
+npx samesight lint powersync/sync-config.yaml
+```
+
+Then point the verifier at your project to test the rows themselves:
 
 ```bash
 npx @samesight/verify audit --sync-config powersync/sync-config.yaml --powersync http://127.0.0.1:8080
@@ -94,7 +100,7 @@ See [auditing an existing project](docs/verify.md#audit-mode).
 
 | Package | What it is |
 | --- | --- |
-| [`samesight`](packages/samesight) | The policy language, the compiler and the `samesight` CLI (`init`, `generate`, `check`, `doctor`, `explain`). |
+| [`samesight`](packages/samesight) | The policy language, the compiler and the `samesight` CLI (`init`, `generate`, `check`, `doctor`, `explain`, and `lint` for any PowerSync sync config). |
 | [`@samesight/verify`](packages/verify) | `samesight-verify`: static and catalog checks, the differential test, forged writes and the mutation test; `audit` for projects without a policy. |
 | [`@samesight/supabase`](packages/supabase) | A PowerSync connector for Supabase: one atomic `apply_batch` call per transaction, error classification, and refused writes kept instead of lost. |
 | [`@samesight/next`](packages/next) | For Next.js: a per-user encrypted local database, offline unlock, idle lock, safe sign-out, and sync status UI. |
