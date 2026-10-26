@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * samesight init | generate | check | doctor | explain
+ * samesight init | generate | check | doctor | explain | lint
  *
  * Runs on Node's built-in TypeScript support (type stripping), so a policy file is
  * imported as written. Paths in the policy's `output` are relative to the policy file.
@@ -11,6 +11,8 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
+import { exitCode, formatLint, type LintFinding } from "./lint/finding.ts";
+import { findSyncConfig, lintSyncConfig, SYNC_CONFIG_FILES } from "./lint/lint.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
@@ -30,6 +32,9 @@ Commands:
   check      regenerate from the saved schema snapshot and fail if anything on disk differs
   doctor     check the local database against the policy (RLS, publication, hook, replication lag)
   explain    print who can read and write what, in plain words, from the saved schema snapshot
+  lint [file ...]
+             check PowerSync sync configs for known leak patterns, reading the files only
+             (default: sync-config.yaml or sync-rules.yaml, here or under powersync/)
 
 Options:
   --policy <file>   policy file (default: samesight.policy.ts, or samesight.policy.mts)
@@ -63,6 +68,8 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return command || values.help ? 0 : 1;
   }
+  // Lint needs no policy: it is for any PowerSync project.
+  if (command === "lint") return lint(positionals.slice(1));
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);
@@ -130,6 +137,29 @@ async function main(argv: string[]): Promise<number> {
       console.error(`Unknown command "${command}".\n\n${USAGE}`);
       return 1;
   }
+}
+
+/** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read. */
+function lint(given: string[]): number {
+  const found = given.length ? given : [findSyncConfig(process.cwd())].filter((f): f is string => f !== undefined);
+  if (found.length === 0) {
+    console.error(`No sync config found (tried ${SYNC_CONFIG_FILES.join(", ")}); name one: samesight lint <file>`);
+    return 2;
+  }
+  const findings: LintFinding[] = [];
+  let unreadable = 0;
+  for (const file of found) {
+    try {
+      findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file));
+    } catch (e) {
+      console.error(`${file}: cannot be read as a sync config: ${(e as Error).message}`);
+      unreadable++;
+    }
+  }
+  // "No problems found" would be false for a file that was never checked.
+  if (findings.length || !unreadable) console.log(formatLint(findings));
+  if (unreadable) console.error(`${unreadable} of ${found.length} file(s) could not be read, so nothing in them was checked.`);
+  return unreadable ? 2 : exitCode(findings);
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {
