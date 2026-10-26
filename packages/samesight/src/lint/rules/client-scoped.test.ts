@@ -128,6 +128,14 @@ describe("client-scoped on sync rules", () => {
     expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT user_parameters.id AS id\n    data: [SELECT * FROM lists WHERE id = bucket.id]\n").map((f) => f[0])).toEqual(["error"]);
   });
 
+  it("says the client picks the buckets when the token check sits in an OR branch", () => {
+    expect(
+      lint("bucket_definitions:\n  b:\n    parameters: SELECT id FROM lists WHERE id = request.parameters() ->> 'id' OR owner_id = request.user_id()\n    data: [SELECT * FROM lists WHERE id = bucket.id]\n").map(
+        (f) => f[2],
+      ),
+    ).toEqual([expect.stringMatching(/takes its bucket parameters from what the client sends/)]);
+  });
+
   it("fails a parameter query whose token check sits in an OR branch", () => {
     expect(
       lint("bucket_definitions:\n  b:\n    parameters: SELECT id FROM lists WHERE id = request.parameters() ->> 'id' OR owner_id = request.user_id()\n    data: [SELECT * FROM lists WHERE id = bucket.id]\n").map(

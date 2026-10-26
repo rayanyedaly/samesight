@@ -244,6 +244,7 @@ function through(
   checks: boolean,
   own: (name: string) => boolean,
   ownRows: (rows: Token[]) => boolean,
+  columnCte: (name: string) => boolean,
 ): Gate {
   const gate: Gate = (term) => {
     for (const i of topLevel(term).filter((i) => isIn(term, i))) {
@@ -260,7 +261,7 @@ function through(
       // Not a row on the left: then the set counts only where it selects one column of one
       // source, since SELECT 'admin' FROM ..., SELECT subscription.parameter('u') or a join
       // may hold anything.
-      if (set && !columnSet(sub) && (readsAny(left) || literal(left))) return false;
+      if ((readsAny(left) || literal(left)) && (set ? !columnSet(sub) : !columnCte((next as Token).text.toLowerCase()))) return false;
       // The token (auth.user_id() IN admins) is a check on who is asking, unless it is a claim
       // every user shares; so is a literal ('admin' IN their roles) when the set is the
       // user's own. A client value is not: it only proves the set is not empty.
@@ -330,7 +331,11 @@ function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = f
   // Whether a set is the user's own rows, through CTEs too: where a literal or client value
   // checked in it is a check on who is asking.
   const ownCte = resolver(() => ownGate);
-  const ownGate: Gate = through(matches(ownToken), ownCte, false, () => false, () => false);
+  const columnCte = (name: string) => {
+    const rows = parsed.get(name);
+    return rows != null && columnSet(rows);
+  };
+  const ownGate: Gate = through(matches(ownToken), ownCte, false, () => false, () => false, columnCte);
   const gate: Gate = through(
     base,
     resolver(() => gate),
@@ -341,13 +346,14 @@ function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = f
       const source = cteSource(rows);
       return (source !== undefined && ownCte(source) === true) || queryLimits(rows, ownGate);
     },
+    columnCte,
   );
   return queryLimits(t, gate);
 }
 
 /** The gate for a value: a row compared with it, followed through subqueries. */
 export function valueGate(reads: (term: Token[]) => boolean): Gate {
-  return through(matches(reads), () => undefined, false, () => false, () => false);
+  return through(matches(reads), () => undefined, false, () => false, () => false, () => false);
 }
 
 /**

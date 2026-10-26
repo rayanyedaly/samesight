@@ -137,12 +137,37 @@ describe("unscoped-query on sync streams", () => {
       "SELECT subscription.parameter('org') AS org_id FROM members WHERE user_id = auth.user_id()",
       "SELECT org_id FROM members WHERE user_id = auth.user_id() UNION SELECT id FROM orgs",
     ]) {
-      expect(lint(stream(`  s:\n    with:\n      mine: ${cte}\n    query: SELECT * FROM docs WHERE org_id IN mine\n`)).map((f) => f[0]), cte).not.toEqual([]);
+      expect(lint(stream(`  s:\n    with:\n      mine: ${cte}\n    query: SELECT * FROM docs WHERE org_id IN mine\n`)).map((f) => f[0]), cte).toEqual(["error"]);
     }
   });
 
-  it("takes SELECT DISTINCT for one column", () => {
-    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE 'admin' IN (SELECT DISTINCT role FROM user_roles WHERE user_id = auth.user_id())\n")).map((f) => f[0])).toEqual(["warning"]);
+  it("takes one column of one table for a set, however written", () => {
+    for (const set of [
+      "SELECT DISTINCT role FROM user_roles WHERE user_id = auth.user_id()",
+      "SELECT role AS r FROM user_roles WHERE user_id = auth.user_id()",
+      "SELECT user_roles.role FROM user_roles WHERE user_roles.user_id = auth.user_id()",
+      "SELECT role FROM user_roles WHERE user_id = auth.user_id() ORDER BY role, id",
+    ]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE 'admin' IN (${set})\n`)).map((f) => f[0]), set).toEqual(["warning"]);
+    }
+    for (const set of [
+      "SELECT role FROM user_roles JOIN users ON true WHERE users.id = auth.user_id()",
+      "SELECT role FROM user_roles, users WHERE users.id = auth.user_id()",
+    ]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE 'admin' IN (${set})\n`)).map((f) => f[0]), set).toEqual(["error"]);
+    }
+    // EXCEPT may leave every org but the user's own.
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE org_id IN (SELECT id FROM orgs EXCEPT SELECT org_id FROM members WHERE user_id = auth.user_id())\n")).map((f) => f[0])).toEqual([
+      "error",
+    ]);
+  });
+
+  it("holds a CTE set to one column too, whatever is checked in it", () => {
+    expect(lint(stream("  s:\n    with:\n      r: SELECT 'admin' AS role FROM users WHERE id = auth.user_id()\n    query: SELECT * FROM docs WHERE 'admin' IN r\n")).map((f) => f[0])).toEqual(["error"]);
+    expect(lint(stream("  s:\n    with:\n      c: SELECT subscription.parameter('u') AS u\n    query: SELECT * FROM docs WHERE auth.user_id() IN c\n")).map((f) => f[0])).toEqual(["error"]);
+    expect(
+      lint(stream("  s:\n    with:\n      mine: SELECT org_id FROM members WHERE user_id = auth.user_id()\n    query: SELECT * FROM docs WHERE org_id IN (SELECT subscription.parameter('org') FROM mine)\n")).map((f) => f[0]),
+    ).toEqual(["error"]);
   });
 
   it("fails a literal or client value checked in a CTE anyone's rows fill", () => {
