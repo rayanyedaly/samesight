@@ -5,8 +5,9 @@
  * is refused, never guessed at.
  */
 
-import type { Finding } from "../report.ts";
-import { type Stream, type Token, tokenize } from "samesight/compiler";
+import type { Finding } from "../doctor.ts";
+import { type Token, tokenize } from "./sql.ts";
+import type { Stream } from "./streams.ts";
 
 const isWord = (t: Token | undefined, w: string) => t?.kind === "word" && t.text === w;
 const isName = (t: Token | undefined) => t?.kind === "word" || t?.kind === "quoted";
