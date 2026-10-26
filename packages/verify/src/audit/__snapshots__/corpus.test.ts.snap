@@ -1,0 +1,285 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`corpus > parses planted/client-parameter-scope.yaml 1`] = `
+{
+  "findings": [
+    "warn: tasks reads client parameters",
+  ],
+  "format": "bucket definitions",
+  "streams": [
+    "tasks",
+  ],
+  "synced": [
+    "tasks",
+  ],
+}
+`;
+
+exports[`corpus > parses planted/missing-owner-filter.yaml 1`] = `
+{
+  "findings": [],
+  "format": "streams",
+  "streams": [
+    "user_data",
+  ],
+  "synced": [
+    "lists",
+    "todos",
+  ],
+}
+`;
+
+exports[`corpus > parses planted/unused-bucket-parameter.yaml 1`] = `
+{
+  "findings": [],
+  "format": "bucket definitions",
+  "streams": [
+    "user_lists",
+  ],
+  "synced": [
+    "pebbles",
+  ],
+}
+`;
+
+exports[`corpus > parses planted/user-metadata-scope.yaml 1`] = `
+{
+  "findings": [],
+  "format": "streams",
+  "streams": [
+    "team_tasks",
+  ],
+  "synced": [
+    "tasks",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-dart-trello-global-legacy.yaml 1`] = `
+{
+  "findings": [],
+  "format": "bucket definitions",
+  "streams": [
+    "global",
+  ],
+  "synced": [
+    "activity",
+    "attachment",
+    "board",
+    "board_label",
+    "card",
+    "card_label",
+    "checklist",
+    "comment",
+    "listboard",
+    "member",
+    "trellouser",
+    "workspace",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-dart-trello-legacy.yaml 1`] = `
+{
+  "findings": [],
+  "format": "bucket definitions",
+  "streams": [
+    "user_info",
+    "by_workspace",
+  ],
+  "synced": [
+    "activity",
+    "attachment",
+    "board",
+    "board_label",
+    "card",
+    "card_label",
+    "checklist",
+    "comment",
+    "listboard",
+    "member",
+    "trellouser",
+    "workspace",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-group-chat.yaml 1`] = `
+{
+  "findings": [
+    "warn: group_messages reads client parameters",
+    "warn: group_memberships reads client parameters",
+    "warn: group_member_profiles reads client parameters",
+    "warn: group_messages is not auto_subscribe",
+    "warn: group_memberships is not auto_subscribe",
+    "warn: group_member_profiles is not auto_subscribe",
+  ],
+  "format": "streams",
+  "streams": [
+    "user",
+    "contact_profiles",
+    "member_groups",
+    "chats",
+    "chat_profiles",
+    "group_messages",
+    "group_memberships",
+    "group_member_profiles",
+  ],
+  "synced": [
+    "contacts",
+    "groups",
+    "memberships",
+    "messages",
+    "profiles",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-group-chat-legacy.yaml 1`] = `
+{
+  "findings": [
+    "fail: chats data[0] calls profiles chats",
+  ],
+  "format": "bucket definitions",
+  "streams": [
+    "user",
+    "contacts",
+    "groups",
+    "group_draft_messages",
+    "chats",
+  ],
+  "synced": [
+    "contacts",
+    "groups",
+    "memberships",
+    "messages",
+    "profiles",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-multi-client.yaml 1`] = `
+{
+  "findings": [],
+  "format": "streams",
+  "streams": [
+    "user_lists",
+  ],
+  "synced": [
+    "pebbles",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-multi-client-legacy.yaml 1`] = `
+{
+  "findings": [],
+  "format": "bucket definitions",
+  "streams": [
+    "user_lists",
+  ],
+  "synced": [
+    "pebbles",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-nextjs.yaml 1`] = `
+{
+  "findings": [],
+  "format": "streams",
+  "streams": [
+    "global",
+  ],
+  "synced": [
+    "customers",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-nuxt.yaml 1`] = `
+{
+  "findings": [],
+  "format": "streams",
+  "streams": [
+    "user_tasks",
+  ],
+  "synced": [
+    "tasks",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-nuxt-legacy.yaml 1`] = `
+{
+  "findings": [],
+  "format": "bucket definitions",
+  "streams": [
+    "tasks",
+  ],
+  "synced": [
+    "tasks",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-text-collab.yaml 1`] = `
+{
+  "findings": [
+    "warn: documents reads client parameters",
+  ],
+  "format": "streams",
+  "streams": [
+    "documents",
+  ],
+  "synced": [
+    "document_updates",
+    "documents",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-text-collab-legacy.yaml 1`] = `
+{
+  "findings": [
+    "warn: documents reads client parameters",
+  ],
+  "format": "bucket definitions",
+  "streams": [
+    "documents",
+  ],
+  "synced": [
+    "document_updates",
+    "documents",
+  ],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-time-based.yaml 1`] = `
+{
+  "findings": [
+    "warn: issues_by_date reads client parameters",
+    "warn: issues_by_date is not auto_subscribe",
+    "fail: no stream sends any table",
+  ],
+  "format": "streams",
+  "streams": [
+    "issues_by_date",
+  ],
+  "synced": [],
+}
+`;
+
+exports[`corpus > parses real/powersync-js-todolist.yaml 1`] = `
+{
+  "findings": [],
+  "format": "streams",
+  "streams": [
+    "user_data",
+  ],
+  "synced": [
+    "lists",
+    "todos",
+  ],
+}
+`;
