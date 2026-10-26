@@ -8,7 +8,8 @@ import type { DeviceRow } from "./device.ts";
 import type { TableModel } from "./model.ts";
 import { type RlsRows, rowKey } from "./rls.ts";
 
-export type ProblemKind = "leak" | "hidden" | "gap" | "differs";
+/** "unsent": the device has the row without a column RLS returns (a value, not a null). */
+export type ProblemKind = "leak" | "hidden" | "gap" | "differs" | "unsent";
 
 export interface Problem {
   kind: ProblemKind;
@@ -55,9 +56,14 @@ export function compare(device: DeviceRow[], rls: RlsRows, hidden: Map<string, s
       if (streams.length) problems.push({ kind: "hidden", table: d.table, id: d.id, streams, row: d.data, columns: [column] });
     }
     const colTypes = types.get(d.table);
-    const differs = Object.keys(allowed).filter(
-      (c) => !(hidden.get(d.table) ?? []).includes(c) && JSON.stringify(normalize(colTypes?.get(c), allowed[c])) !== JSON.stringify(normalize(colTypes?.get(c), d.data[c])),
+    const shown = Object.keys(allowed).filter((c) => !(hidden.get(d.table) ?? []).includes(c));
+    const unsent = shown.filter((c) => !(c in d.data) && allowed[c] !== null && allowed[c] !== undefined);
+    const differs = shown.filter(
+      (c) => !unsent.includes(c) && JSON.stringify(normalize(colTypes?.get(c), allowed[c])) !== JSON.stringify(normalize(colTypes?.get(c), d.data[c])),
     );
+    // A column the table does not have: a value from somewhere else (a join, an expression) riding along.
+    differs.push(...Object.keys(d.data).filter((c) => !(c in allowed) && !(hidden.get(d.table) ?? []).includes(c)));
+    if (unsent.length) problems.push({ kind: "unsent", table: d.table, id: d.id, streams: d.sources.map((s) => s.stream), row: allowed, columns: unsent });
     if (differs.length) problems.push({ kind: "differs", table: d.table, id: d.id, streams: d.sources.map((s) => s.stream), row: allowed, columns: differs });
   }
   for (const [key, row] of rls) {
