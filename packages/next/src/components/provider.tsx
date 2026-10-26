@@ -14,14 +14,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { DEFAULT_IDLE_MS, IdleLock } from "../session/idle-lock";
-import { endSession, lockStore, signOutAndWipe, signOutKeeping, unsyncedCount } from "../session/session-client";
-import { storedSession } from "../session/stored-session";
-import type { EncryptedStore } from "../store/db";
-import { getSessionUserId, hasSessionKey } from "../store/session-key";
-import { deriveAndHoldKey, tryUnlock, type UnlockResult } from "../store/unlock";
-import { RecoverScreen, type RecoverScreenCopy } from "./recover-screen";
-import { type LockReason, UnlockScreen, type UnlockScreenCopy } from "./unlock-screen";
+import { DEFAULT_IDLE_MS, IdleLock } from "../session/idle-lock.tsx";
+import { endSession, lockStore, signOutAndWipe, signOutKeeping, unsyncedCount } from "../session/session-client.ts";
+import { storedSession } from "../session/stored-session.ts";
+import type { EncryptedStore } from "../store/db.ts";
+import { getSessionUserId, hasSessionKey } from "../store/session-key.ts";
+import { deriveAndHoldKey, tryUnlock, type UnlockResult } from "../store/unlock.ts";
+import { RecoverScreen, type RecoverScreenCopy } from "./recover-screen.tsx";
+import { type LockReason, UnlockScreen, type UnlockScreenCopy } from "./unlock-screen.tsx";
 
 /**
  * What the app renders against:
@@ -128,7 +128,19 @@ export function SamesightProvider({
     // failing refresh for several seconds.
     const cached = storedSession(authStorageKey);
     setSession(cached);
-    void auth.getSession().then(({ data }) => setSession(data.session ?? storedSession(authStorageKey)));
+    void auth.getSession().then(({ data }) => {
+      if (data.session && !storedSession(authStorageKey)) {
+        // The offline paths (unlock after a reload, an expired token with no network) read
+        // the session from localStorage under this key; without it every reload asks for
+        // the password and fails. Cookie storage (@supabase/ssr) and a different storageKey
+        // both end here.
+        console.warn(
+          `@samesight/next: Supabase has a session, but none is stored in localStorage under "${authStorageKey}". ` +
+            "Create the client with auth: { storageKey: authStorageKey, persistSession: true } and the default localStorage storage.",
+        );
+      }
+      setSession(data.session ?? storedSession(authStorageKey));
+    });
     const { data } = auth.onAuthStateChange((event, next) =>
       setSession(next ?? (event === "SIGNED_OUT" ? null : storedSession(authStorageKey))),
     );

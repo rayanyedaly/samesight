@@ -15,7 +15,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-const { clearSalt, getOrCreateSalt, peekSalt, storeExists } = await import("./kdf-salt");
+const { clearSalt, getOrCreateSalt, peekSalt, storeExists } = await import("./kdf-salt.ts");
 
 const P = "app";
 const U = "user-1";

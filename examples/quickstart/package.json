@@ -1,0 +1,23 @@
+{
+  "name": "quickstart",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The getting-started guide's result: a fresh Supabase project, a policy drafted by samesight init, verified in CI",
+  "type": "module",
+  "scripts": {
+    "stack:up": "bash scripts/stack-up.sh",
+    "stack:down": "bash scripts/stack-down.sh",
+    "policy:generate": "samesight generate",
+    "policy:check": "samesight check",
+    "policy:doctor": "samesight doctor",
+    "policy:explain": "samesight explain",
+    "policy:verify": "samesight-verify --powersync http://127.0.0.1:8082 --mutate"
+  },
+  "dependencies": {
+    "@samesight/supabase": "workspace:*",
+    "samesight": "workspace:*"
+  },
+  "devDependencies": {
+    "@samesight/verify": "workspace:*"
+  }
+}

@@ -1,7 +1,7 @@
 import type { PowerSyncDatabase } from "@powersync/web";
 import { describe, expect, it } from "vitest";
-import type { EncryptedStore } from "../store/db";
-import { unsyncedCount } from "./session-client";
+import type { EncryptedStore } from "../store/db.ts";
+import { unsyncedCount } from "./session-client.ts";
 
 const storeWith = (db: unknown) => ({ current: () => db as PowerSyncDatabase | null }) as EncryptedStore;
 
@@ -20,5 +20,10 @@ describe("unsyncedCount", () => {
   it("counts the queue", async () => {
     await expect(unsyncedCount(storeWith({ getUploadQueueStats: async () => ({ count: 4 }) }))).resolves.toBe(4);
     await expect(unsyncedCount(storeWith({ getUploadQueueStats: async () => ({ count: 0 }) }))).resolves.toBe(0);
+  });
+
+  it("counts refused writes the user has not acknowledged, the only copy left on the device", async () => {
+    const db = { getUploadQueueStats: async () => ({ count: 4 }), getAll: async () => [{ n: 2 }] };
+    await expect(unsyncedCount(storeWith(db))).resolves.toBe(6);
   });
 });

@@ -46,7 +46,9 @@ const canonicalTerm = (sql: string) => sqlText(tokenize(sql));
 
 function gates(ir: IR) {
   const tenantClaim = `auth.parameter('${ir.claims.tenant}')`;
-  const tenant = (t: IRTable) => new Set([canonicalTerm(`${ident(t.tenant)} = ${tenantClaim}`), canonicalTerm(`${tenantClaim} = ${ident(t.tenant)}`)]);
+  // A shared table (tenant: null) has no tenant gate to drop.
+  const tenant = (t: IRTable) =>
+    t.tenant === null ? new Set<string>() : new Set([canonicalTerm(`${ident(t.tenant)} = ${tenantClaim}`), canonicalTerm(`${tenantClaim} = ${ident(t.tenant)}`)]);
   const roleOf = new Map<string, string>();
   for (const r of ir.claims.roles) {
     roleOf.set(canonicalTerm(`auth.parameter('${ir.claims.role}') = '${r}'`), r);
@@ -104,11 +106,29 @@ function tenantBound(t: IRTable, rule: Rule, unique: Unique): boolean {
   return rule.kind === "and" && rule.items.some((i) => tenantBound(t, i, unique));
 }
 
-/** `column IN <query over parent>` stays in the tenant: a composite foreign key to the parent's key, unique on its own, which the query projects. */
-function linkedCte(t: IRTable, column: string, cte: string, unique: Unique): boolean {
+/**
+ * `column IN <tenant-gated query over another table>` stays in the tenant when both columns
+ * name the same row of some table by a key unique on its own: the CTE's rows are in the
+ * tenant, and so is the row its value names, and so is every row naming it through a
+ * composite (tenant, column) foreign key. A column names a row of its own table, or of the
+ * table its composite foreign key points at. Covers via (the query's column links to the
+ * CTE's key), and rowsOf over a table linking to the query's (projects.id in the project ids
+ * of project_members) or to a parent both link to (tasks.project_id in the same).
+ */
+function linkedCte(ir: IR, t: IRTable, column: string, cte: string, unique: Unique): boolean {
   const c = parseQuery(cte);
   const key = c.projection === "*" || c.projection.length !== 1 ? undefined : (c.projection[0] ?? "").trim().replace(/^"(.*)"$/, "$1");
-  return t.tenantLinked.some((l) => l.column === column && l.parent === c.table && l.key === key && unique(l.parent, l.key));
+  const source = ir.tables.find((x) => x.name === c.table);
+  if (key === undefined || !source) return false;
+  const names = (table: IRTable, col: string) => [
+    `${table.name}\u0000${col}`,
+    ...table.tenantLinked.filter((l) => l.column === col).map((l) => `${l.parent}\u0000${l.key}`),
+  ];
+  const mine = new Set(names(t, column));
+  return names(source, key).some((n) => {
+    const [table = "", col = ""] = n.split("\u0000");
+    return mine.has(n) && unique(table, col);
+  });
 }
 
 /** Every row of the tenant matches the rule: a non-null linked via to a parent the role reads entirely. */
@@ -136,7 +156,7 @@ function keepsTenant(ir: IR, t: IRTable, terms: string[], ctes: Map<string, stri
       const c = parseQuery(cte[1]);
       const parent = ir.tables.find((x) => x.name === c.table);
       const gated = parent && c.terms.map(canonicalTerm).some((x) => g.tenant(parent).has(x));
-      if (gated && linkedCte(t, column, cte[1], unique)) {
+      if (gated && linkedCte(ir, t, column, cte[1], unique)) {
         return `${term} reads a tenant-gated CTE over a composite (tenant, ${column}) foreign key`;
       }
     }
@@ -208,7 +228,7 @@ export function syncMutants(ir: IR, streams: Stream[], unique: Unique = () => fa
             const ut = byName.get(u.q.table);
             const ref = u.terms.map((x) => new RegExp(`^(\\S+) in ${cte}$`, "i").exec(x)?.[1]).find(Boolean);
             const column = ref?.replace(/^"(.*)"$/, "$1");
-            return ut && column && u.terms.some((x) => g.tenant(ut).has(x)) && linkedCte(ut, column, sql, unique);
+            return ut && column && u.terms.some((x) => g.tenant(ut).has(x)) && linkedCte(ir, ut, column, sql, unique);
           });
           if (users.length && linked) {
             equivalent.push({ description, reason: "every query using it keeps its own tenant gate, and a composite foreign key keeps the link in the tenant" });
@@ -270,19 +290,22 @@ export function rlsMutants(ir: IR, unique: Unique = () => false): { mutants: Rls
   for (const t of ir.tables) {
     const original = readPolicy(ir, t.name);
     if (!original) continue;
-    const gate = `${ident(t.tenant)} = (select samesight.tenant_id())`;
-    const ungated = original.replace(new RegExp(`${gate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+and\\s+`), "");
-    const rules = [...t.read.values()];
-    if (rules.length && rules.every((r) => tenantBound(t, r, unique))) {
-      equivalent.push({
-        description: `RLS ${t.name}: read without the tenant gate`,
-        reason: "every role's rule reads through a parent's RLS over a composite (tenant, column) foreign key",
-      });
-    } else if (ungated === original) {
-      // Not equivalent, unbuildable: the emitter changed. With no statements it survives and fails the run.
-      mutants.push({ description: `RLS ${t.name}: read without the tenant gate (could not be built: no "${gate} and" in the generated policy)`, statements: [] });
+    // A shared table (tenant: null) has no tenant gate to drop.
+    if (t.tenant !== null) {
+      const gate = `${ident(t.tenant)} = (select samesight.tenant_id())`;
+      const ungated = original.replace(new RegExp(`${gate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+and\\s+`), "");
+      const rules = [...t.read.values()];
+      if (rules.length && rules.every((r) => tenantBound(t, r, unique))) {
+        equivalent.push({
+          description: `RLS ${t.name}: read without the tenant gate`,
+          reason: "every role's rule reads through a parent's RLS over a composite (tenant, column) foreign key",
+        });
+      } else if (ungated === original) {
+        // Not equivalent, unbuildable: the emitter changed. With no statements it survives and fails the run.
+        mutants.push({ description: `RLS ${t.name}: read without the tenant gate (could not be built: no "${gate} and" in the generated policy)`, statements: [] });
+      }
+      else mutants.push({ description: `RLS ${t.name}: read without the tenant gate`, statements: replace(t, ungated) });
     }
-    else mutants.push({ description: `RLS ${t.name}: read without the tenant gate`, statements: replace(t, ungated) });
     for (const role of ir.claims.roles) {
       const rule = t.read.get(role);
       if (rule !== undefined && rule !== true && allOfTenant(ir, t, role, rule)) {

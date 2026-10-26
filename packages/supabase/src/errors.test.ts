@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyUploadError } from "./errors";
+import { classifyUploadError } from "./errors.ts";
 
 // The write-path table: what the connector does with each kind of failed apply_batch.
 describe("classifyUploadError", () => {
@@ -36,9 +36,16 @@ describe("classifyUploadError", () => {
     [409, "23505"], // unique
     [403, "42501"], // RLS
     [400, "P0001"], // refused by apply_batch
-    [422, "PGRST204"], // a column the schema cache does not know
   ])("rejects what can never succeed (%i %s)", (status, code) => {
-    expect(classifyUploadError({ status, code })).toBe("reject");
+    expect(classifyUploadError({ status, code, message: 'new row violates row-level security policy for table "x"' })).toBe("reject");
+  });
+
+  it.each([
+    "permission denied for function apply_batch",
+    "permission denied for schema samesight",
+    "permission denied for sequence finding_seq_seq",
+  ])("holds a 42501 that is about the server, not the row (%s)", (message) => {
+    expect(classifyUploadError({ status: 403, code: "42501", message })).toBe("stuck");
   });
 
   it("classifies by Postgres code before HTTP status", () => {
@@ -56,6 +63,10 @@ describe("classifyUploadError", () => {
     [405, "25006"], // read-only database
     [403, null], // a proxy or firewall, not PostgREST
     [422, null],
+    [422, "PGRST204"], // a column the schema cache does not know
+    [406, "PGRST106"], // schema not exposed
+    [400, "PGRST102"], // a body PostgREST cannot read
+    [403, "AccessDenied"], // a proxy's own error code
   ])("holds the batch instead of dropping it (%i %s)", (status, code) => {
     expect(classifyUploadError({ status, code })).toBe("stuck");
   });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fieldbookPolicy, fieldbookSchema } from "./fixtures/fieldbook.ts";
 import { buildIR, CompileError } from "./ir.ts";
-import { claim, col, definePolicy, or, type PolicySpec, raw, rowsOf, table, via } from "./policy.ts";
+import { and, claim, col, definePolicy, or, type PolicySpec, raw, rowsOf, table, via } from "./policy.ts";
 
 const base = fieldbookPolicy.spec;
 function compile(tables: PolicySpec["tables"], extra: Partial<PolicySpec> = {}) {
@@ -74,13 +74,9 @@ describe("compile errors", () => {
     expect(
       problems({
         Membership: table({ tenant: "tenantId", read: { ADMIN: true } }),
-        Inspection: table({ tenant: "tenantId", read: { ADMIN: col("assigneeId").in(rowsOf("Membership", "userId")) } }),
         Site: table({ tenant: "tenantId", read: { ADMIN: raw({ rls: "\"createdAt\" > now() - interval '1 day'", sync: "true" }) } }),
       }),
-    ).toEqual([
-      'Inspection.read.ADMIN: col("assigneeId").in(rowsOf(...)) is for write checks only; sync streams cannot express it in a read rule',
-      "Site.read.ADMIN: raw rule depends on the clock; sync buckets cannot re-evaluate on time, so scope by status instead",
-    ]);
+    ).toEqual(["Site.read.ADMIN: raw rule depends on the clock; sync buckets cannot re-evaluate on time, so scope by status instead"]);
   });
 
   it("refuses raw rules that could escape the parentheses around them", () => {
@@ -111,7 +107,7 @@ describe("compile errors", () => {
       }),
     ).toEqual([
       'Inspection.read.VIEWER: reads through via("siteId", "Site"), but VIEWER has no read rule on "Site"',
-      'Finding.read.VIEWER: via("inspectionId", "Inspection") reaches a parent whose own VIEWER rule uses via; sync streams cannot nest them',
+      'Finding.read.VIEWER: via("inspectionId", "Inspection") reaches a parent whose own VIEWER rule uses via or rowsOf; sync streams cannot nest them',
     ]);
   });
 
@@ -203,7 +199,38 @@ describe("compile errors", () => {
       }),
     ).toEqual([
       'Inspection.check: rowsOf("Site", ...): "Site" is not a table in this policy, so its rows are not tenant-scoped',
-      "Finding.read.ADMIN: via must stand alone or be a term of a top-level and(); sync streams cannot put it under or() (rules for \"*\" and for a role are ORed together)",
+      "Finding.read.ADMIN: via and rowsOf must stand alone or be a term of a top-level and(); sync streams cannot put them under or() (rules for \"*\" and for a role are ORed together)",
+    ]);
+  });
+
+  it("reads through rowsOf where the target's rule for the role can be repeated in a stream", () => {
+    const membership = table({ tenant: "tenantId", read: { ADMIN: true, INSPECTOR: col("userId").eq(claim.user) } });
+    const site = table({ tenant: "tenantId", read: { ADMIN: true, INSPECTOR: true } });
+    expect(
+      problems({
+        Membership: membership,
+        Inspection: table({ tenant: "tenantId", read: { INSPECTOR: or(col("status").eq("DRAFT"), col("assigneeId").in(rowsOf("Membership", "userId"))) } }),
+        Finding: table({ tenant: "tenantId", read: { ADMIN: col("inspectionId").in(rowsOf("Site", "id", via("id", "Site"))) } }),
+      }),
+    ).toEqual([
+      'Inspection.read.INSPECTOR: via and rowsOf must stand alone or be a term of a top-level and(); sync streams cannot put them under or() (rules for "*" and for a role are ORed together)',
+      'Finding.read.ADMIN: rowsOf("Site", ...): "Site" is not a table in this policy, so its rows are not tenant-scoped',
+    ]);
+    expect(
+      problems({
+        Membership: membership,
+        Site: site,
+        Inspection: table({
+          tenant: "tenantId",
+          read: { ADMIN: and(col("status").eq("PUBLISHED"), via("siteId", "Site")), VIEWER: col("assigneeId").in(rowsOf("Membership", "userId")) },
+        }),
+        Finding: table({ tenant: "tenantId", read: { ADMIN: col("inspectionId").in(rowsOf("Inspection", "id")) } }),
+        Photo: table({ tenant: "tenantId", read: { ADMIN: col("inspectionId").in(rowsOf("Inspection", "id", via("siteId", "Site"))) } }),
+      }),
+    ).toEqual([
+      'Photo.read.ADMIN: rowsOf("Inspection", ...) in a read rule cannot filter with via or rowsOf',
+      'Inspection.read.VIEWER: reads through rowsOf("Membership", "userId"), but VIEWER has no read rule on "Membership"',
+      'Finding.read.ADMIN: rowsOf("Inspection", "id") reaches a table whose own ADMIN rule uses via or rowsOf; sync streams cannot nest them',
     ]);
   });
 
@@ -233,5 +260,84 @@ describe("compile errors", () => {
       'claims.tenant: claim name "Tenant-Id" must be lowercase letters, digits and underscores',
       'membership.user: no column "user_id" in "Membership"',
     ]);
+  });
+});
+
+describe("what logical replication and PowerSync see differently", () => {
+  const col_ = (name: string, type: string, extra = {}) => ({ name, type, nullable: true, default: null, identity: false, generated: false, ...extra });
+  const schema = {
+    tables: fieldbookSchema.tables.map((t) =>
+      t.name === "Site"
+        ? {
+            ...t,
+            columns: [
+              ...t.columns,
+              col_("archived", "text", { generated: true }),
+              col_("score", "real"),
+              col_("weight", "double precision"),
+              col_("tags", "text[]"),
+              col_("meta", "jsonb"),
+              col_("email", "citext"),
+              col_("code", "character(3)"),
+            ],
+          }
+        : t,
+    ),
+  };
+  const refused = (tables: PolicySpec["tables"]) => {
+    try {
+      buildIR(definePolicy({ ...base, tables: { Membership: base.tables.Membership, ...tables } }), schema);
+      return [];
+    } catch (e) {
+      if (e instanceof CompileError) return e.problems;
+      throw e;
+    }
+  };
+
+  it("refuses generated columns in read rules, where streams would see NULL", () => {
+    expect(refused({ Site: table({ tenant: "tenantId", read: { ADMIN: col("archived").isNull() } }) })).toEqual([
+      'Site.read.ADMIN: "archived" is a generated column, which logical replication does not send: streams would see it as NULL',
+    ]);
+    // In a write check, Postgres alone evaluates it.
+    expect(refused({ Site: table({ tenant: "tenantId", read: { ADMIN: true }, write: { ADMIN: col("archived").isNull() } }) })).toEqual([]);
+  });
+
+  it("refuses literals the two sides would compare differently", () => {
+    expect(
+      refused({
+        Site: table({
+          tenant: "tenantId",
+          read: {
+            ADMIN: col("score").eq(0.1),
+            INSPECTOR: col("email").eq("a@b.c"),
+            VIEWER: or(col("code").eq("abc"), col("tags").eq("x")),
+          },
+        }),
+      }),
+    ).toEqual([
+      'Site.read.ADMIN: 0.1 does not fit "score" (real); it takes a number a 4-byte float holds exactly (or use double precision)',
+      'Site.read.INSPECTOR: "a@b.c" does not fit "email" (citext); it takes no literal (Postgres and PowerSync compare citext values differently)',
+      'Site.read.VIEWER: "abc" does not fit "code" (character(3)); it takes no literal (Postgres and PowerSync compare character(3) values differently)',
+      'Site.read.VIEWER: "x" does not fit "tags" (text[]); it takes no literal (Postgres and PowerSync compare text[] values differently)',
+    ]);
+    expect(refused({ Site: table({ tenant: "tenantId", read: { ADMIN: col("score").eq(0.5), VIEWER: col("weight").eq(0.1) } }) })).toEqual([]);
+  });
+
+  it("refuses partitioned tables and non-uuid ids on writable tables", () => {
+    const partitioned = {
+      tables: [
+        ...fieldbookSchema.tables,
+        { name: "Event", columns: [col_("id", "bigint", { nullable: false }), col_("tenantId", "uuid", { nullable: false })], primaryKey: ["id"], indexedColumns: ["id"], uniqueColumns: ["id"], foreignKeys: [], partitioned: true as const },
+      ],
+    };
+    try {
+      buildIR(definePolicy({ ...base, tables: { Membership: base.tables.Membership, Event: table({ tenant: "tenantId", read: { ADMIN: true }, write: { ADMIN: true } }) } }), partitioned);
+      expect.unreachable();
+    } catch (e) {
+      expect((e as CompileError).problems).toEqual([
+        "Event: partitioned tables replicate under their partitions' names, which streams do not read; sync a plain table",
+        'Event: clients write this table, so "id" must be uuid (PowerSync clients make the ids), not bigint',
+      ]);
+    }
   });
 });

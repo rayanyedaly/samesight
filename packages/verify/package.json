@@ -1,22 +1,46 @@
 {
   "name": "@samesight/verify",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Checks that PowerSync sync config never sends a device a row Supabase RLS would refuse",
   "license": "MIT",
+  "author": "Rayan Yedaly",
+  "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme",
+  "bugs": "https://github.com/rayanyedaly/samesight/issues",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rayanyedaly/samesight.git",
     "directory": "packages/verify"
   },
+  "keywords": [
+    "supabase",
+    "powersync",
+    "rls",
+    "row-level-security",
+    "sync",
+    "offline-first",
+    "local-first",
+    "postgres",
+    "testing",
+    "differential-testing",
+    "mutation-testing",
+    "property-based-testing",
+    "security",
+    "audit",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "test": "vitest run",
     "test:stack": "vitest run --config vitest.stack.config.ts",
-    "test:audit": "vitest run --config vitest.audit.config.ts"
+    "test:audit": "vitest run --config vitest.audit.config.ts",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "@powersync/common": "2.4.0",
@@ -24,7 +48,7 @@
     "better-sqlite3": "13.0.3",
     "fast-check": "4.10.2",
     "pg": "8.23.1",
-    "samesight": "workspace:*",
+    "samesight": "workspace:^",
     "yaml": "2.9.1"
   },
   "devDependencies": {
@@ -32,5 +56,29 @@
   },
   "bin": {
     "samesight-verify": "./src/cli.ts"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/fixtures",
+    "!src/**/__golden__"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./package.json": "./package.json"
+    },
+    "bin": {
+      "samesight-verify": "./dist/cli.js"
+    }
   }
 }

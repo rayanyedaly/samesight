@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { clearSessionKey, getSessionKey, getSessionUserId, hasSessionKey, setSessionKey } from "./session-key";
+import { clearSessionKey, getSessionKey, getSessionUserId, hasSessionKey, setSessionKey } from "./session-key.ts";
 
 describe("session-key", () => {
   beforeEach(() => clearSessionKey());

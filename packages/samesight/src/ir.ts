@@ -13,8 +13,8 @@ export type Rule = true | ConditionNode;
 export interface IRTable {
   name: string;
   columns: ColumnInfo[];
-  /** The tenant column; `"id"` for the tenant table itself. */
-  tenant: string;
+  /** The tenant column; `"id"` for the tenant table itself; null for a shared table. */
+  tenant: string | null;
   /** Per role. A role missing from the map has no access for that operation. */
   read: Map<string, Rule>;
   insert: Map<string, Rule>;
@@ -108,8 +108,10 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
   if (!membershipTable) fail(`membership.table: no table "${m.table}" in the database`);
   else {
     for (const key of ["user", "tenant", "role"] as const) {
-      if (!findColumn(membershipTable, m[key])) fail(`membership.${key}: no column "${m[key]}" in "${m.table}"`);
+      const c = findColumn(membershipTable, m[key]);
+      if (!c) fail(`membership.${key}: no column "${m[key]}" in "${m.table}"`);
       else if (!IDENT.test(m[key])) fail(`membership.${key}: "${m[key]}" must be letters, digits and underscores`);
+      else if (key !== "role" && c.type !== "uuid") fail(`membership.${key}: "${m[key]}" must be uuid, not ${c.type}`);
     }
     if (findColumn(membershipTable, m.user) && !membershipTable.uniqueColumns.includes(m.user)) {
       fail(`membership.user: "${m.user}" must be unique (one tenant per user); the token hook would pick one at random`);
@@ -136,6 +138,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
   for (const t of tables) {
     for (const fk of findTable(schema, t.name)?.foreignKeys ?? []) {
       const parent = byName.get(fk.table);
+      if (t.tenant === null) continue;
       const i = fk.columns.indexOf(t.tenant);
       if (!parent || fk.columns.length !== 2 || i === -1 || fk.references[i] !== parent.tenant) continue;
       // A NULL column skips the foreign key check (MATCH SIMPLE), and RLS hides such a row.
@@ -152,14 +155,36 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
         const parentRule = parent.read.get(role);
         if (parentRule === undefined) {
           fail(`${t.name}.read.${role}: reads through via("${v.column}", "${v.parent}"), but ${role} has no read rule on "${v.parent}"`);
-        } else if (parentRule !== true && vias(parentRule).length > 0) {
+        } else if (parentRule !== true && subqueries(parentRule).length > 0) {
           fail(
-            `${t.name}.read.${role}: via("${v.column}", "${v.parent}") reaches a parent whose own ${role} rule uses via; sync streams cannot nest them`,
+            `${t.name}.read.${role}: via("${v.column}", "${v.parent}") reaches a parent whose own ${role} rule uses via or rowsOf; sync streams cannot nest them`,
           );
         }
         const childInfo = findTable(schema, t.name);
         if (childInfo && !childInfo.indexedColumns.includes(v.column) && childInfo.primaryKey[0] !== v.column) {
           warnings.push(`${t.name}: via("${v.column}", "${v.parent}") has no index on "${v.column}"; RLS checks will scan`);
+        }
+      }
+      // rowsOf in a read rule: the target's rows this role reads, so the stream repeats the
+      // target's rule for the role in a CTE, as for via.
+      for (const r of subqueries(rule)) {
+        if (r.kind !== "inRows") continue;
+        const target = byName.get(r.rows.table);
+        if (!target) continue; // reported in checkCondition
+        const targetRule = target.read.get(role);
+        const call = `rowsOf("${r.rows.table}", "${r.rows.column}")`;
+        if (targetRule === undefined) {
+          fail(`${t.name}.read.${role}: reads through ${call}, but ${role} has no read rule on "${r.rows.table}"`);
+        } else if (targetRule !== true && subqueries(targetRule).length > 0) {
+          fail(`${t.name}.read.${role}: ${call} reaches a table whose own ${role} rule uses via or rowsOf; sync streams cannot nest them`);
+        }
+        const targetInfo = findTable(schema, r.rows.table);
+        if (r.rows.where && targetInfo) {
+          for (const c of conditionColumns(r.rows.where)) {
+            if (!targetInfo.indexedColumns.includes(c) && targetInfo.primaryKey[0] !== c) {
+              warnings.push(`${t.name}: ${call} filters on "${r.rows.table}.${c}", which has no index; RLS checks will scan`);
+            }
+          }
         }
       }
     }
@@ -168,6 +193,8 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
   const membershipSpec = byName.get(m.table);
   if (membershipTable && policyTables.has(m.table) === false) {
     fail(`membership.table: "${m.table}" must be a table in this policy, or it keeps Supabase's default grants and no RLS`);
+  } else if (membershipSpec && membershipSpec.tenant === null) {
+    fail(`membership.table: "${m.table}" holds each user's tenant, so it cannot be a shared table (tenant: null)`);
   } else if (membershipSpec && membershipSpec.read.size === 0) {
     fail(`membership.table: "${m.table}" needs a read rule (each user at least reads their own membership)`);
   }
@@ -215,10 +242,16 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
 
     // Tenant.
-    const tenantCol = findColumn(info, t.tenant);
-    if (!tenantCol) fail(`${name}.tenant: no column "${t.tenant}" in "${name}"`);
+    const shared = t.tenant === null;
+    const tenantCol = shared ? undefined : findColumn(info, t.tenant as string);
+    if (shared) {
+      // Reference data: the same rows for every tenant, written only by the server.
+    } else if (typeof t.tenant !== "string") fail(`${name}.tenant: a column name, or null for a table every tenant shares`);
+    else if (!tenantCol) fail(`${name}.tenant: no column "${t.tenant}" in "${name}"`);
     else if (tenantCol.type !== "uuid") fail(`${name}.tenant: "${t.tenant}" must be uuid, not ${tenantCol.type}`);
     else if (tenantCol.nullable) fail(`${name}.tenant: "${t.tenant}" must be NOT NULL; a row without a tenant has no owner to scope it to`);
+    else if (tenantCol.generated) fail(`${name}.tenant: "${t.tenant}" is a generated column, which logical replication does not send: streams would see it as NULL`);
+    if (info.partitioned) fail(`${name}: partitioned tables replicate under their partitions' names, which streams do not read; sync a plain table`);
 
     // Rules.
     const read = mergeRules(`${name}.read`, [t.read]);
@@ -239,6 +272,19 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     if (t.check) checkCondition(`${name}.check`, t.check, info, false);
 
     const writable = insert.size + update.size + del.size > 0;
+    if (shared) {
+      if (writable) fail(`${name}: a shared table (tenant: null) is read-only to clients; write its rows from a migration or with the service role`);
+      for (const key of ["check", "serverOwned", "immutable", "author", "touch", "appendOnly"] as const) {
+        if (t[key] !== undefined) fail(`${name}.${key}: a shared table (tenant: null) is never written by clients, so ${key} does not apply`);
+      }
+      for (const [role, rule] of read) {
+        if (rule !== true && subqueries(rule).length > 0) {
+          fail(`${name}.read.${role}: a shared table's rule cannot read through via or rowsOf; every tenant reads the same rows`);
+        }
+      }
+    }
+    // Whatever else would be said about writes follows from these.
+    if (shared && problems.length > before) return null;
     // Upserts, PATCH and replay checks read the row back under the caller's SELECT policy.
     for (const role of new Set([...insert.keys(), ...update.keys(), ...del.keys()])) {
       if (!read.has(role)) fail(`${name}: ${role} writes "${name}" but has no read rule on it; writes read the row back`);
@@ -286,9 +332,17 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
 
     const identityColumns = info.columns.filter((c) => c.identity).map((c) => c.name);
+    // Names the migration writes as string literals: identity sequences, and the write path's
+    // column lists.
+    for (const c of identityColumns) if (!IDENT.test(c)) fail(`${name}: identity column "${c}" must be letters, digits and underscores`);
+    if (writable) {
+      for (const c of info.columns) if (!IDENT.test(c.name)) fail(`${name}: clients write this table, so its column "${c.name}" must be letters, digits and underscores`);
+      const id = findColumn(info, "id");
+      if (id && id.type !== "uuid") fail(`${name}: clients write this table, so "id" must be uuid (PowerSync clients make the ids), not ${id.type}`);
+    }
     const serverOwned = unique([
       ...(t.serverOwned ?? []),
-      t.tenant,
+      ...(t.tenant === null ? [] : [t.tenant]),
       ...identityColumns,
       ...info.columns.filter((c) => c.generated).map((c) => c.name),
       ...(t.appendOnly?.order ? [t.appendOnly.order] : []),
@@ -372,6 +426,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
       const found = findColumn(info, c);
       if (!found) fail(`${path}: no column "${c}" in "${info.name}"`);
       else if (!IDENT.test(c)) fail(`${path}: column "${c}" must be letters, digits and underscores`);
+      else if (isRead && found.generated) fail(`${path}: "${c}" is a generated column, which logical replication does not send: streams would see it as NULL`);
       return found;
     };
     switch (node.kind) {
@@ -396,10 +451,7 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
         return;
       case "inRows":
         has(node.column);
-        if (isRead) {
-          fail(`${path}: col("${node.column}").in(rowsOf(...)) is for write checks only; sync streams cannot express it in a read rule`);
-        }
-        rows(path, node.rows);
+        rows(path, node.rows, isRead);
         return;
       case "via": {
         has(node.column);
@@ -408,8 +460,10 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
           return;
         }
         const parent = findTable(schema, node.parent);
-        if (parent && !findColumn(parent, node.parentKey)) fail(`${path}: via key "${node.parentKey}" is not a column of "${node.parent}"`);
+        const key = parent && findColumn(parent, node.parentKey);
+        if (parent && !key) fail(`${path}: via key "${node.parentKey}" is not a column of "${node.parent}"`);
         else if (!IDENT.test(node.parentKey)) fail(`${path}: via key "${node.parentKey}" must be letters, digits and underscores`);
+        else if (isRead && key?.generated) fail(`${path}: via key "${node.parent}.${node.parentKey}" is a generated column, which logical replication does not send: streams would see it as NULL`);
         return;
       }
       case "and":
@@ -448,17 +502,23 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
   }
 
-  /** Read rules carry at most one via, alone or as a term of a top-level and(): streams take a CTE IN only there. */
+  /**
+   * Read rules carry at most one via or rowsOf, alone or as a term of a top-level and():
+   * streams take a CTE IN only there.
+   */
   function checkViaPlacement(path: string, rule: ConditionNode): void {
-    const all = vias(rule);
+    const all = subqueries(rule);
     if (all.length === 0) return;
-    const top = rule.kind === "via" ? [rule] : rule.kind === "and" ? rule.items.filter((i) => i.kind === "via") : [];
+    const isSub = (n: ConditionNode) => n.kind === "via" || n.kind === "inRows";
+    const top = isSub(rule) ? [rule] : rule.kind === "and" ? rule.items.filter(isSub) : [];
     if (all.length !== top.length) {
-      fail(`${path}: via must stand alone or be a term of a top-level and(); sync streams cannot put it under or() (rules for "*" and for a role are ORed together)`);
-    } else if (all.length > 1) fail(`${path}: one via per read rule`);
+      fail(
+        `${path}: via and rowsOf must stand alone or be a term of a top-level and(); sync streams cannot put them under or() (rules for "*" and for a role are ORed together)`,
+      );
+    } else if (all.length > 1) fail(`${path}: one via or rowsOf per read rule`);
   }
 
-  function rows(path: string, r: RowsOf): void {
+  function rows(path: string, r: RowsOf, isRead: boolean): void {
     // The subquery runs under the caller's RLS on the target; only policy tables are
     // tenant-scoped by this policy, so only they may be the target.
     if (!policyTables.has(r.table)) {
@@ -467,9 +527,15 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     }
     const target = findTable(schema, r.table);
     if (!target) return; // reported with the table
-    if (!findColumn(target, r.column)) fail(`${path}: rowsOf: no column "${r.column}" in "${r.table}"`);
+    const column = findColumn(target, r.column);
+    if (!column) fail(`${path}: rowsOf: no column "${r.column}" in "${r.table}"`);
     else if (!IDENT.test(r.column)) fail(`${path}: rowsOf: column "${r.column}" must be letters, digits and underscores`);
-    if (r.where) checkCondition(`${path} (rowsOf ${r.table})`, r.where, target, false);
+    else if (isRead && column.generated) fail(`${path}: rowsOf: "${r.table}.${r.column}" is a generated column, which logical replication does not send: streams would see it as NULL`);
+    if (r.where) {
+      checkCondition(`${path} (rowsOf ${r.table})`, r.where, target, isRead);
+      // The where goes into the stream's CTE, which cannot hold another subquery.
+      if (isRead && subqueries(r.where).length > 0) fail(`${path}: rowsOf("${r.table}", ...) in a read rule cannot filter with via or rowsOf`);
+    }
   }
 
   /**
@@ -496,10 +562,10 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
     if (!c) return;
     const kind = typeKind(c.type);
     const want =
-      kind === "number" ? typeof v === "number" && (!/int/.test(c.type) || Number.isInteger(v))
+      kind === "number" ? typeof v === "number" && (!/int/.test(c.type) || Number.isInteger(v)) && (c.type !== "real" || Math.fround(v) === v)
       : kind === "uuid" ? typeof v === "string" && UUID.test(v)
       : kind === "boolean" ? typeof v === "boolean" && !isRead
-      : kind === "time" || kind === "exact" ? false
+      : kind === "time" || kind === "exact" || kind === "opaque" ? false
       : typeof v === "string";
     if (!want) {
       const hint =
@@ -507,7 +573,8 @@ export function buildIR(policy: Policy, schema: SchemaInfo): IR {
         : kind === "boolean" ? (isRead ? "nothing in a read rule (PowerSync syncs booleans as 0/1; use raw)" : "a boolean")
         : kind === "time" ? "no literal (time comparisons differ between Postgres and PowerSync; use a status column)"
         : kind === "exact" ? "no literal (PowerSync syncs exact numerics as text, so comparisons differ; use raw)"
-        : kind === "number" ? (/int/.test(c.type) ? "an integer" : "a number")
+        : kind === "opaque" ? `no literal (Postgres and PowerSync compare ${c.type} values differently)`
+        : kind === "number" ? (/int/.test(c.type) ? "an integer" : c.type === "real" ? "a number a 4-byte float holds exactly (or use double precision)" : "a number")
         : "a string";
       fail(`${path}: ${show} does not fit "${c.name}" (${c.type}); it takes ${hint}`);
     }
@@ -571,6 +638,19 @@ export function snake(name: string): string {
     .toLowerCase();
 }
 
+/** Every via and rowsOf in a condition, not counting those inside a rowsOf's where. */
+export function subqueries(node: ConditionNode): Extract<ConditionNode, { kind: "via" | "inRows" }>[] {
+  if (node.kind === "via" || node.kind === "inRows") return [node];
+  if (node.kind === "and" || node.kind === "or") return node.items.flatMap(subqueries);
+  return [];
+}
+
+/** The columns a condition compares, for index warnings. */
+function conditionColumns(node: ConditionNode): string[] {
+  if (node.kind === "and" || node.kind === "or") return node.items.flatMap(conditionColumns);
+  return node.kind === "raw" ? [] : [node.column];
+}
+
 /** Every via in a condition. */
 export function vias(node: ConditionNode): Extract<ConditionNode, { kind: "via" }>[] {
   if (node.kind === "via") return [node];
@@ -599,7 +679,10 @@ function isCondition(v: unknown): v is ConditionNode {
   return true;
 }
 
-function typeKind(type: string): "number" | "exact" | "uuid" | "boolean" | "time" | "text" {
+function typeKind(type: string): "number" | "exact" | "uuid" | "boolean" | "time" | "text" | "opaque" {
+  // Arrays, json and the types Postgres compares by other rules than text (case-insensitive
+  // citext, blank-padded char(n)): PowerSync compares their synced text as is.
+  if (/\[\]$/.test(type) || /^(json|jsonb|citext)$/.test(type) || /^(character|char|bpchar)(\(\d+\))?$/.test(type)) return "opaque";
   if (/^(smallint|integer|bigint|real|double precision)\b/.test(type)) return "number";
   if (/^(numeric|decimal|money)\b/.test(type)) return "exact";
   if (type === "uuid") return "uuid";

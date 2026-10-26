@@ -6,8 +6,9 @@
 
 import type { ConditionNode, Literal, Value } from "../policy.ts";
 
-// Postgres reserved words that cannot be bare column names; anything else that is a
-// lowercase identifier is left unquoted, as a person would write it.
+// Postgres reserved words (and those reserved for function and type names) that cannot be
+// bare column names; anything else that is a lowercase identifier is left unquoted, as a
+// person would write it.
 const RESERVED = new Set(
   (
     "all analyse analyze and any array as asc asymmetric both case cast check collate column " +
@@ -16,7 +17,10 @@ const RESERVED = new Set(
     "from grant group having in initially intersect into lateral leading limit localtime " +
     "localtimestamp not null offset on only or order placing primary references returning " +
     "select session_user some symmetric system_user table then to trailing true union unique " +
-    "user using variadic when where window with"
+    "user using variadic when where window with " +
+    // Reserved where a function or type name may appear, which is everywhere in an expression.
+    "authorization binary collation concurrently cross current_schema freeze full ilike inner " +
+    "is isnull join left like natural notnull outer overlaps right similar tablesample verbose"
   ).split(" "),
 );
 
@@ -89,9 +93,9 @@ function syncValue(v: Value): string {
 
 /**
  * A condition in sync-stream SQL. Streams have no IN over a literal list, so a list is
- * an OR chain; a via is IN over the CTE named by `cte`.
+ * an OR chain; a via or rowsOf is IN over the CTE named by `cte`.
  */
-export function sync(node: ConditionNode, cte: (via: Extract<ConditionNode, { kind: "via" }>) => string): string {
+export function sync(node: ConditionNode, cte: (sub: Extract<ConditionNode, { kind: "via" | "inRows" }>) => string): string {
   switch (node.kind) {
     case "eq":
       return `${ident(node.column)} = ${syncValue(node.value)}`;
@@ -102,8 +106,6 @@ export function sync(node: ConditionNode, cte: (via: Extract<ConditionNode, { ki
     case "isNull":
       return `${ident(node.column)} IS ${node.negate ? "NOT " : ""}NULL`;
     case "inRows":
-      // The compiler refuses inRows in read rules, the only rules streams carry.
-      throw new Error(`inRows on "${node.column}" cannot be expressed in a sync stream`);
     case "via":
       return `${ident(node.column)} IN ${cte(node)}`;
     case "and":

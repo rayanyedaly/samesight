@@ -283,6 +283,6 @@
     "powersync/service.yaml": "bfe50c991437194b79154075b06729914675e327811ffeea01c77c50ff5f67bb",
     "src/lib/powersync/schema.ts": "a0363320037a6546641a4ba7c84b800f9876549d3cff5cb7883e4ad06d1b53bf",
     "src/lib/policy-types.ts": "e77aa94eecf05f5a97042e8f47b299a7d2c12c470b1cce55660406af45c55a96",
-    "migration": "562aac978cde47fb83de879eb7f6bb3ed35d6084278ebde4d2ee4233fa94e388"
+    "migration": "5cd9842a946bdd4dfbe93898ccc63864ba9874730beb3202536bf3e8566d9bc1"
   }
 }

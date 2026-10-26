@@ -70,14 +70,17 @@ function scalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
   return undefined;
 }
 
-/** The arbitrary for one column, or undefined to leave it to its default. */
+/**
+ * The arbitrary for one column, or undefined to leave it to its default. A column with a
+ * default is generated too, with the default as the first (and simplest) choice: a rule on
+ * `is_public boolean default false` must see rows on both sides of it.
+ */
 export function columnArbitrary(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
-  if (c.computed) return undefined;
-  const interesting = c.values?.length || c.pattern !== undefined || c.hints.length;
-  if (c.hasDefault && !interesting) return undefined;
+  if (c.computed || c.autoKey) return undefined;
   const arb = scalar(c);
-  if (!arb) return c.nullable ? fc.constant(null) : undefined;
-  return c.nullable ? fc.option(arb, { nil: null, freq: 4 }) : arb;
+  if (!arb) return c.nullable && !c.hasDefault ? fc.constant(null) : undefined;
+  const value = c.nullable ? fc.option(arb, { nil: null, freq: 4 }) : arb;
+  return c.hasDefault ? fc.oneof(fc.constant(undefined), value) : value;
 }
 
 /** The tables fast-check fills: every policy table but the tenant and membership tables. */
@@ -114,6 +117,9 @@ export function sampleValue(c: ColumnModel, seed: number): unknown {
   return arb ? fc.sample(arb, { numRuns: 1, seed })[0] : undefined;
 }
 
+/** Per table, the last error that refused a generated row: said when a table gets no rows at all. */
+export const lastInsertError = new Map<string, string>();
+
 async function insert(client: pg.Client, table: string, row: Record<string, unknown>): Promise<boolean> {
   const cols = Object.keys(row).filter((c) => row[c] !== undefined);
   const sql = `insert into public.${ident(table)} (${cols.map(ident).join(", ")}) values (${cols.map((_, i) => `$${i + 1}`).join(", ")})`;
@@ -122,9 +128,10 @@ async function insert(client: pg.Client, table: string, row: Record<string, unkn
     await client.query(sql, cols.map((c) => row[c]));
     await client.query("release savepoint row");
     return true;
-  } catch {
+  } catch (e) {
     // A generated row can break a constraint the model does not know (a CHECK across
     // columns, a trigger); it is skipped, and the dataset is smaller.
+    lastInsertError.set(table, (e as Error).message);
     await client.query("rollback to savepoint row");
     return false;
   }
@@ -165,8 +172,9 @@ function resolve(fk: ForeignKeyModel, pick: number, row: Record<string, unknown>
 }
 
 /** Inserts the world's rows in foreign key order, in one transaction the caller commits. */
-export async function insertWorld(client: pg.Client, tables: TableModel[], world: World, fixed: Fixed): Promise<Inserted[]> {
-  const done: Inserted[] = [];
+export async function insertWorld(client: pg.Client, tables: TableModel[], world: World, fixed: Fixed, existing: Inserted[] = []): Promise<Inserted[]> {
+  // Rows already in the database that generated rows may point at (shared tables the run fills none of).
+  const done: Inserted[] = [...existing];
   for (const t of tables) {
     // Keys to other tables before self-references (a parent row first, then a sibling under it),
     // keys through the tenant column first (they anchor the row in its tenant), and keys with
@@ -197,7 +205,7 @@ export async function insertWorld(client: pg.Client, tables: TableModel[], world
       if (await insert(client, t.name, row)) done.push({ table: t.name, row, tenant: tenant === undefined ? undefined : row[tenant] });
     }
   }
-  return done;
+  return done.slice(existing.length);
 }
 
 /**

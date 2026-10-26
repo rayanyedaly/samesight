@@ -120,6 +120,8 @@ export function tablesNamed(sql: string): string[] {
   return [...out];
 }
 
+const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
 export interface AuditScope {
   /** Tables some stream sends to devices. */
   synced: string[];
@@ -128,8 +130,12 @@ export interface AuditScope {
   findings: Finding[];
 }
 
-/** The synced tables of a sync config's streams, with a finding per unreadable query or unchecked stream. */
-export function auditScope(streams: Stream[]): AuditScope {
+/**
+ * The synced tables of a sync config's streams (or bucket definitions, read as streams),
+ * with a finding per unreadable query or unchecked stream.
+ */
+export function auditScope(streams: Stream[], kind: "streams" | "bucket definitions" = "streams"): AuditScope {
+  const check = kind === "streams" ? "streams" : "sync rules";
   const synced = new Set<string>();
   const reads = new Set<string>();
   const findings: Finding[] = [];
@@ -137,7 +143,7 @@ export function auditScope(streams: Stream[]): AuditScope {
   for (const s of streams) {
     if (!s.autoSubscribe) {
       // A device holds its rows only once the app subscribes, with parameters this run cannot know.
-      findings.push({ status: "warn", check: "streams", detail: `${s.name} is not auto_subscribe, so no device here subscribes to it and its rows are not compared` });
+      findings.push({ status: "warn", check, detail: `${s.name} is not auto_subscribe, so no device here subscribes to it and its rows are not compared` });
       continue;
     }
     // Tables the stream's CTEs read (memberships, shares) get rows too, so those branches are exercised.
@@ -145,7 +151,7 @@ export function auditScope(streams: Stream[]): AuditScope {
       try {
         for (const r of tablesNamed(sql)) reads.add(r);
       } catch (e) {
-        findings.push({ status: "fail", check: "streams", detail: `${s.name} with.${name} ${(e as Error).message}: ${sql}` });
+        findings.push({ status: "fail", check, detail: `${s.name} ${kind === "streams" ? `with.${name}` : name} ${(e as Error).message}: ${sql}` });
       }
     }
     for (const q of s.queries) {
@@ -155,13 +161,13 @@ export function auditScope(streams: Stream[]): AuditScope {
         for (const r of [...o.reads, ...tablesNamed(q.sql)]) reads.add(r);
         queries++;
       } catch (e) {
-        findings.push({ status: "fail", check: "streams", detail: `${s.name} ${q.label} ${(e as Error).message}: ${q.sql}` });
+        findings.push({ status: "fail", check, detail: `${s.name} ${q.label} ${(e as Error).message}: ${q.sql}` });
       }
     }
   }
   if (!findings.length) {
-    findings.push({ status: "ok", check: "streams", detail: `${streams.length} streams, ${queries} queries, sending ${[...synced].sort().join(", ") || "nothing"}` });
+    findings.push({ status: "ok", check, detail: `${count(streams.length, kind === "streams" ? "stream" : "bucket definition")}, ${count(queries, "query", "queries")}, sending ${[...synced].sort().join(", ") || "nothing"}` });
   }
-  if (!synced.size && !findings.some((f) => f.status === "fail")) findings.push({ status: "fail", check: "streams", detail: "no stream sends any table" });
+  if (!synced.size && !findings.some((f) => f.status === "fail")) findings.push({ status: "fail", check, detail: `no ${kind === "streams" ? "stream" : "bucket definition"} sends any table` });
   return { synced: [...synced].sort(), reads: [...reads].sort(), findings };
 }
