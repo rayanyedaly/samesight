@@ -19,6 +19,22 @@ describe("rls-open", () => {
     ]);
   });
 
+  it("names only what the policy's command lets through", () => {
+    expect(lint("create policy u on lists for update to authenticated using (true) with check (true);").map((f) => f[2])).toEqual([
+      'policy "u" on lists (m.sql:1) lets every signed-in user update every row and write rows with any values through the Supabase API, whatever the sync config sends',
+    ]);
+    expect(lint("create policy d on lists for delete to anon using (true);").map((f) => f[2])).toEqual([
+      'policy "d" on lists (m.sql:1) lets anyone with the anon key delete every row through the Supabase API, whatever the sync config sends',
+    ]);
+  });
+
+  it("follows ALTER POLICY, and leaves restrictive policies alone", () => {
+    expect(lint("create policy own on lists to authenticated using (auth.uid() = owner_id);\nalter policy own on lists using (true);").map((f) => f[2])).toEqual([
+      expect.stringMatching(/^policy "own" on lists \(m.sql:2\) lets every signed-in user read every row/),
+    ]);
+    expect(lint("create policy r on lists as restrictive to authenticated using (true);")).toEqual([]);
+  });
+
   it("accepts real conditions, other roles, and unsynced tables", () => {
     expect(lint("create policy own on lists for select to authenticated using (auth.uid() = owner_id);")).toEqual([]);
     expect(lint("create policy hook on lists for select to supabase_auth_admin using (true);")).toEqual([]);
