@@ -11,13 +11,13 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
-import { applyAllow, exitCode, formatLint, type LintFinding, sortFindings } from "./lint/finding.ts";
-import { findSyncConfig, lintSyncConfig, MIGRATIONS_DIR, RULE_NAMES, SYNC_CONFIG_FILES } from "./lint/lint.ts";
-import { type Migrations, readMigrations } from "./lint/migrations.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
+import { applyAllow, exitCode, formatLint, type LintFinding, sortFindings } from "./lint/finding.ts";
+import { findSyncConfig, lintSyncConfig, MIGRATIONS_DIR, RULE_NAMES, SYNC_CONFIG_FILES } from "./lint/lint.ts";
+import { type Migrations, readMigrations } from "./lint/migrations.ts";
 import { loadPolicy, POLICY_FILES, resolvePolicyPath, tsIsModule } from "./load.ts";
 import type { Policy } from "./policy.ts";
 import type { SchemaInfo } from "./schema.ts";
@@ -170,11 +170,13 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
   const dir = migrationsDir ?? (existsSync(MIGRATIONS_DIR) ? MIGRATIONS_DIR : undefined);
   let migrations: Migrations | undefined;
   if (dir) {
-    if (!existsSync(dir)) {
-      console.error(`No migrations directory at ${dir}.`);
+    try {
+      migrations = readMigrations(dir);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      console.error(code === "ENOENT" ? `No migrations directory at ${dir}.` : code === "ENOTDIR" ? `${dir} is not a directory; --migrations takes the directory that holds the .sql files.` : `Cannot read the migrations in ${dir}: ${(e as Error).message}`);
       return 2;
     }
-    migrations = readMigrations(dir);
   } else console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run; pass --migrations <dir> to check them`);
   const findings: LintFinding[] = [];
   const unreadable: { file: string; error: string }[] = [];

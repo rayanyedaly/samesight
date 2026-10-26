@@ -1,12 +1,22 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { lintSyncConfig } from "../lint.ts";
 import { applyMigrations } from "../migrations.ts";
 import { rlsOff } from "./rls-off.ts";
+
+const temps: string[] = [];
+const tempDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+  temps.push(dir);
+  return dir;
+};
+afterAll(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
 const config = 'config:\n  edition: 3\nstreams:\n  s:\n    auto_subscribe: true\n    queries:\n      - SELECT * FROM lists WHERE owner_id = auth.user_id()\n      - SELECT * FROM "Notes" WHERE owner_id = auth.user_id()\n';
 const lint = (...sql: string[]) =>
@@ -36,7 +46,7 @@ describe("samesight lint with migrations", () => {
   const run = (cwd: string, ...args: string[]) => spawnSync(process.execPath, [cli, "lint", ...args], { cwd, encoding: "utf8" });
 
   it("reads supabase/migrations by default, takes --migrations, and says when it has none", () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+    const dir = tempDir();
     writeFileSync(join(dir, "sync-config.yaml"), config);
     const none = run(dir);
     expect([none.status, none.stderr]).toEqual([0, expect.stringMatching(/no supabase\/migrations here, so the RLS rules .* did not run/)]);
@@ -45,5 +55,7 @@ describe("samesight lint with migrations", () => {
     const found = run(dir);
     expect([found.status, found.stdout]).toEqual([0, expect.stringMatching(/sync-config.yaml:8 {2}warning {2}Notes is synced/)]);
     expect(run(dir, "--migrations", "elsewhere").status).toBe(2);
+    const file = run(dir, "--migrations", "supabase/migrations/1_init.sql");
+    expect([file.status, file.stderr]).toEqual([2, expect.stringMatching(/1_init.sql is not a directory; --migrations takes the directory/)]);
   });
 });
