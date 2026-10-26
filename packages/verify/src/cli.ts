@@ -10,6 +10,9 @@
  *      then the write path: forged upload batches through apply_batch as each user;
  *   4. with --mutate, the mutation test: every mutant of the access layer must be caught.
  *
+ * `samesight-verify audit` runs steps 1 to 3 on a project with no policy file: its own
+ * RLS (pg_policies) against its own sync config.
+ *
  * It refuses any database or service that is not on this machine: it creates users,
  * writes and deletes rows, and (with --mutate) restarts PowerSync.
  */
@@ -17,9 +20,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { buildIR, loadPolicy, outputPaths, PUBLICATION, plan, type SchemaInfo } from "samesight/compiler";
-import { connectLocal } from "./db.ts";
 import fc from "fast-check";
+import { buildIR, loadPolicy, outputPaths, PUBLICATION, plan, type SchemaInfo } from "samesight/compiler";
+import { audit } from "./audit/run.ts";
+import { connectLocal } from "./db.ts";
 import { differential, setUp, tearDown } from "./differential/run.ts";
 import { worldArbitrary } from "./differential/world.ts";
 import { mutationTest } from "./mutate/run.ts";
@@ -34,6 +38,7 @@ import { checkVersionFloor } from "./static/version-floor.ts";
 import { checkWritePath } from "./writepath.ts";
 
 const USAGE = `Usage: samesight-verify [options]
+       samesight-verify audit [audit options]
 
 Options:
   --policy <file>       policy file (default: samesight.policy.ts); paths are relative to it
@@ -46,9 +51,26 @@ Options:
   --mutate              also run the mutation test (rewrites the sync config and restarts PowerSync)
   --mutate-datasets <n> datasets to try per mutant before calling it missed (default: 8)
   --restart <command>   restarts PowerSync (default: docker compose restart powersync)
+
+Audit options (a project with hand-written RLS and sync config, no policy file):
+  --sync-config <file>  the PowerSync sync config (default: sync-config.yaml)
+  --project <dir>       the directory holding supabase/ (default: the current directory)
+  --publication <name>  the publication to check; PowerSync replicates "powersync" unless its config says otherwise
+  --compose <file>      the compose file that runs PowerSync, to check its version floor
+  --powersync <url>     the project's PowerSync service (default: http://127.0.0.1:8080; check the port)
+  --static, --runs, --seed, --time-limit   as above
 `;
 
+/** A whole-number flag, checked before anything runs: a zero count would pass while testing nothing. */
+function int(name: string, v: string | undefined, fallback: number, min = 1): number {
+  if (v === undefined) return fallback;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < min) throw new Error(`--${name} must be a whole number of at least ${min}, not "${v}"`);
+  return n;
+}
+
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === "audit") return auditMain(argv.slice(1));
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -69,13 +91,6 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
-  // Every flag is checked before anything runs; a zero count would pass while testing nothing.
-  const int = (name: string, v: string | undefined, fallback: number, min = 1) => {
-    if (v === undefined) return fallback;
-    const n = Number(v);
-    if (!Number.isInteger(n) || n < min) throw new Error(`--${name} must be a whole number of at least ${min}, not "${v}"`);
-    return n;
-  };
   const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
   const runs = int("runs", values.runs, 8);
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
@@ -175,6 +190,68 @@ async function main(argv: string[]): Promise<number> {
     } finally {
       await tearDown(s);
     }
+  } finally {
+    await db.end();
+  }
+  return report(findings, started);
+}
+
+async function auditMain(argv: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      "sync-config": { type: "string" },
+      project: { type: "string" },
+      publication: { type: "string" },
+      powersync: { type: "string" },
+      compose: { type: "string" },
+      static: { type: "boolean" },
+      runs: { type: "string" },
+      seed: { type: "string" },
+      "time-limit": { type: "string" },
+      help: { type: "boolean", short: "h" },
+    },
+  });
+  if (values.help) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+  const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
+  const runs = int("runs", values.runs, 8);
+  const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
+  const syncPath = resolve(values["sync-config"] ?? "sync-config.yaml");
+  if (!existsSync(syncPath)) {
+    process.stderr.write(`No sync config at ${syncPath}; pass --sync-config.\n`);
+    return 1;
+  }
+  const project = resolve(values.project ?? ".");
+  const findings: Finding[] = [];
+  const section = (title: string, f: Finding[]) => {
+    findings.push(...f);
+    process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
+  };
+  const started = Date.now();
+  const log = (line: string) => process.stdout.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
+  if (values.compose !== undefined) {
+    const compose = existsSync(values.compose) ? readFileSync(values.compose, "utf8") : null;
+    section(
+      "PowerSync",
+      compose === null ? [{ status: "fail", check: "powersync version", detail: `no ${values.compose}` }] : checkVersionFloor(values.compose, compose),
+    );
+  }
+  const stack = readStack(project, values.powersync ?? "http://127.0.0.1:8080");
+  const db = await connectLocal(stack.db);
+  try {
+    await audit(db, stack, {
+      syncConfig: { path: syncPath, text: readFileSync(syncPath, "utf8") },
+      ...(values.publication !== undefined ? { publication: values.publication } : {}),
+      staticOnly: values.static === true,
+      runs,
+      timeLimitMs,
+      ...(seed !== undefined ? { seed } : {}),
+      section,
+      log,
+    });
   } finally {
     await db.end();
   }
