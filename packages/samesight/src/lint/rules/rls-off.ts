@@ -20,6 +20,7 @@ export const rlsOff: LintRule = ({ file, config, migrations, lineOf }) => {
       level: "warning" as const,
       file,
       line: lineOf(sql),
+      subjects: [table],
       message: `${table} is synced, but the migrations never enable row level security on it, so with Supabase's default grants any client can read and change every row through the API`,
     }));
 };

@@ -11,8 +11,8 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
-import { exitCode, formatLint, type LintFinding } from "./lint/finding.ts";
-import { findSyncConfig, lintSyncConfig, MIGRATIONS_DIR, SYNC_CONFIG_FILES } from "./lint/lint.ts";
+import { applyAllow, exitCode, formatLint, type LintFinding } from "./lint/finding.ts";
+import { findSyncConfig, lintSyncConfig, MIGRATIONS_DIR, RULE_NAMES, SYNC_CONFIG_FILES } from "./lint/lint.ts";
 import { type Migrations, readMigrations } from "./lint/migrations.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
@@ -44,6 +44,9 @@ Options:
   --table <name>    explain: one table only
   --migrations <dir>
                     lint: the SQL migrations to read RLS from (default: supabase/migrations)
+  --allow <rule>[:<name>]
+                    lint: accept a rule's findings, all of them or those about one stream,
+                    bucket, table or policy; repeatable
   -v, --version     print the version
   -h, --help        print this help
 
@@ -59,6 +62,7 @@ async function main(argv: string[]): Promise<number> {
       db: { type: "string" },
       table: { type: "string" },
       migrations: { type: "string" },
+      allow: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
     },
@@ -73,7 +77,7 @@ async function main(argv: string[]): Promise<number> {
     return command || values.help ? 0 : 1;
   }
   // Lint needs no policy: it is for any PowerSync project.
-  if (command === "lint") return lint(positionals.slice(1), values.migrations);
+  if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? []);
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);
@@ -144,7 +148,13 @@ async function main(argv: string[]): Promise<number> {
 }
 
 /** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read. */
-function lint(given: string[], migrationsDir: string | undefined): number {
+function lint(given: string[], migrationsDir: string | undefined, allow: string[]): number {
+  // A misspelt rule would allow nothing and look like it worked.
+  const unknown = allow.map((a) => a.split(":")[0] as string).filter((r) => !RULE_NAMES.includes(r));
+  if (unknown.length) {
+    console.error(`--allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
+    return 2;
+  }
   const found = given.length ? given : [findSyncConfig(process.cwd())].filter((f): f is string => f !== undefined);
   if (found.length === 0) {
     console.error(`No sync config found (tried ${SYNC_CONFIG_FILES.join(", ")}); name one: samesight lint <file>`);
@@ -169,10 +179,12 @@ function lint(given: string[], migrationsDir: string | undefined): number {
       unreadable++;
     }
   }
+  const { kept, allowed } = applyAllow(findings, allow);
   // "No problems found" would be false for a file that was never checked.
-  if (findings.length || !unreadable) console.log(formatLint(findings));
+  if (kept.length || !unreadable) console.log(formatLint(kept));
+  if (allowed.length) console.log(`${allowed.length} finding${allowed.length === 1 ? "" : "s"} allowed by --allow`);
   if (unreadable) console.error(`${unreadable} of ${found.length} file(s) could not be read, so nothing in them was checked.`);
-  return unreadable ? 2 : exitCode(findings);
+  return unreadable ? 2 : exitCode(kept);
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {

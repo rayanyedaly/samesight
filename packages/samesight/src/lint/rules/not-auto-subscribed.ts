@@ -19,5 +19,6 @@ export const notAutoSubscribed: LintRule = ({ file, config, lineOf }) =>
           level: "info" as const,
           file,
           line: s.queries[0] ? lineOf(s.queries[0].sql) : undefined,
+          subjects: [s.name],
           message: `stream ${s.name} is not auto_subscribe: devices get its rows only when the app subscribes, with the parameters it sends, and audit does not test it`,
         }));

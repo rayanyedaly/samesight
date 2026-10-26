@@ -45,6 +45,7 @@ export const rlsOpen: LintRule = ({ file, config, migrations, lineOf }) => {
         level: "warning",
         file,
         line: lineOf(sql),
+        subjects: [table, p.name],
         message: `policy "${p.name}" on ${table} (${p.file}:${p.line}) lets ${list(who.map((r) => WHO[r] as string))} ${list(what)} through the Supabase API, whatever the sync config sends`,
       });
     }
