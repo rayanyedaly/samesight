@@ -212,7 +212,7 @@ select is(
 
 select throws_ok(
   $$select public.apply_batch('[{"op":"PUT","table":"Site","id":"51000000-0000-0000-0000-00000000000b","data":{"name":"Hijacked"}}]'::jsonb)$$,
-  '42501', null,
+  'P0001', null,
   'a PUT reusing another tenant''s site id cannot overwrite it'
 );
 

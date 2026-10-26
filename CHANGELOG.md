@@ -15,13 +15,15 @@ The first published release.
 - `samesight init` drafts a compiling policy from the local database: the membership and tenant tables, each table's tenant column and the role values. Without a database it writes a template.
 - `samesight explain` prints the compiled policy in plain words: a role by operation matrix, each rule, the columns clients write and those each role never receives.
 - Policy files load as `samesight.policy.ts` or `samesight.policy.mts`, with a clear error for a CommonJS package and for Node without TypeScript support.
-- Connects only to a database on this machine.
+- Connects only to a database on this machine, found from the `[db]` port in `supabase/config.toml` unless `--db` says otherwise.
+- `apply_batch` treats a PUT whose row exists as a replay: it updates the row where the caller may (last write wins) and otherwise leaves it, so a role that may insert a row but not update it can still replay its own insert after a lost acknowledgement.
 
 ### @samesight/verify
 
 - `samesight-verify`: static checks, catalog checks with migration parity, the differential test on real users and headless PowerSync devices, forged upload batches, and the mutation test (`--mutate`).
 - `samesight-verify audit` for projects with hand-written RLS and a hand-written sync config, with no policy. It reads sync streams and legacy sync rules (`bucket_definitions`), and warns about bucket definitions that read client parameters.
 - Finds the Supabase CLI in the nearest `node_modules/.bin` or on the PATH, with any package manager.
+- Generated data fills uuid columns that default to `auth.uid()` with the run's users, foreign key or not, and a table that gets no rows says what the database refused.
 - The offline checks are exported for use in tests.
 
 ### @samesight/supabase

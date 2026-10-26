@@ -17,7 +17,7 @@ From the `samesight` package.
 | Option | |
 | --- | --- |
 | `--policy <file>` | The policy file. |
-| `--db <url>` | The local database. Default: `$SAMESIGHT_DB_URL`, else the Supabase CLI's `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. |
+| `--db <url>` | The local database. Default: `$SAMESIGHT_DB_URL`, else the `[db]` port in `supabase/config.toml` next to the policy, else the Supabase CLI's default `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. |
 | `--table <name>` | `explain` only: one table. |
 | `-v`, `--version` | |
 | `-h`, `--help` | |

@@ -91,10 +91,23 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
-  packages/next:
+  examples/quickstart:
     dependencies:
       '@samesight/supabase':
         specifier: workspace:*
+        version: link:../../packages/supabase
+      samesight:
+        specifier: workspace:*
+        version: link:../../packages/samesight
+    devDependencies:
+      '@samesight/verify':
+        specifier: workspace:*
+        version: link:../../packages/verify
+
+  packages/next:
+    dependencies:
+      '@samesight/supabase':
+        specifier: workspace:^
         version: link:../supabase
     devDependencies:
       '@powersync/common':
@@ -153,7 +166,7 @@ importers:
         specifier: 8.23.1
         version: 8.23.1
       samesight:
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../samesight
       yaml:
         specifier: 2.9.1

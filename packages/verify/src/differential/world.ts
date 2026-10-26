@@ -114,6 +114,9 @@ export function sampleValue(c: ColumnModel, seed: number): unknown {
   return arb ? fc.sample(arb, { numRuns: 1, seed })[0] : undefined;
 }
 
+/** Per table, the last error that refused a generated row: said when a table gets no rows at all. */
+export const lastInsertError = new Map<string, string>();
+
 async function insert(client: pg.Client, table: string, row: Record<string, unknown>): Promise<boolean> {
   const cols = Object.keys(row).filter((c) => row[c] !== undefined);
   const sql = `insert into public.${ident(table)} (${cols.map(ident).join(", ")}) values (${cols.map((_, i) => `$${i + 1}`).join(", ")})`;
@@ -122,9 +125,10 @@ async function insert(client: pg.Client, table: string, row: Record<string, unkn
     await client.query(sql, cols.map((c) => row[c]));
     await client.query("release savepoint row");
     return true;
-  } catch {
+  } catch (e) {
     // A generated row can break a constraint the model does not know (a CHECK across
     // columns, a trigger); it is skipped, and the dataset is smaller.
+    lastInsertError.set(table, (e as Error).message);
     await client.query("rollback to savepoint row");
     return false;
   }

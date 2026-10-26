@@ -37,6 +37,7 @@ jobs:
       - run: pnpm test
       # Generated access files (migration, sync config, client schema) match the policy.
       - run: pnpm --filter fieldbook policy:check
+      - run: pnpm --filter quickstart policy:check
 
   package:
     name: packed packages (${{ matrix.os }})
@@ -84,6 +85,30 @@ jobs:
         run: docker compose logs powersync --tail 100
       - if: always()
         run: pnpm --filter fieldbook stack:down
+
+  quickstart:
+    name: verifier on the quickstart
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The project the getting-started guide produces: a policy drafted by samesight init.
+      - run: pnpm --filter quickstart stack:up
+      - run: pnpm --filter quickstart policy:doctor
+      - name: samesight-verify --mutate
+        working-directory: examples/quickstart
+        run: timeout 300 pnpm run policy:verify --runs 4
+      - if: failure()
+        working-directory: examples/quickstart
+        run: PS_STORAGE_PASSWORD=unused PS_REPLICATION_PASSWORD=unused docker compose logs powersync --tail 100
+      - if: always()
+        run: pnpm --filter quickstart stack:down
 
   audit:
     name: audit mode on the to-do list demo

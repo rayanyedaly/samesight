@@ -159,7 +159,7 @@ docker exec supabase_db_<project_id> psql -U supabase_admin -d postgres \
 docker compose up -d
 ```
 
-PowerSync 1.20.1 is the floor: before it, `auth.parameter()` gates in sync streams were not enforced. The verifier checks the version your compose file pins. [Fieldbook's compose file and `stack-up.sh`](../examples/fieldbook) are a complete version of this step, with the image pinned by digest and the passwords kept in a gitignored `.env`.
+PowerSync 1.20.1 is the floor: before it, `auth.parameter()` gates in sync streams were not enforced. The verifier checks the version your compose file pins. [The quickstart example](../examples/quickstart) is this guide's result, run in CI: its `docker-compose.yml` and `scripts/stack-up.sh` are a complete version of this step, with the images pinned by digest and the passwords kept in a gitignored `.env`.
 
 Then check the whole setup:
 

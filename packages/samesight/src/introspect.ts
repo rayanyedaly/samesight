@@ -4,11 +4,31 @@
  * the local Supabase stack, and check reads the snapshot generate saved.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import pg from "pg";
 import type { ColumnInfo, SchemaInfo, TableInfo } from "./schema.ts";
 
 /** The local Supabase CLI database. */
 export const DEFAULT_DB_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
+
+/**
+ * The local database of the Supabase project in `dir`: the port `[db]` sets in
+ * supabase/config.toml, which `supabase init` writes and projects move when they run side
+ * by side. DEFAULT_DB_URL when there is no such file or port.
+ */
+export function projectDbUrl(dir: string): string {
+  const path = join(dir, "supabase", "config.toml");
+  if (!existsSync(path)) return DEFAULT_DB_URL;
+  let section = "";
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const header = /^\s*\[([^\]]+)\]/.exec(line);
+    if (header) section = header[1]?.trim() ?? "";
+    const port = section === "db" ? /^\s*port\s*=\s*(\d+)\s*(#.*)?$/.exec(line) : null;
+    if (port) return `postgresql://postgres:postgres@127.0.0.1:${port[1]}/postgres`;
+  }
+  return DEFAULT_DB_URL;
+}
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 /** Throws unless the URL points at this machine. */

@@ -13,7 +13,7 @@ import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
-import { DEFAULT_DB_URL, introspect, withLocalClient } from "./introspect.ts";
+import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
 import { loadPolicy, POLICY_FILES, resolvePolicyPath, tsIsModule } from "./load.ts";
 import type { Policy } from "./policy.ts";
@@ -32,7 +32,8 @@ Commands:
 
 Options:
   --policy <file>   policy file (default: samesight.policy.ts, or samesight.policy.mts)
-  --db <url>        local database URL (default: $SAMESIGHT_DB_URL or the Supabase CLI database)
+  --db <url>        local database URL (default: $SAMESIGHT_DB_URL, else the [db] port in
+                    supabase/config.toml, else 54322)
   --table <name>    explain: one table only
   -v, --version     print the version
   -h, --help        print this help
@@ -63,7 +64,7 @@ async function main(argv: string[]): Promise<number> {
   }
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
-  const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? DEFAULT_DB_URL;
+  const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);
 
   switch (command) {
     case "init":

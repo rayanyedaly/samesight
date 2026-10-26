@@ -1,0 +1,44 @@
+# The PowerSync service for the quickstart, as docs/getting-started.md writes it, with the
+# images pinned by digest. scripts/stack-up.sh starts it after `supabase start`.
+name: quickstart
+
+services:
+  powersync-storage:
+    image: postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+    environment:
+      POSTGRES_DB: powersync_storage
+      POSTGRES_USER: powersync_storage
+      POSTGRES_PASSWORD: ${PS_STORAGE_PASSWORD:?run pnpm stack:up}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U powersync_storage -d powersync_storage"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # powersync-service-version: 1.27.2
+  powersync:
+    image: journeyapps/powersync-service@sha256:d7a99817057a42dae9e6d8fe0c70b49d99105dcac8b8ab0e9ed3cf1ff0978b8b
+    command: ["start", "-r", "unified"]
+    depends_on:
+      powersync-storage:
+        condition: service_healthy
+    environment:
+      POWERSYNC_CONFIG_PATH: /config/service.yaml
+      PS_DATA_SOURCE_URI: postgresql://powersync_role:${PS_REPLICATION_PASSWORD:?run pnpm stack:up}@supabase_db_quickstart:5432/postgres
+      PS_STORAGE_URI: postgresql://powersync_storage:${PS_STORAGE_PASSWORD:?run pnpm stack:up}@powersync-storage:5432/powersync_storage
+    volumes:
+      - ./powersync:/config:ro
+    ports:
+      - "127.0.0.1:8082:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/probes/readiness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks: [default, supabase]
+
+networks:
+  supabase:
+    name: supabase_network_quickstart
+    external: true

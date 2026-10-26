@@ -16,7 +16,19 @@ import { syncOnce } from "./device.ts";
 import { insertOrder, policyTables, readModel, type ScopeTable, type TableModel } from "./model.ts";
 import { readAsUsers } from "./rls.ts";
 import { createUsers, deleteUser, leftoverUsers, type Session, signIn } from "./users.ts";
-import { deleteRows, type Fixed, generatedTables, type Inserted, insertWorld, type Member, prefixedUuid, sampleValue, type World, worldArbitrary } from "./world.ts";
+import {
+  deleteRows,
+  type Fixed,
+  generatedTables,
+  type Inserted,
+  insertWorld,
+  lastInsertError,
+  type Member,
+  prefixedUuid,
+  sampleValue,
+  type World,
+  worldArbitrary,
+} from "./world.ts";
 
 /** Every row the verifier writes has an id starting with this. */
 export const PREFIX = "5a3e5a3e";
@@ -475,7 +487,7 @@ export async function differential(s: Run, options: { runs: number; seed?: numbe
     .filter((t) => s.synced.includes(t.name))
     .flatMap((t) =>
       !inserted.get(t.name)
-        ? [`no ${t.name} row could be inserted`]
+        ? [`no ${t.name} row could be inserted${lastInsertError.has(t.name) ? ` (the database said: ${lastInsertError.get(t.name)})` : ""}`]
         : !visible.get(t.name)
           ? [`no user could read any ${t.name} row`]
           : !received.get(t.name)
