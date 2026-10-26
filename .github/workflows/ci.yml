@@ -108,6 +108,10 @@ jobs:
       - name: samesight-verify audit on a planted sync config
         working-directory: examples/audit-todolist
         run: timeout 420 pnpm run verify:planted
+      # The same rules as legacy sync rules (bucket_definitions): pass, and catch a planted leak.
+      - name: samesight-verify audit on sync rules
+        working-directory: examples/audit-todolist
+        run: timeout 600 pnpm run verify:rules
       - if: failure()
         working-directory: examples/audit-todolist
         run: |

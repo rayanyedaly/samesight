@@ -20,7 +20,7 @@ The first published release.
 ### @samesight/verify
 
 - `samesight-verify`: static checks, catalog checks with migration parity, the differential test on real users and headless PowerSync devices, forged upload batches, and the mutation test (`--mutate`).
-- `samesight-verify audit` for projects with hand-written RLS and sync streams and no policy.
+- `samesight-verify audit` for projects with hand-written RLS and a hand-written sync config, with no policy. It reads sync streams and legacy sync rules (`bucket_definitions`), and warns about bucket definitions that read client parameters.
 - Finds the Supabase CLI in the nearest `node_modules/.bin` or on the PATH, with any package manager.
 - The offline checks are exported for use in tests.
 

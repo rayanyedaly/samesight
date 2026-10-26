@@ -13,7 +13,7 @@ Samesight closes that gap.
 - **Write the policy once.** A typed `samesight.policy.ts` says who reads and writes what, per role, inside each tenant. Table and column names are checked by your editor against `supabase gen types`.
 - **Generate both sides from it.** `samesight generate` writes the RLS migration (policies, grants, the access token hook, triggers, a transactional write path) and the PowerSync sync streams, plus the client schema, all from one condition tree. `samesight check` fails CI when anything drifts.
 - **Prove they agree.** `samesight-verify` runs your real stack: it creates users, generates data, syncs real headless devices and compares every row each device got with what RLS returns for the same user. It forges upload batches, and it mutates the access layer to show its own tests would catch a weakened rule.
-- **Or audit what you already have.** `samesight-verify audit` runs the same differential on a project with hand-written RLS and sync streams, with no policy file.
+- **Or audit what you already have.** `samesight-verify audit` runs the same differential on a project with hand-written RLS and a hand-written sync config (sync streams or legacy sync rules), with no policy file.
 
 ```ts
 // samesight.policy.ts
@@ -115,7 +115,7 @@ See [auditing an existing project](docs/verify.md#audit-mode).
 - **Hosted databases are never touched.** Every command that connects refuses anything but this machine. You ship the generated migration with `supabase db push` and the sync config to your PowerSync instance as usual.
 - **One tenant per user, from a membership table.** The tenant and role travel in the access token, so a membership change takes effect at the next token refresh.
 - **RLS is per row.** A column hidden from a role's devices is still readable by that role over the REST API. `samesight explain` says so next to every hidden column.
-- **Sync streams (Edition 3) only.** Legacy `bucket_definitions` sync rules are not generated or audited.
+- **Generates sync streams (Edition 3).** Audit mode reads both sync streams and legacy `bucket_definitions` sync rules, but `generate` writes streams only.
 - **Pre-1.0.** The policy language may change between minor versions; the changelog will say how to move.
 
 ## Develop

@@ -9,9 +9,14 @@ sync config and Supabase config at a pinned commit into `upstream/` (gitignored)
 each file's hash, and only moves the Supabase ports (5532x, beside Fieldbook) and adds an
 Auth signing key. The policies and sync config are audited as published.
 
+[`sync-rules.yaml`](sync-rules.yaml) holds the same access rules written as legacy sync
+rules (`bucket_definitions`), the form most PowerSync apps used before sync streams;
+`verify:rules` audits it, then a copy whose parameter query lost its owner filter.
+
 ```bash
 pnpm --filter audit-todolist stack:up        # fetch, supabase start, PowerSync on :8081
 pnpm --filter audit-todolist verify          # must pass on the demo as published
 pnpm --filter audit-todolist verify:planted  # must fail: the lists query loses its owner filter
+pnpm --filter audit-todolist verify:rules    # the same rules as legacy sync rules: pass, then a planted leak
 pnpm --filter audit-todolist stack:down
 ```

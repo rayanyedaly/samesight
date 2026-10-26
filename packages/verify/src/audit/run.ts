@@ -12,9 +12,9 @@ import { differential, setUpUsers, tearDown } from "../differential/run.ts";
 import { worldArbitrary } from "../differential/world.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
-import { parseStreams } from "../static/streams.ts";
 import { checkAuditCatalog } from "./catalog.ts";
 import { auditScope } from "./scope.ts";
+import { parseSyncConfig } from "./sync-config.ts";
 import { checkWriteEscape } from "./writes.ts";
 
 export interface AuditOptions {
@@ -74,13 +74,16 @@ export async function audit(client: pg.Client, stack: Stack, o: AuditOptions): P
   };
 
   let scope: ReturnType<typeof auditScope>;
+  let warnings: Finding[];
   try {
-    scope = auditScope(parseStreams(o.syncConfig.text));
+    const config = parseSyncConfig(o.syncConfig.text);
+    scope = auditScope(config.streams, config.kind);
+    warnings = config.findings;
   } catch (e) {
-    section("Sync config", [{ status: "fail", check: "streams", detail: `${o.syncConfig.path}: ${(e as Error).message}` }]);
+    section("Sync config", [{ status: "fail", check: "sync config", detail: `${o.syncConfig.path}: ${(e as Error).message}` }]);
     return findings;
   }
-  section("Sync config", scope.findings);
+  section("Sync config", [...scope.findings, ...warnings]);
   if (failed(findings)) return findings;
 
   section("Database catalog", await checkAuditCatalog(client, scope.synced, o.publication, scope.reads));

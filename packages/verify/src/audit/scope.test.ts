@@ -62,7 +62,7 @@ describe("auditScope", () => {
       ),
     );
     expect(s.synced).toEqual(["lists", "todos"]);
-    expect(s.findings).toEqual([expect.objectContaining({ status: "ok", detail: "1 streams, 2 queries, sending lists, todos" })]);
+    expect(s.findings).toEqual([expect.objectContaining({ status: "ok", detail: "1 stream, 2 queries, sending lists, todos" })]);
   });
 
   it("adds the tables CTEs and subqueries read, so their branches get rows", () => {
