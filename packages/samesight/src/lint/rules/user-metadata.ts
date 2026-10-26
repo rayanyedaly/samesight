@@ -10,12 +10,12 @@
  */
 
 import type { LintFinding } from "../finding.ts";
-import type { LintRule } from "../lint.ts";
+import { defineRule, type LintRule } from "../lint.ts";
 import { readsUserMetadata, tokens } from "../sql.ts";
 
 const RULE = "user-metadata";
 
-export const userMetadata: LintRule = ({ file, config, lineOf }) => {
+export const userMetadata: LintRule = defineRule(RULE, ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
   const kind = config.kind === "streams" ? "stream" : "bucket";
   for (const s of config.streams) {
@@ -34,4 +34,4 @@ export const userMetadata: LintRule = ({ file, config, lineOf }) => {
     }
   }
   return out;
-};
+});

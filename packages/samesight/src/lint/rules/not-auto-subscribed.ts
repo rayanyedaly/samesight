@@ -5,11 +5,11 @@
  * anyone calling the API) asks for. Sync rules buckets are always synced, so streams only.
  */
 
-import type { LintRule } from "../lint.ts";
+import { defineRule, type LintRule } from "../lint.ts";
 
 const RULE = "not-auto-subscribed";
 
-export const notAutoSubscribed: LintRule = ({ file, config, lineOf }) =>
+export const notAutoSubscribed: LintRule = defineRule(RULE, ({ file, config, lineOf }) =>
   config.kind !== "streams"
     ? []
     : config.streams
@@ -21,4 +21,4 @@ export const notAutoSubscribed: LintRule = ({ file, config, lineOf }) =>
           line: s.queries[0] ? lineOf(s.queries[0].sql) : undefined,
           subjects: [s.name],
           message: `stream ${s.name} is not auto_subscribe: devices get its rows only when the app subscribes, with the parameters it sends, and audit does not test it`,
-        }));
+        })));

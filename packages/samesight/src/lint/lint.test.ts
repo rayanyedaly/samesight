@@ -4,15 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { corpusFiles } from "../fixtures/corpus.ts";
-import { findSyncConfig, lineOf, type LintRule, lintSyncConfig, RULE_NAMES, RULES } from "./lint.ts";
+import { defineRule, findSyncConfig, lineOf, lintSyncConfig, RULE_NAMES, RULES } from "./lint.ts";
+import { applyMigrations } from "./migrations.ts";
 
 const streams = "config:\n  edition: 3\n\nstreams:\n  user_data:\n    auto_subscribe: true\n    queries:\n      - SELECT * FROM lists WHERE owner_id = auth.user_id()\n";
 
 describe("lintSyncConfig", () => {
   it("runs each rule on the parsed config, and places queries by line", () => {
-    const rule: LintRule = ({ file, config, lineOf }) =>
-      config.streams.flatMap((s) => s.queries.map((q) => ({ rule: "test", level: "info" as const, file, line: lineOf(q.sql), message: s.name })));
+    const rule = defineRule("test", ({ file, config, lineOf }) =>
+      config.streams.flatMap((s) => s.queries.map((q) => ({ rule: "test", level: "info" as const, file, line: lineOf(q.sql), message: s.name }))),
+    );
     expect(lintSyncConfig(streams, "sync-config.yaml", [rule])).toEqual([{ rule: "test", level: "info", file: "sync-config.yaml", line: 8, message: "user_data" }]);
   });
 
@@ -22,10 +23,24 @@ describe("lintSyncConfig", () => {
 });
 
 describe("RULE_NAMES", () => {
-  it("names every rule, so --allow can reach each one", () => {
-    expect(RULE_NAMES).toHaveLength(RULES.length);
-    const used = new Set(corpusFiles("real").concat(corpusFiles("planted")).flatMap((c) => lintSyncConfig(c.text, c.file).map((f) => f.rule)));
-    for (const rule of used) expect(RULE_NAMES).toContain(rule);
+  // One config and migration that every rule has something to say about.
+  const everything = [
+    "config:\n  edition: 3\nstreams:",
+    "  everything:\n    query: SELECT * FROM customers",
+    "  by_param:\n    auto_subscribe: true\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list')",
+    "  by_metadata:\n    auto_subscribe: true\n    query: SELECT * FROM tasks WHERE team_id = auth.parameter('user_metadata') ->> 'team'",
+    "  odd:\n    auto_subscribe: true\n    query: SELECT * FROM lists AS mine WHERE owner_id = auth.user_id()",
+    "",
+  ].join("\n");
+  const migrations = applyMigrations([{ file: "m.sql", sql: "create policy open on customers using (true);" }]);
+
+  it("are the rules' own names, each on every finding the rule makes, so --allow reaches each one", () => {
+    expect(RULE_NAMES).toEqual(["unscoped-query", "client-scoped", "user-metadata", "unreadable-query", "not-auto-subscribed", "rls-off", "rls-open"]);
+    for (const rule of RULES) {
+      const found = lintSyncConfig(everything, "s.yaml", [rule], migrations);
+      expect(found.length, rule.ruleName).toBeGreaterThan(0);
+      expect(new Set(found.map((f) => f.rule)), rule.ruleName).toEqual(new Set([rule.ruleName]));
+    }
   });
 });
 

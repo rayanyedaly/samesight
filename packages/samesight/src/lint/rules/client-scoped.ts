@@ -8,12 +8,12 @@
  */
 
 import type { LintFinding } from "../finding.ts";
-import type { LintRule } from "../lint.ts";
+import { defineRule, type LintRule } from "../lint.ts";
 import { inNames, readsClient, readsToken, tableOf, tokens } from "../sql.ts";
 
 const RULE = "client-scoped";
 
-export const clientScoped: LintRule = ({ file, config, lineOf }) => {
+export const clientScoped: LintRule = defineRule(RULE, ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
   const add = (sql: string, subjects: string[], message: string) => out.push({ rule: RULE, level: "error", file, line: lineOf(sql), message, subjects });
 
@@ -42,4 +42,4 @@ export const clientScoped: LintRule = ({ file, config, lineOf }) => {
     }
   }
   return out;
-};
+});

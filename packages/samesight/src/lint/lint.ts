@@ -30,12 +30,17 @@ export interface LintContext {
   lineOf: (sql: string) => number | undefined;
 }
 
-export type LintRule = (context: LintContext) => LintFinding[];
+/** A rule: what it finds in one sync config, and its name, as findings and --allow use it. */
+export type LintRule = ((context: LintContext) => LintFinding[]) & { readonly ruleName: string };
 
-/** Every rule's name, as findings and --allow use it. */
-export const RULE_NAMES = ["unscoped-query", "client-scoped", "user-metadata", "unreadable-query", "not-auto-subscribed", "rls-off", "rls-open"];
+export function defineRule(name: string, run: (context: LintContext) => LintFinding[]): LintRule {
+  return Object.assign(run, { ruleName: name });
+}
 
 export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed, rlsOff, rlsOpen];
+
+/** Every rule's name, as findings and --allow use it. */
+export const RULE_NAMES = RULES.map((r) => r.ruleName);
 
 /** Every rule's findings for one sync config; throws when the file cannot be read as one. */
 export function lintSyncConfig(text: string, file: string, rules: LintRule[] = RULES, migrations?: Migrations): LintFinding[] {

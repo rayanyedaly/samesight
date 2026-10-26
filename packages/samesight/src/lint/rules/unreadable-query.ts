@@ -8,11 +8,11 @@
 import { outputTable, tablesNamed } from "../../sync/scope.ts";
 import { tokenize } from "../../sync/sql.ts";
 import type { LintFinding } from "../finding.ts";
-import type { LintRule } from "../lint.ts";
+import { defineRule, type LintRule } from "../lint.ts";
 
 const RULE = "unreadable-query";
 
-export const unreadableQuery: LintRule = ({ file, config, lineOf }) => {
+export const unreadableQuery: LintRule = defineRule(RULE, ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
   const kind = config.kind === "streams" ? "stream" : "bucket";
   const add = (sql: string, name: string, where: string, reason: string) =>
@@ -37,4 +37,4 @@ export const unreadableQuery: LintRule = ({ file, config, lineOf }) => {
     }
   }
   return out;
-};
+});

@@ -14,12 +14,12 @@
  */
 
 import type { LintFinding } from "../finding.ts";
-import type { LintRule } from "../lint.ts";
+import { defineRule, type LintRule } from "../lint.ts";
 import { hasWhere, inNames, readsBucket, readsClient, readsToken, tableOf, tokens } from "../sql.ts";
 
 const RULE = "unscoped-query";
 
-export const unscopedQuery: LintRule = ({ file, config, lineOf }) => {
+export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
   const add = (sql: string, filtered: boolean, subjects: string[], message: string) =>
     out.push({ rule: RULE, level: filtered ? "warning" : "error", file, line: lineOf(sql), message, subjects });
@@ -75,4 +75,4 @@ export const unscopedQuery: LintRule = ({ file, config, lineOf }) => {
     );
   }
   return out;
-};
+});

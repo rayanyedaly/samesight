@@ -6,7 +6,7 @@
  */
 
 import type { LintFinding } from "../finding.ts";
-import type { LintRule } from "../lint.ts";
+import { defineRule, type LintRule } from "../lint.ts";
 import type { Policy } from "../migrations.ts";
 import { sentTables } from "../sql.ts";
 
@@ -32,7 +32,7 @@ function opens(p: Policy): string[] {
   return out;
 }
 
-export const rlsOpen: LintRule = ({ file, config, migrations, lineOf }) => {
+export const rlsOpen: LintRule = defineRule(RULE, ({ file, config, migrations, lineOf }) => {
   if (!migrations) return [];
   const out: LintFinding[] = [];
   for (const [table, sql] of sentTables(config)) {
@@ -51,4 +51,4 @@ export const rlsOpen: LintRule = ({ file, config, migrations, lineOf }) => {
     }
   }
   return out;
-};
+});
