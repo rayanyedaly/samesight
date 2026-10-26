@@ -54,7 +54,11 @@ describe("samesight lint with migrations", () => {
     writeFileSync(join(dir, "supabase", "migrations", "1_init.sql"), "alter table lists enable row level security;\n");
     const found = run(dir);
     expect([found.status, found.stdout]).toEqual([0, expect.stringMatching(/sync-config.yaml:8 {2}warning {2}Notes is synced/)]);
-    expect(run(dir, "--migrations", "elsewhere").status).toBe(2);
+    const missing = run(dir, "--migrations", "elsewhere");
+    expect([missing.status, missing.stderr]).toEqual([2, expect.stringMatching(/No migrations directory at elsewhere/)]);
+    mkdirSync(join(dir, "supabase", "migrations", "broken.sql"));
+    const broken = run(dir);
+    expect([broken.status, broken.stderr]).toEqual([2, expect.stringMatching(/Cannot read the migrations in supabase\/migrations: EISDIR/)]);
     const file = run(dir, "--migrations", "supabase/migrations/1_init.sql");
     expect([file.status, file.stderr]).toEqual([2, expect.stringMatching(/1_init.sql is not a directory; --migrations takes the directory/)]);
   });
