@@ -85,6 +85,8 @@ describe("unscoped-query on sync streams", () => {
       // A client-picked value in one branch is no filter beside an admin check or public rows.
       "org_id = subscription.parameter('org') OR auth.user_id() IN (SELECT user_id FROM admins)",
       "org_id = subscription.parameter('org') OR status = 'public'",
+      // Every user's role is the same: a column compared with it tells no user apart.
+      "public_to = auth.parameter('role')",
       "upper(auth.parameter('role')) = 'AUTHENTICATED'",
       "(auth.parameters() -> 'role') = '\"authenticated\"'",
       // Any client passes by sending its own id.
@@ -96,8 +98,19 @@ describe("unscoped-query on sync streams", () => {
     ]) {
       expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
     }
+    // Nobody's role is 'AUTHENTICATED', and is_anonymous is no string: checks, not every user.
+    for (const where of ["auth.parameter('role') = 'AUTHENTICATED'", "auth.parameter('is_anonymous') = 'false'"]) {
+      expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["warning"]);
+    }
     // app_metadata.role is the app's own, so a check on it is a role, not every token.
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.parameter('app_metadata') ->> 'role' = 'authenticated'\n")).map((f) => f[0])).toEqual(["warning"]);
+  });
+
+  it("fails a literal or client value checked in a CTE anyone's rows fill", () => {
+    for (const where of ["subscription.parameter('org') IN pub", "'x' IN pub"]) {
+      expect(lint(stream(`  s:\n    with:\n      pub: SELECT id FROM orgs WHERE status = 'active'\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
+    }
+    expect(lint(stream("  s:\n    with:\n      mine: SELECT role FROM user_roles WHERE user_id = auth.user_id()\n    query: SELECT * FROM docs WHERE 'admin' IN mine\n")).map((f) => f[0])).toEqual(["warning"]);
   });
 
   it("keeps a fixed filter a filter when its value is cast, and takes a flag column for one", () => {
@@ -215,7 +228,7 @@ describe("unscoped-query on sync rules", () => {
       "SELECT FROM users WHERE id = request.user_id() AND request.parameters() ->> 'admin' = 'yes'",
       "SELECT FROM users WHERE id = request.user_id() AND 1 = 1",
       "SELECT WHERE request.jwt() ->> 'role' = 'authenticated'",
-      "SELECT WHERE request.jwt() ->> 'is_anonymous' = 'false'",
+      "SELECT WHERE request.jwt() ->> 'is_anonymous' = false",
       "SELECT FROM users WHERE id = request.user_id() AND true",
     ]) {
       expect(lint(`bucket_definitions:\n  b:\n    parameters: ${gate}\n    data: [SELECT * FROM payroll]\n`).map((f) => f[0]), gate).toEqual(["error"]);

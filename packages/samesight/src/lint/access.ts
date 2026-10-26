@@ -9,8 +9,8 @@
  * IN (SELECT ...) subquery whose own conditions do. NOT, and anything else, does not. The
  * value compared with a literal, with itself or with a client value picks no row, and a
  * value mixing in a client value is the client's. A token claim against a literal (a role),
- * or the token IN a set (an admin list), is a check on who is asking, which rules report
- * apart. A claim every signed-in Supabase user passes (role or aud = 'authenticated'), or
+ * the token IN a set (an admin list), or a literal or client value IN a set of the user's
+ * own rows ('admin' IN their roles), is a check on who is asking, which rules report apart. A claim every signed-in Supabase user passes (role or aud = 'authenticated'), or
  * every non-anonymous one (is_anonymous = false), checks nothing.
  *
  * For sync rules, each bucket parameter is traced to the token, the client, or the rows of
@@ -141,7 +141,12 @@ function readsAny(term: Token[]): boolean {
 
 /** Reads the token and no client value: coalesce(subscription.parameter('u'), auth.user_id()) is the client's pick. */
 function ownToken(term: Token[]): boolean {
-  return readsToken(term) && !readsClient(term);
+  return readsToken(term) && !readsClient(term) && !sameForAll(term);
+}
+
+/** The user's own token value, or a client value: anything but a value every user shares. */
+function ownOrClient(term: Token[]): boolean {
+  return ownToken(term) || readsClient(term);
 }
 
 /**
@@ -168,21 +173,27 @@ const flag: Gate = (term) =>
 
 /** Claims every signed-in (role, aud) or every non-anonymous (is_anonymous) Supabase user's token carries, with that value. */
 const EVERY_TOKEN: [RegExp, Set<string>][] = [
-  [/^(\$\.)?(role|aud)$/, new Set(["authenticated"])],
-  [/^(\$\.)?is_anonymous$/, new Set(["false", "0"])],
+  [/^(\$\.)?(role|aud)$/, new Set(["string:authenticated"])],
+  [/^(\$\.)?is_anonymous$/, new Set(["word:false", "number:0"])],
 ];
 
-/** A literal's value as a claim compares it: any case, JSON quotes off ('"authenticated"'). */
-const claimValue = (x: Token) => x.text.toLowerCase().replace(/^"(.*)"$/, "$1");
+/**
+ * A literal's value as a claim is compared with it: JSON quotes off ('"authenticated"', read
+ * with ->), and lowercased only when the claim is (lower() or upper() around it), since
+ * 'AUTHENTICATED' matches nobody's role.
+ */
+const claimValue = (x: Token, folded: boolean) => `${x.kind}:${(folded ? x.text.toLowerCase() : x.text).replace(/^"(.*)"$/, "$1")}`;
 
 /** A check every signed-in Supabase user passes (role or aud = 'authenticated'), or every non-anonymous one (is_anonymous = false). */
 export const everyToken: Gate = (term) => {
   const s = sides(term);
   if (!s || !readsToken(term)) return false;
-  return EVERY_TOKEN.some(
-    ([claim, values]) => topClaim(term, claim) && s.some((side) => literal(side) && side.some((x) => (x.kind === "string" || x.kind === "word" || x.kind === "number") && values.has(claimValue(x)))),
-  );
+  const folded = term.some((x) => word(x, "lower") || word(x, "upper"));
+  return EVERY_TOKEN.some(([claim, values]) => topClaim(term, claim) && s.some((side) => literal(side) && side.some((x) => values.has(claimValue(x, folded)))));
 };
+
+/** Reads a claim every user has the same value of (role, aud, is_anonymous): it tells no user apart. */
+const sameForAll = (side: Token[]) => EVERY_TOKEN.some(([claim]) => topClaim(side, claim));
 
 /**
  * Whether a term reads a top-level claim of the token by that name: auth.parameter('role'),
@@ -214,7 +225,7 @@ const claimCheck: Gate = (term) => fixed(term) && readsToken(term) && !readsClie
  * The token on the left (auth.user_id() IN (SELECT user_id FROM admins)) checks who is
  * asking, not which rows: it counts only for a gate that takes checks (`checks`).
  */
-function through(base: Gate, cte: (name: string) => boolean | undefined, checks = false): Gate {
+function through(base: Gate, cte: (name: string) => boolean | undefined, checks = false, own: (name: string) => boolean = () => false): Gate {
   const gate: Gate = (term) => {
     for (const i of topLevel(term).filter((i) => isIn(term, i))) {
       const next = term[i + 1];
@@ -229,7 +240,7 @@ function through(base: Gate, cte: (name: string) => boolean | undefined, checks 
       // for IN their orgs) when the set is the user's own. In a set anyone is in, it checks
       // nothing: any client sends a value that is in it.
       if (readsToken(left) && !readsClient(left)) return checks;
-      if (readsClient(left) || literal(left)) return checks && (named ?? queryLimits(sub, valueGate(ownToken)));
+      if (readsClient(left) || literal(left)) return checks && (named !== undefined ? own((next as Token).text.toLowerCase()) : queryLimits(sub, valueGate(ownToken)));
       if (named !== undefined) return named;
       // A subquery that reads a CTE: SELECT org_id FROM mine.
       const from = topLevel(sub).find((j) => word(sub[j], "from"));
@@ -256,7 +267,12 @@ function limitedBy(t: Token[], ctes: Map<string, string>, base: Gate, checks = f
       open.delete(name);
     }
   };
-  const gate: Gate = through(base, cte, checks);
+  // Whether a CTE's rows are the user's own: the set a literal or client value is checked in.
+  const own = (name: string) => {
+    const c = parsed.get(name);
+    return c != null && queryLimits(c, valueGate(ownToken));
+  };
+  const gate: Gate = through(base, cte, checks, own);
   return queryLimits(t, gate);
 }
 
@@ -297,7 +313,7 @@ export function streamAccess(sql: string, ctes: Map<string, string>): StreamAcce
   if (!t) return null;
   return {
     token: limitedBy(t, ctes, matches(ownToken)),
-    tokenOrClient: limitedBy(t, ctes, matches(readsAny)),
+    tokenOrClient: limitedBy(t, ctes, matches(ownOrClient)),
     claim: limitedBy(t, ctes, (term) => matches(ownToken)(term) || claimCheck(term), true),
     filtered: limitedBy(t, ctes, filters),
     filteredOrClaim: limitedBy(t, ctes, (term) => filters(term) || claimCheck(term), true),
@@ -343,29 +359,12 @@ export function parameterQuery(sql: string): ParameterQuery | null {
     const as = topLevel(item).find((i) => word(item[i], "as"));
     const name = as !== undefined ? item[as + 1] : item.at(-1);
     if (!isName(name)) continue;
-    // A value mixing in a client value is the client's, unless the rows it is selected with
-    // pin it: org_id = request.parameters() ->> 'org' among the user's own memberships.
-    const value = as !== undefined ? item.slice(0, as) : item;
-    const source = readsClient(item) ? (pinned(t, value) ? "rows" : "client") : readsToken(item) ? "token" : "rows";
-    parameters.set((name as Token).text.toLowerCase(), source);
+    // A value mixing in a client value is the client's, even where the rows it is selected
+    // with happen to bound it: telling those apart is too easy to get wrong in a client's favour.
+    parameters.set((name as Token).text.toLowerCase(), readsClient(item) ? "client" : readsToken(item) ? "token" : "rows");
   }
-  const rows = queryLimits(t, valueGate(ownToken)) ? "token" : queryLimits(t, valueGate(readsAny)) ? "client" : "nothing";
+  const rows = queryLimits(t, valueGate(ownToken)) ? "token" : queryLimits(t, valueGate(ownOrClient)) ? "client" : "nothing";
   return { parameters, rows };
-}
-
-/** Whether some AND term of a query's conditions compares a row's column with `value`. */
-function pinned(t: Token[], value: Token[]): boolean {
-  const text = (x: Token[]) => x.map((y) => `${y.kind}:${y.text}`).join(" ");
-  const ands = (c: Token[]): Token[][] => {
-    const parts = splitTop(unwrap(c), (y) => word(y, "and"));
-    return parts.length > 1 ? parts.flatMap(ands) : [unwrap(c)];
-  };
-  return conditions(t)
-    .flatMap(ands)
-    .some((term) => {
-      const s = sides(term);
-      return s !== undefined && s.some((side, i) => text(unwrap(side)) === text(unwrap(value)) && !literal(s[1 - i] as Token[]) && !readsAny(s[1 - i] as Token[]));
-    });
 }
 
 /** Whether a bucket parameter's value is the requesting user's own (token) or the client's. */
