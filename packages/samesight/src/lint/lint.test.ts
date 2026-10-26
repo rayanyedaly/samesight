@@ -78,4 +78,25 @@ describe("samesight lint", () => {
     const typo = run(dir, "--allow", "unscoped-querry");
     expect([typo.status, typo.stderr]).toEqual([2, expect.stringMatching(/--allow names no rule unscoped-querry/)]);
   });
+
+  it("prints one JSON object on stdout with --format json, keeping notes on stderr", () => {
+    const dir = mkdtempSync(join(tmpdir(), "samesight-lint-"));
+    writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
+    writeFileSync(join(dir, "bad.yaml"), "streams: [1]\n");
+    const out = run(dir, "sync-config.yaml", "bad.yaml", "--format", "json");
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/note: no supabase\/migrations here/);
+    expect(JSON.parse(out.stdout)).toEqual({
+      files: ["sync-config.yaml", "bad.yaml"],
+      rlsChecked: false,
+      findings: [expect.objectContaining({ rule: "unscoped-query", level: "error", file: "sync-config.yaml", line: 6, subjects: ["all", "customers"] })],
+      allowed: [],
+      unreadable: [{ file: "bad.yaml", error: "the sync config has no streams: section" }],
+      errors: 1,
+      warnings: 0,
+      notes: 0,
+      exitCode: 2,
+    });
+    expect(run(dir, "--format", "xml").status).toBe(2);
+  });
 });

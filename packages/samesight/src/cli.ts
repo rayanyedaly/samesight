@@ -11,7 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
-import { applyAllow, exitCode, formatLint, type LintFinding } from "./lint/finding.ts";
+import { applyAllow, exitCode, formatLint, type LintFinding, sortFindings } from "./lint/finding.ts";
 import { findSyncConfig, lintSyncConfig, MIGRATIONS_DIR, RULE_NAMES, SYNC_CONFIG_FILES } from "./lint/lint.ts";
 import { type Migrations, readMigrations } from "./lint/migrations.ts";
 import { outputPaths, plan } from "./generate.ts";
@@ -47,6 +47,8 @@ Options:
   --allow <rule>[:<name>]
                     lint: accept a rule's findings, all of them or those about one stream,
                     bucket, table or policy; repeatable
+  --format <text|json>
+                    lint: text (default) or one JSON object on stdout, notes on stderr
   -v, --version     print the version
   -h, --help        print this help
 
@@ -63,6 +65,7 @@ async function main(argv: string[]): Promise<number> {
       table: { type: "string" },
       migrations: { type: "string" },
       allow: { type: "string", multiple: true },
+      format: { type: "string" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
     },
@@ -77,7 +80,7 @@ async function main(argv: string[]): Promise<number> {
     return command || values.help ? 0 : 1;
   }
   // Lint needs no policy: it is for any PowerSync project.
-  if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? []);
+  if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);
@@ -148,7 +151,11 @@ async function main(argv: string[]): Promise<number> {
 }
 
 /** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read. */
-function lint(given: string[], migrationsDir: string | undefined, allow: string[]): number {
+function lint(given: string[], migrationsDir: string | undefined, allow: string[], format: string): number {
+  if (format !== "text" && format !== "json") {
+    console.error(`--format must be text or json, not "${format}"`);
+    return 2;
+  }
   // A misspelt rule would allow nothing and look like it worked.
   const unknown = allow.map((a) => a.split(":")[0] as string).filter((r) => !RULE_NAMES.includes(r));
   if (unknown.length) {
@@ -170,21 +177,28 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
     migrations = readMigrations(dir);
   } else console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run; pass --migrations <dir> to check them`);
   const findings: LintFinding[] = [];
-  let unreadable = 0;
+  const unreadable: { file: string; error: string }[] = [];
   for (const file of found) {
     try {
       findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file, undefined, migrations));
     } catch (e) {
       console.error(`${file}: cannot be read as a sync config: ${(e as Error).message}`);
-      unreadable++;
+      unreadable.push({ file, error: (e as Error).message });
     }
   }
   const { kept, allowed } = applyAllow(findings, allow);
+  const code = unreadable.length ? 2 : exitCode(kept);
+  if (format === "json") {
+    const count = (level: string) => kept.filter((f) => f.level === level).length;
+    const report = { files: found, rlsChecked: migrations !== undefined, findings: sortFindings(kept), allowed: sortFindings(allowed), unreadable, errors: count("error"), warnings: count("warning"), notes: count("info"), exitCode: code };
+    console.log(JSON.stringify(report, null, 2));
+    return code;
+  }
   // "No problems found" would be false for a file that was never checked.
-  if (kept.length || !unreadable) console.log(formatLint(kept));
+  if (kept.length || !unreadable.length) console.log(formatLint(kept));
   if (allowed.length) console.log(`${allowed.length} finding${allowed.length === 1 ? "" : "s"} allowed by --allow`);
-  if (unreadable) console.error(`${unreadable} of ${found.length} file(s) could not be read, so nothing in them was checked.`);
-  return unreadable ? 2 : exitCode(kept);
+  if (unreadable.length) console.error(`${unreadable.length} of ${found.length} file(s) could not be read, so nothing in them was checked.`);
+  return code;
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {
