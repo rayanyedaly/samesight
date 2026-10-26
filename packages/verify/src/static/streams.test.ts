@@ -1,5 +1,5 @@
-import { definePolicy, table } from "samesight";
-import { buildIR } from "samesight/compiler";
+import { col, definePolicy, table } from "samesight";
+import { buildIR, emitSyncConfig } from "samesight/compiler";
 import { describe, expect, it } from "vitest";
 import { ir, policy, schema, syncConfig } from "../fixtures/fieldbook.ts";
 import { checkStreams, parseStreams } from "./streams.ts";
@@ -149,5 +149,28 @@ describe("parseStreams", () => {
     expect(() => parseStreams("streams:\n  s:\n    query: [a]\n")).toThrow("query must be a SQL string");
     expect(() => parseStreams("streams:\n  s:\n    with:\n      c: [a]\n")).toThrow("with must map names to SQL strings");
     expect(parseStreams("streams:\n  s:\n    query: SELECT 1\n")[0]?.queries).toEqual([{ label: "query", sql: "SELECT 1" }]);
+  });
+});
+
+describe("checkStreams on a shared table (tenant: null)", () => {
+  const plan = {
+    name: "Plan",
+    columns: ["id", "tier"].map((name) => ({ name, type: "text", nullable: false, default: null, identity: false, generated: false })),
+    primaryKey: ["id"],
+    indexedColumns: ["id"],
+    uniqueColumns: ["id"],
+    foreignKeys: [],
+  };
+  const shared = buildIR(
+    definePolicy({ ...policy.spec, tables: { ...policy.spec.tables, Plan: table({ tenant: null, read: { ADMIN: true, VIEWER: col("tier").eq("public") } }) } }),
+    { tables: [...schema.tables, plan] },
+  );
+  const yaml = emitSyncConfig(shared);
+
+  it("takes no tenant gate, and still holds the role gate and the rule's roles", () => {
+    expect(fails(yaml, shared)).toEqual([]);
+    expect(
+      fails(edit(`SELECT * FROM "Plan" WHERE auth.parameter('app_role') = 'ADMIN'`, `SELECT * FROM "Plan" WHERE auth.parameter('app_role') = 'INSPECTOR'`, yaml), shared),
+    ).toEqual(["admin.queries[6] streams Plan to INSPECTOR, which has no read rule for it"]);
   });
 });

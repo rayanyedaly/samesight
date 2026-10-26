@@ -129,8 +129,12 @@ export const claim = {
 export type RoleRules<C extends string> = { readonly [role: string]: true | Condition<C> };
 
 export interface TableSpec<C extends string = string> {
-  /** The column holding the row's tenant (`"id"` for the tenant table itself). */
-  tenant: C;
+  /**
+   * The column holding the row's tenant (`"id"` for the tenant table itself), or `null`
+   * for reference data every tenant shares (plans, countries, categories). A shared table
+   * is read-only to clients: its rows come from migrations or the service role.
+   */
+  tenant: C | null;
   /** Who reads which rows. Compiles to RLS and to sync streams. */
   read?: RoleRules<C>;
   /** Shorthand for the same rule on insert, update and delete; ORed with any rule they also have. */

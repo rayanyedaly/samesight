@@ -8,6 +8,12 @@ const organizations = new Table({
   name: column.text,
 });
 
+const labels = new Table({
+  name: column.text,
+  color: column.text,
+  status: column.text,
+});
+
 const members = new Table({
   user_id: column.text,
   org_id: column.text,
@@ -40,6 +46,7 @@ const tasks = new Table({
 // RejectedWrite is local-only: writes the server refused for good, kept and shown.
 export const AppSchema = new Schema({
   organizations,
+  labels,
   members,
   project_members,
   projects,
@@ -49,6 +56,7 @@ export const AppSchema = new Schema({
 
 export type Database = (typeof AppSchema)["types"];
 export type organizationsRecord = Database["organizations"];
+export type labelsRecord = Database["labels"];
 export type membersRecord = Database["members"];
 export type project_membersRecord = Database["project_members"];
 export type projectsRecord = Database["projects"];

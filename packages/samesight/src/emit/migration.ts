@@ -116,7 +116,8 @@ export function emitMigration(ir: IR): string {
   if (readable.length) add(`grant select on ${list(readable.map((t) => t.name))} to authenticated;`);
   for (const t of writable) {
     // The author column may be sent (RLS requires it to be the caller); other server-owned ones may not.
-    const insertable = ["id", t.tenant, ...t.insertColumns, ...(t.author ? [t.author] : [])];
+    // Writable tables always have a tenant: the compiler refuses writes to shared ones.
+    const insertable = ["id", t.tenant as string, ...t.insertColumns, ...(t.author ? [t.author] : [])];
     if (t.insert.size > 0) add(`grant insert (${insertable.map(ident).join(", ")}) on ${tbl(t.name)} to authenticated;`);
     if (t.update.size > 0 && t.updateColumns.length > 0) {
       add(`grant update (${t.updateColumns.map(ident).join(", ")}) on ${tbl(t.name)} to authenticated;`);
@@ -344,7 +345,8 @@ function section(out: string[], title: string, ...comment: string[]): void {
 // Policies -------------------------------------------------------------------------------------
 
 function tablePolicies(t: IRTable): string[] {
-  const gate = `${ident(t.tenant)} = ${TENANT}`;
+  // A shared table has no tenant gate: every tenant reads the same rows (and writes none).
+  const gate = t.tenant === null ? undefined : `${ident(t.tenant)} = ${TENANT}`;
   const author = t.author ? `${ident(t.author)} = ${RLS_USER}` : undefined;
   const check = t.check ? paren(t.check, rls(t.check)) : undefined;
   const out: string[] = [];
@@ -358,10 +360,10 @@ function tablePolicies(t: IRTable): string[] {
   };
   const defined = (xs: (string | undefined)[]) => xs.filter((x): x is string => x !== undefined);
 
-  if (t.read.size) policy("read", "select", { using: [gate, ...roles(t.read)] });
+  if (t.read.size) policy("read", "select", { using: defined([gate, ...roles(t.read)]) });
   if (t.insert.size) policy("insert", "insert", { check: defined([gate, ...roles(t.insert), author, check]) });
-  if (t.update.size) policy("update", "update", { using: [gate, ...roles(t.update)], check: defined([gate, ...roles(t.update), check]) });
-  if (t.delete.size) policy("delete", "delete", { using: [gate, ...roles(t.delete)] });
+  if (t.update.size) policy("update", "update", { using: defined([gate, ...roles(t.update)]), check: defined([gate, ...roles(t.update), check]) });
+  if (t.delete.size) policy("delete", "delete", { using: defined([gate, ...roles(t.delete)]) });
   return out;
 }
 

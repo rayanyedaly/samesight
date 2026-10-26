@@ -33,6 +33,26 @@
       "appendOnly": null
     },
     {
+      "name": "labels",
+      "tenant": null,
+      "read": {
+        "owner": "all",
+        "member": {
+          "kind": "eq",
+          "column": "status",
+          "value": "active"
+        }
+      },
+      "insert": {},
+      "update": {},
+      "delete": {},
+      "check": null,
+      "hide": {},
+      "insertColumns": [],
+      "updateColumns": [],
+      "appendOnly": null
+    },
+    {
       "name": "members",
       "tenant": "org_id",
       "read": {
@@ -218,10 +238,10 @@
     }
   ],
   "outputs": {
-    "powersync/sync-config.yaml": "c46e26b3ef61e3d126a899b57ad68ce2015412bd3ee69ee477e6e3026341ffbb",
+    "powersync/sync-config.yaml": "eedfdc51f4e16500e7be7cdd5a75998cc34c048d8c1f19d9602e2d62f93c37da",
     "powersync/service.yaml": "bfe50c991437194b79154075b06729914675e327811ffeea01c77c50ff5f67bb",
-    "src/samesight/app-schema.ts": "298e935a3d9490a406f84a221325289c0fdfee0d3e40fae1eb02cc99e97bf6b7",
+    "src/samesight/app-schema.ts": "7bcd530bbd01a4e00c08b4925a70ffebc83e6aec394754848a321dafc53da240",
     "src/samesight/policy-types.ts": "ddb115c4f4e0b65c01ee4c431ae14bb0265357d01c3bcfe1220480356a9e8b5e",
-    "migration": "f1b4bfda6cf0debd218530abf85559cd65665825bb11f4b1f2cf0f580c7e58c7"
+    "migration": "46cd3f14943d0d72771f78c41f43743d5afe83d7303c3edb7c7a9dcb8e6223d9"
   }
 }

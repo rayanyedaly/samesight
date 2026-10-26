@@ -172,8 +172,9 @@ function resolve(fk: ForeignKeyModel, pick: number, row: Record<string, unknown>
 }
 
 /** Inserts the world's rows in foreign key order, in one transaction the caller commits. */
-export async function insertWorld(client: pg.Client, tables: TableModel[], world: World, fixed: Fixed): Promise<Inserted[]> {
-  const done: Inserted[] = [];
+export async function insertWorld(client: pg.Client, tables: TableModel[], world: World, fixed: Fixed, existing: Inserted[] = []): Promise<Inserted[]> {
+  // Rows already in the database that generated rows may point at (shared tables the run fills none of).
+  const done: Inserted[] = [...existing];
   for (const t of tables) {
     // Keys to other tables before self-references (a parent row first, then a sibling under it),
     // keys through the tenant column first (they anchor the row in its tenant), and keys with
@@ -204,7 +205,7 @@ export async function insertWorld(client: pg.Client, tables: TableModel[], world
       if (await insert(client, t.name, row)) done.push({ table: t.name, row, tenant: tenant === undefined ? undefined : row[tenant] });
     }
   }
-  return done;
+  return done.slice(existing.length);
 }
 
 /**

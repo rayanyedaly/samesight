@@ -89,7 +89,9 @@ export function writeFamilies(s: Setup): string[] {
   return out;
 }
 
-const writableTables = (s: Setup) => s.ir.tables.filter((t) => t.insert.size || t.update.size || t.delete.size);
+/** Tables clients write; the compiler keeps shared tables (tenant: null) out of them. */
+const writableTables = (s: Setup) =>
+  s.ir.tables.filter((t): t is IRTable & { tenant: string } => t.tenant !== null && (t.insert.size > 0 || t.update.size > 0 || t.delete.size > 0));
 /** What some role may do on this table but `role` may not at all, inside its own tenant. */
 const withoutRule = (t: IRTable, role: string) =>
   [
@@ -123,7 +125,9 @@ export async function forgeBatches(s: Setup, prepare?: (client: pg.Client) => Pr
   for (const t of s.ir.tables) {
     data.set(t.name, (await rows<{ row: Row }>(s.client, `select row_to_json(x) as row from public.${ident(t.name)} x`)).map((r) => r.row));
   }
-  const inTenant = (t: IRTable, tenant: string | null) => (data.get(t.name) ?? []).filter((r) => tenant !== null && r[t.tenant] === tenant);
+  // A shared table's rows belong to every tenant.
+  const inTenant = (t: IRTable, tenant: string | null) =>
+    (data.get(t.name) ?? []).filter((r) => tenant !== null && (t.tenant === null || r[t.tenant] === tenant));
   const pick = (r: Row, cols: string[]) => Object.fromEntries(cols.filter((c) => r[c] !== undefined).map((c) => [c, r[c]]));
 
   /** A value for `column` that differs from the row's and fits its constraints, if one can be found. */
@@ -317,7 +321,7 @@ export async function forgeBatches(s: Setup, prepare?: (client: pg.Client) => Pr
 
     // Tables no client writes, with a row that would otherwise be valid (for the membership
     // table, the caller's own membership as the first role), and a table that does not exist.
-    for (const t of s.ir.tables.filter((x) => !writableTables(s).includes(x))) {
+    for (const t of s.ir.tables.filter((x) => !writableTables(s).some((w) => w.name === x.name))) {
       const m = s.ir.membership;
       const mine = inTenant(t, user.tenant);
       const source = (t.name === m.table ? mine.find((r) => r[m.user] === user.id) : undefined) ?? mine[0];

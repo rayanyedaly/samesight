@@ -11,6 +11,7 @@ streams:
     auto_subscribe: true
     queries:
       - SELECT * FROM organizations WHERE id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
+      - SELECT * FROM labels WHERE auth.parameter('app_role') = 'owner'
       - SELECT * FROM members WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
       - SELECT * FROM project_members WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
       - SELECT * FROM projects WHERE org_id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'owner'
@@ -24,6 +25,7 @@ streams:
         WHERE org_id = auth.parameter('tenant_id') AND user_id = auth.user_id()
     queries:
       - SELECT * FROM organizations WHERE id = auth.parameter('tenant_id') AND auth.parameter('app_role') = 'member'
+      - SELECT * FROM labels WHERE status = 'active' AND auth.parameter('app_role') = 'member'
       - |
         SELECT *
         FROM members

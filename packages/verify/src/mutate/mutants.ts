@@ -46,7 +46,9 @@ const canonicalTerm = (sql: string) => sqlText(tokenize(sql));
 
 function gates(ir: IR) {
   const tenantClaim = `auth.parameter('${ir.claims.tenant}')`;
-  const tenant = (t: IRTable) => new Set([canonicalTerm(`${ident(t.tenant)} = ${tenantClaim}`), canonicalTerm(`${tenantClaim} = ${ident(t.tenant)}`)]);
+  // A shared table (tenant: null) has no tenant gate to drop.
+  const tenant = (t: IRTable) =>
+    t.tenant === null ? new Set<string>() : new Set([canonicalTerm(`${ident(t.tenant)} = ${tenantClaim}`), canonicalTerm(`${tenantClaim} = ${ident(t.tenant)}`)]);
   const roleOf = new Map<string, string>();
   for (const r of ir.claims.roles) {
     roleOf.set(canonicalTerm(`auth.parameter('${ir.claims.role}') = '${r}'`), r);
@@ -288,19 +290,22 @@ export function rlsMutants(ir: IR, unique: Unique = () => false): { mutants: Rls
   for (const t of ir.tables) {
     const original = readPolicy(ir, t.name);
     if (!original) continue;
-    const gate = `${ident(t.tenant)} = (select samesight.tenant_id())`;
-    const ungated = original.replace(new RegExp(`${gate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+and\\s+`), "");
-    const rules = [...t.read.values()];
-    if (rules.length && rules.every((r) => tenantBound(t, r, unique))) {
-      equivalent.push({
-        description: `RLS ${t.name}: read without the tenant gate`,
-        reason: "every role's rule reads through a parent's RLS over a composite (tenant, column) foreign key",
-      });
-    } else if (ungated === original) {
-      // Not equivalent, unbuildable: the emitter changed. With no statements it survives and fails the run.
-      mutants.push({ description: `RLS ${t.name}: read without the tenant gate (could not be built: no "${gate} and" in the generated policy)`, statements: [] });
+    // A shared table (tenant: null) has no tenant gate to drop.
+    if (t.tenant !== null) {
+      const gate = `${ident(t.tenant)} = (select samesight.tenant_id())`;
+      const ungated = original.replace(new RegExp(`${gate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+and\\s+`), "");
+      const rules = [...t.read.values()];
+      if (rules.length && rules.every((r) => tenantBound(t, r, unique))) {
+        equivalent.push({
+          description: `RLS ${t.name}: read without the tenant gate`,
+          reason: "every role's rule reads through a parent's RLS over a composite (tenant, column) foreign key",
+        });
+      } else if (ungated === original) {
+        // Not equivalent, unbuildable: the emitter changed. With no statements it survives and fails the run.
+        mutants.push({ description: `RLS ${t.name}: read without the tenant gate (could not be built: no "${gate} and" in the generated policy)`, statements: [] });
+      }
+      else mutants.push({ description: `RLS ${t.name}: read without the tenant gate`, statements: replace(t, ungated) });
     }
-    else mutants.push({ description: `RLS ${t.name}: read without the tenant gate`, statements: replace(t, ungated) });
     for (const role of ir.claims.roles) {
       const rule = t.read.get(role);
       if (rule !== undefined && rule !== true && allOfTenant(ir, t, role, rule)) {
