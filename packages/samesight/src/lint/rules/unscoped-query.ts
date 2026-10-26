@@ -54,11 +54,12 @@ export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf 
         const table = tableOf(q.sql);
         const where = `stream ${s.name}, ${q.label}`;
         if (access.claim) {
+          const rows = access.filtered ? `the rows of ${table} its fixed filters allow` : `every row of ${table}`;
           add(
             q.sql,
             true,
             [s.name, table],
-            `${where} sends every row of ${table} to every user who passes its check on who is asking (a role claim, or a list such as admins), not each user their own; fine if only users meant to see them all pass it`,
+            `${where} sends ${rows} to every user who passes its check on who is asking (a role claim, or a list such as admins), not each user their own; fine if only users meant to see them all pass it`,
           );
           continue;
         }

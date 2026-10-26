@@ -60,6 +60,24 @@ describe("client-scoped on sync streams", () => {
     expect(levels(lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND subscription.parameter('k') IN (SELECT k FROM keys)\n")))).toEqual(["error"]);
   });
 
+  it("warns, not fails, on a client value checked against the user's own set", () => {
+    // Safe, but read as a check on who is asking; the usual form (list_id IN (SELECT ...)) passes.
+    expect(
+      levels(lint(stream("  s:\n    query: SELECT * FROM docs WHERE org_id = subscription.parameter('org') AND subscription.parameter('org') IN (SELECT org_id FROM members WHERE user_id = auth.user_id())\n"))),
+    ).toEqual(["warning"]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE org_id = subscription.parameter('org') AND org_id IN (SELECT org_id FROM members WHERE user_id = auth.user_id())\n"))).toEqual([]);
+  });
+
+  it("accepts a sync rules parameter the client names but the user's own rows pin", () => {
+    expect(
+      lint("bucket_definitions:\n  b:\n    parameters: SELECT request.parameters() ->> 'org' AS org_id FROM members WHERE org_id = request.parameters() ->> 'org' AND user_id = request.user_id()\n    data: [SELECT * FROM t WHERE org = bucket.org_id]\n"),
+    ).toEqual([]);
+  });
+
+  it("leaves a query reading an unreadable CTE in a subquery to unreadable-query", () => {
+    expect(lint(stream("  s:\n    with:\n      mine: SELECT org_id FROM m WHERE x = E'y'\n    query: SELECT * FROM p WHERE org_id IN (SELECT org_id FROM mine) AND id = subscription.parameter('id')\n"))).toEqual([]);
+  });
+
   it("fails a client parameter in an OR branch beside the token check", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list') OR owner_id = auth.user_id()\n")).map((f) => f[0])).toEqual(["error"]);
   });

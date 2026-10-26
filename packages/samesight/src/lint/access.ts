@@ -124,12 +124,15 @@ const LITERALS = new Set(["true", "false", "null"]);
  * function names, type names and CAST's AS.
  */
 function literal(side: Token[]): boolean {
-  if (!side.length || readsAny(side)) return false;
-  return side.every((t, i) => {
-    if (t.kind === "quoted") return false;
-    if (t.kind !== "word") return true;
-    return LITERALS.has(t.text) || t.text === "cast" || t.text === "as" || sym(side[i + 1], "(") || sym(side[i - 1], "::") || word(side[i - 1], "as");
-  });
+  // A token or client read (auth.user_id()) has a name before a dot, which fails below.
+  return (
+    side.length > 0 &&
+    side.every((t, i) => {
+      if (t.kind === "quoted") return sym(side[i - 1], "::");
+      if (t.kind !== "word") return true;
+      return LITERALS.has(t.text) || t.text === "as" || sym(side[i + 1], "(") || sym(side[i - 1], "::") || word(side[i - 1], "as");
+    })
+  );
 }
 
 function readsAny(term: Token[]): boolean {
@@ -191,7 +194,14 @@ function topClaim(t: Token[], claim: RegExp): boolean {
     if (x.kind !== "string" || !claim.test(x.text)) return false;
     if (x.text.startsWith("$.")) return true;
     if (sym(t[i - 1], "(") && word(t[i - 2], "parameter")) return true;
-    return (sym(t[i - 1], "->>") || sym(t[i - 1], "->")) && sym(t[i - 2], ")") && sym(t[i - 3], "(") && (word(t[i - 4], "parameters") || word(t[i - 4], "jwt"));
+    if (!sym(t[i - 1], "->>") && !sym(t[i - 1], "->")) return false;
+    // Back to the parameters() or jwt() it reads, through parentheses and casts, but not
+    // through another key: app_metadata ->> 'role' is not the top-level role.
+    for (let j = i - 2; j >= 0; j--) {
+      if ((word(t[j], "parameters") || word(t[j], "jwt")) && sym(t[j + 1], "(") && sym(t[j + 2], ")")) return true;
+      if (t[j]?.kind === "string" || sym(t[j], "->") || sym(t[j], "->>")) return false;
+    }
+    return false;
   });
 }
 
@@ -215,11 +225,11 @@ function through(base: Gate, cte: (name: string) => boolean | undefined, checks 
       const end = closing(term, i + 1);
       const sub = term.slice(i + 2, end === -1 ? term.length : end);
       // Not a row on the left. The token (auth.user_id() IN admins) is a check on who is
-      // asking; so is a literal ('admin' IN their roles) when the set is the user's own. A
-      // client value picks nothing: any client sends one that is in the set.
-      if (readsClient(left)) return false;
-      if (readsToken(left)) return checks;
-      if (literal(left)) return checks && (named ?? queryLimits(sub, valueGate(ownToken)));
+      // asking; so is a literal ('admin' IN their roles) or a client value (the org asked
+      // for IN their orgs) when the set is the user's own. In a set anyone is in, it checks
+      // nothing: any client sends a value that is in it.
+      if (readsToken(left) && !readsClient(left)) return checks;
+      if (readsClient(left) || literal(left)) return checks && (named ?? queryLimits(sub, valueGate(ownToken)));
       if (named !== undefined) return named;
       // A subquery that reads a CTE: SELECT org_id FROM mine.
       const from = topLevel(sub).find((j) => word(sub[j], "from"));
@@ -256,10 +266,11 @@ export function valueGate(reads: (term: Token[]) => boolean): Gate {
 }
 
 /**
- * A row's own column against a fixed value, or a row compared with a token or client value.
- * A token or client value against a literal checks who is asking, not which rows.
+ * A row's own column against a fixed value or alone (is_public), or a row compared with the
+ * user's own token value. A token or client value against a literal checks who is asking,
+ * not which rows, and a row compared with a client value is whatever the client picks.
  */
-const filters: Gate = (term) => (fixed(term) && !readsAny(term)) || matches(readsAny)(term);
+const filters: Gate = (term) => (fixed(term) && !readsAny(term)) || (flag(term) && !readsAny(term)) || matches(ownToken)(term);
 
 /** Whether anything filters a query's rows: a fixed value or a row compared with a value. A join does not. */
 export function filtered(sql: string, ctes: Map<string, string> = new Map()): boolean {
@@ -332,11 +343,29 @@ export function parameterQuery(sql: string): ParameterQuery | null {
     const as = topLevel(item).find((i) => word(item[i], "as"));
     const name = as !== undefined ? item[as + 1] : item.at(-1);
     if (!isName(name)) continue;
-    // A value mixing in a client value is the client's.
-    parameters.set((name as Token).text.toLowerCase(), readsClient(item) ? "client" : readsToken(item) ? "token" : "rows");
+    // A value mixing in a client value is the client's, unless the rows it is selected with
+    // pin it: org_id = request.parameters() ->> 'org' among the user's own memberships.
+    const value = as !== undefined ? item.slice(0, as) : item;
+    const source = readsClient(item) ? (pinned(t, value) ? "rows" : "client") : readsToken(item) ? "token" : "rows";
+    parameters.set((name as Token).text.toLowerCase(), source);
   }
   const rows = queryLimits(t, valueGate(ownToken)) ? "token" : queryLimits(t, valueGate(readsAny)) ? "client" : "nothing";
   return { parameters, rows };
+}
+
+/** Whether some AND term of a query's conditions compares a row's column with `value`. */
+function pinned(t: Token[], value: Token[]): boolean {
+  const text = (x: Token[]) => x.map((y) => `${y.kind}:${y.text}`).join(" ");
+  const ands = (c: Token[]): Token[][] => {
+    const parts = splitTop(unwrap(c), (y) => word(y, "and"));
+    return parts.length > 1 ? parts.flatMap(ands) : [unwrap(c)];
+  };
+  return conditions(t)
+    .flatMap(ands)
+    .some((term) => {
+      const s = sides(term);
+      return s !== undefined && s.some((side, i) => text(unwrap(side)) === text(unwrap(value)) && !literal(s[1 - i] as Token[]) && !readsAny(s[1 - i] as Token[]));
+    });
 }
 
 /** Whether a bucket parameter's value is the requesting user's own (token) or the client's. */
