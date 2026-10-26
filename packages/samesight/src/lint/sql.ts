@@ -50,14 +50,19 @@ export function readsClient(t: Token[]): boolean {
 }
 
 /**
- * Reads the token's user_metadata, which Supabase users set on themselves: the claim named
- * in a string ('user_metadata', as auth.parameter() and -> take it) or after
- * token_parameters.
+ * Reads the token's user_metadata, which Supabase users set on themselves: a string naming
+ * it, or a JSON path into it, where a claim is read: after -> or ->>, as the argument of
+ * auth.parameter() (PowerSync reads that as the path '$.' || name, so 'user_metadata.role'
+ * counts), or as a '$.user_metadata' path. Legacy token_parameters cannot reach it: they
+ * read the token's own "parameters" claim, which Supabase does not set.
  */
 export function readsUserMetadata(t: Token[]): boolean {
-  return t.some(
-    (x, i) => (x.kind === "string" && x.text === "user_metadata") || (word(x, "user_metadata") && sym(t[i - 1], ".") && word(t[i - 2], "token_parameters")),
-  );
+  return t.some((x, i) => {
+    if (x.kind !== "string") return false;
+    if (/^\$\.user_metadata\b/.test(x.text)) return true;
+    if (!/^user_metadata(\.|\[|$)/.test(x.text)) return false;
+    return sym(t[i - 1], "->") || sym(t[i - 1], "->>") || (sym(t[i - 1], "(") && word(t[i - 2], "parameter"));
+  });
 }
 
 /** Reads a bucket parameter (bucket.x), as a sync rules data query must to be per-user. */
