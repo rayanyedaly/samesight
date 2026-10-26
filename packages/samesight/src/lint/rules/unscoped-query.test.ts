@@ -65,12 +65,12 @@ describe("unscoped-query on sync streams", () => {
     ]);
   });
 
-  it("fails a claim every ordinary signed-in Supabase user passes, however the value is written", () => {
+  it("fails a claim every signed-in or non-anonymous Supabase user passes, however the value is written", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE auth.parameter('role') = 'authenticated'\n"))).toEqual([
       [
         "error",
         5,
-        "stream s, query checks a claim every ordinary signed-in Supabase user passes (role or aud = 'authenticated', is_anonymous = false), so every user gets every row of docs",
+        "stream s, query checks a claim every signed-in Supabase user passes (role or aud = 'authenticated') or every non-anonymous one (is_anonymous = false), so every user gets every row of docs",
       ],
     ]);
     for (const where of [
@@ -78,8 +78,15 @@ describe("unscoped-query on sync streams", () => {
       "auth.parameter('role') = 'authenticated'::text",
       "auth.parameter('role') = CAST('authenticated' AS text)",
       "auth.parameter('is_anonymous') = false",
+      "auth.parameter('is_anonymous') = 0",
+      "upper(auth.parameter('role')) = 'AUTHENTICATED'",
+      "(auth.parameters() -> 'role') = '\"authenticated\"'",
       // Any client passes by sending its own id.
       "auth.user_id() = subscription.parameter('uid')",
+      // Nothing about who is asking: a literal in a set anyone is in, or a client value.
+      "1 IN (SELECT 1)",
+      "'x' IN (SELECT name FROM flags)",
+      "subscription.parameter('org') IN (SELECT id FROM orgs)",
     ]) {
       expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["error"]);
     }
@@ -89,6 +96,10 @@ describe("unscoped-query on sync streams", () => {
 
   it("keeps a fixed filter a filter when its value is cast", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM posts WHERE status = 'public'::text\n")).map((f) => f[0])).toEqual(["warning"]);
+  });
+
+  it("still reports a query that only mentions an unreadable CTE's name", () => {
+    expect(lint(stream("  s:\n    with:\n      owner: SELECT id FROM x WHERE a = E'b'\n    query: SELECT * FROM docs WHERE owner = owner\n")).map((f) => f[0])).toEqual(["error"]);
   });
 
   it("survives a CTE that reads itself", () => {

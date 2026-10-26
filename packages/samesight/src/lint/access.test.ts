@@ -91,6 +91,7 @@ describe("gates and bucket parameters, one guard at a time", () => {
   it("take a bare flag column, but not a claim every user passes, for a gate on the user's row", () => {
     expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND is_admin", ["SELECT * FROM payroll"])))).toEqual(["warning"]);
     expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND request.jwt() ->> 'role' = 'authenticated'", ["SELECT * FROM payroll"])))).toEqual(["error"]);
+    expect(levels(unscoped(rules("SELECT id AS org_id FROM orgs WHERE request.jwt() ->> 'is_anonymous' = 0", ["SELECT * FROM t WHERE org = bucket.org_id"])))).toEqual(["error"]);
     // A JSON column of the row, not the token: a role kept in the table.
     expect(levels(unscoped(rules("SELECT FROM users WHERE id = request.user_id() AND users.meta ->> 'role' = 'authenticated'", ["SELECT * FROM payroll"])))).toEqual(["warning"]);
   });
@@ -103,7 +104,7 @@ describe("gates and bucket parameters, one guard at a time", () => {
 });
 
 describe("claims every user passes", () => {
-  const every = /checks a claim every ordinary signed-in Supabase user passes/;
+  const every = /checks a claim every signed-in Supabase user passes/;
 
   it("are read as a JSON path, and named in the message wherever they sit", () => {
     for (const where of [

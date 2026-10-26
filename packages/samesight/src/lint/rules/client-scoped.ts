@@ -6,15 +6,15 @@
  * stream query limited by one and by no token value, or a sync rules parameter query whose
  * bucket parameters come from one and are not bounded by the token, lets any client ask for
  * any rows. A row compared with a token value too bounds what can be asked, and makes it
- * fine; one in an OR branch beside the client value does not (see access.ts). A check on
- * a token claim (a role) beside the client value makes it a warning: only users who pass
- * can ask, for any row.
+ * fine; one in an OR branch beside the client value does not, and neither does a value
+ * that mixes the two (see access.ts). A check on who is asking (a role claim, an admin
+ * list) beside the client value makes it a warning: only users who pass can ask, for any row.
  */
 
 import { bucketAccess, streamAccess } from "../access.ts";
 import type { LintFinding } from "../finding.ts";
 import { defineRule, type LintRule } from "../lint.ts";
-import { names, tableOf, tokens } from "../sql.ts";
+import { sources, tableOf, tokens } from "../sql.ts";
 
 const RULE = "client-scoped";
 
@@ -27,7 +27,7 @@ export const clientScoped: LintRule = defineRule(RULE, ({ file, config, lineOf }
       for (const q of s.queries) {
         const t = tokens(q.sql);
         if (!t) continue;
-        if ([...s.ctes].some(([k, sql]) => names(t).has(k.toLowerCase()) && !tokens(sql))) continue;
+        if ([...s.ctes].some(([k, sql]) => sources(t).has(k.toLowerCase()) && !tokens(sql))) continue;
         const access = streamAccess(q.sql, s.ctes);
         if (!access?.tokenOrClient || access.token) continue;
         const table = tableOf(q.sql);

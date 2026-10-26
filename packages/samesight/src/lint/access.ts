@@ -7,10 +7,11 @@
  * condition limits rows by a value when some AND term does, or every OR branch does; a
  * term does when it compares (= or IN) a row with the value, or reads a stream CTE or
  * IN (SELECT ...) subquery whose own conditions do. NOT, and anything else, does not. The
- * value compared with a literal or with itself picks no row by who is asking: a token claim
- * against a literal (a role) is a claim check, which rules report apart, and a claim every
- * ordinary signed-in Supabase user passes (role or aud = 'authenticated', is_anonymous =
- * false) checks nothing.
+ * value compared with a literal, with itself or with a client value picks no row, and a
+ * value mixing in a client value is the client's. A token claim against a literal (a role),
+ * or the token IN a set (an admin list), is a check on who is asking, which rules report
+ * apart. A claim every signed-in Supabase user passes (role or aud = 'authenticated'), or
+ * every non-anonymous one (is_anonymous = false), checks nothing.
  *
  * For sync rules, each bucket parameter is traced to the token, the client, or the rows of
  * its parameter query (themselves limited by the token, the client or neither), and a data
@@ -135,6 +136,11 @@ function readsAny(term: Token[]): boolean {
   return readsToken(term) || readsClient(term);
 }
 
+/** Reads the token and no client value: coalesce(subscription.parameter('u'), auth.user_id()) is the client's pick. */
+function ownToken(term: Token[]): boolean {
+  return readsToken(term) && !readsClient(term);
+}
+
 /**
  * A row compared with a value `reads` finds: owner_id = auth.user_id(). The value compared
  * with a literal, with itself or with another token or client value picks no row: any
@@ -157,17 +163,22 @@ const fixed: Gate = (term) => {
 const flag: Gate = (term) =>
   (term.length === 1 && isName(term[0]) && !LITERALS.has((term[0] as Token).text)) || (term.length === 3 && isName(term[0]) && sym(term[1], ".") && isName(term[2]));
 
-/** Claims every ordinary signed-in Supabase user's token carries, with the value they all have. */
+/** Claims every signed-in (role, aud) or every non-anonymous (is_anonymous) Supabase user's token carries, with that value. */
 const EVERY_TOKEN: [RegExp, Set<string>][] = [
   [/^(\$\.)?(role|aud)$/, new Set(["authenticated"])],
-  [/^(\$\.)?is_anonymous$/, new Set(["false"])],
+  [/^(\$\.)?is_anonymous$/, new Set(["false", "0"])],
 ];
 
-/** A check every ordinary signed-in Supabase user passes: role or aud = 'authenticated', is_anonymous = false. */
+/** A literal's value as a claim compares it: any case, JSON quotes off ('"authenticated"'). */
+const claimValue = (x: Token) => x.text.toLowerCase().replace(/^"(.*)"$/, "$1");
+
+/** A check every signed-in Supabase user passes (role or aud = 'authenticated'), or every non-anonymous one (is_anonymous = false). */
 export const everyToken: Gate = (term) => {
   const s = sides(term);
   if (!s || !readsToken(term)) return false;
-  return EVERY_TOKEN.some(([claim, values]) => topClaim(term, claim) && s.some((side) => literal(side) && side.some((x) => (x.kind === "string" || x.kind === "word") && values.has(x.text))));
+  return EVERY_TOKEN.some(
+    ([claim, values]) => topClaim(term, claim) && s.some((side) => literal(side) && side.some((x) => (x.kind === "string" || x.kind === "word" || x.kind === "number") && values.has(claimValue(x)))),
+  );
 };
 
 /**
@@ -200,12 +211,16 @@ function through(base: Gate, cte: (name: string) => boolean | undefined, checks 
       const set = sym(next, "(") && word(term[i + 2], "select");
       const named = !set && isName(next) ? cte((next as Token).text.toLowerCase()) : undefined;
       if (!set && named === undefined) continue;
-      // Not a row on the left (the token, a client value, 'admin'): a check on who is asking.
       const left = term.slice(0, i);
-      if (readsAny(left) || literal(left)) return checks;
-      if (named !== undefined) return named;
       const end = closing(term, i + 1);
       const sub = term.slice(i + 2, end === -1 ? term.length : end);
+      // Not a row on the left. The token (auth.user_id() IN admins) is a check on who is
+      // asking; so is a literal ('admin' IN their roles) when the set is the user's own. A
+      // client value picks nothing: any client sends one that is in the set.
+      if (readsClient(left)) return false;
+      if (readsToken(left)) return checks;
+      if (literal(left)) return checks && (named ?? queryLimits(sub, valueGate(ownToken)));
+      if (named !== undefined) return named;
       // A subquery that reads a CTE: SELECT org_id FROM mine.
       const from = topLevel(sub).find((j) => word(sub[j], "from"));
       const source = from !== undefined && isName(sub[from + 1]) ? cte((sub[from + 1] as Token).text.toLowerCase()) : undefined;
@@ -270,9 +285,9 @@ export function streamAccess(sql: string, ctes: Map<string, string>): StreamAcce
   const t = parse(sql);
   if (!t) return null;
   return {
-    token: limitedBy(t, ctes, matches(readsToken)),
+    token: limitedBy(t, ctes, matches(ownToken)),
     tokenOrClient: limitedBy(t, ctes, matches(readsAny)),
-    claim: limitedBy(t, ctes, (term) => matches(readsToken)(term) || claimCheck(term), true),
+    claim: limitedBy(t, ctes, (term) => matches(ownToken)(term) || claimCheck(term), true),
     filtered: limitedBy(t, ctes, filters),
     filteredOrClaim: limitedBy(t, ctes, (term) => filters(term) || claimCheck(term), true),
   };
@@ -284,7 +299,7 @@ export function checksClaim(sql: string): boolean {
   return t !== null && queryLimits(t, claimCheck);
 }
 
-/** Whether a query checks a claim every ordinary signed-in Supabase user passes, anywhere in its conditions. */
+/** Whether a query checks a claim every signed-in, or every non-anonymous, Supabase user passes, anywhere in its conditions. */
 export function checksEveryToken(sql: string): boolean {
   const t = parse(sql);
   const leaves = (c: Token[]): Token[][] => {
@@ -317,9 +332,10 @@ export function parameterQuery(sql: string): ParameterQuery | null {
     const as = topLevel(item).find((i) => word(item[i], "as"));
     const name = as !== undefined ? item[as + 1] : item.at(-1);
     if (!isName(name)) continue;
-    parameters.set((name as Token).text.toLowerCase(), readsToken(item) ? "token" : readsClient(item) ? "client" : "rows");
+    // A value mixing in a client value is the client's.
+    parameters.set((name as Token).text.toLowerCase(), readsClient(item) ? "client" : readsToken(item) ? "token" : "rows");
   }
-  const rows = queryLimits(t, valueGate(readsToken)) ? "token" : queryLimits(t, valueGate(readsAny)) ? "client" : "nothing";
+  const rows = queryLimits(t, valueGate(ownToken)) ? "token" : queryLimits(t, valueGate(readsAny)) ? "client" : "nothing";
   return { parameters, rows };
 }
 
