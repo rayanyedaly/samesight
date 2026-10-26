@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { parseSyncConfig, type SyncConfig } from "../sync/config.ts";
 import type { LintFinding } from "./finding.ts";
 import { clientScoped } from "./rules/client-scoped.ts";
+import { notAutoSubscribed } from "./rules/not-auto-subscribed.ts";
 import { unreadableQuery } from "./rules/unreadable-query.ts";
 import { unscopedQuery } from "./rules/unscoped-query.ts";
 import { userMetadata } from "./rules/user-metadata.ts";
@@ -26,7 +27,7 @@ export interface LintContext {
 
 export type LintRule = (context: LintContext) => LintFinding[];
 
-export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery];
+export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed];
 
 /** Every rule's findings for one sync config; throws when the file cannot be read as one. */
 export function lintSyncConfig(text: string, file: string, rules: LintRule[] = RULES): LintFinding[] {
