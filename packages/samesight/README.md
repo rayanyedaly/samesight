@@ -8,6 +8,7 @@ npx samesight init       # draft samesight.policy.ts from your local database
 npx samesight generate   # migration, sync config, client schema
 npx samesight explain    # who can do what, in plain words
 npx samesight check      # in CI: fail when generated files drift from the policy
+npx samesight lint       # check any PowerSync sync config for known leak patterns, no policy needed
 ```
 
 ```ts
