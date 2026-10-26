@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearStoredSession, storedSession } from "./stored-session";
+import { clearStoredSession, storedSession } from "./stored-session.ts";
 
 const mem = new Map<string, string>();
 beforeEach(() => {

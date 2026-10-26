@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { compare, normalize } from "./compare.ts";
 import { rowsFromOps, streamOfBucket } from "./device.ts";
-import { type ColumnModel, insertOrder, parseCheck, type TableModel } from "./model.ts";
+import { type ColumnModel, insertOrder, parseCheck, sqlHints, type TableModel } from "./model.ts";
 import { rowKey } from "./rls.ts";
 import { columnArbitrary } from "./world.ts";
 
@@ -34,15 +34,29 @@ describe("insertOrder", () => {
 });
 
 describe("columnArbitrary", () => {
-  it("draws only allowed values, matches patterns, and leaves plain defaults alone", () => {
-    const status = columnArbitrary(column({ values: ["DRAFT", "PUBLISHED"], hasDefault: true })) as fc.Arbitrary<unknown>;
+  it("draws only allowed values, matches patterns, and varies defaulted columns", () => {
+    const status = columnArbitrary(column({ values: ["DRAFT", "PUBLISHED"] })) as fc.Arbitrary<unknown>;
     expect(new Set(fc.sample(status, 50))).toEqual(new Set(["DRAFT", "PUBLISHED"]));
     const sha = columnArbitrary(column({ pattern: "^[0-9a-f]{64}$" })) as fc.Arbitrary<unknown>;
     for (const v of fc.sample(sha, 20)) expect(v).toMatch(/^[0-9a-f]{64}$/);
-    expect(columnArbitrary(column({ type: "timestamp with time zone", hasDefault: true }))).toBeUndefined();
+    // A default is one choice among generated values: undefined leaves the column to it.
+    const isPublic = columnArbitrary(column({ type: "boolean", hasDefault: true })) as fc.Arbitrary<unknown>;
+    expect(new Set(fc.sample(isPublic, 100))).toEqual(new Set([undefined, true, false]));
+    const defaulted = columnArbitrary(column({ values: ["DRAFT", "PUBLISHED"], hasDefault: true })) as fc.Arbitrary<unknown>;
+    expect(new Set(fc.sample(defaulted, 100))).toEqual(new Set([undefined, "DRAFT", "PUBLISHED"]));
+    expect(columnArbitrary(column({ type: "bigint", hasDefault: true, autoKey: true }))).toBeUndefined();
     expect(columnArbitrary(column({ computed: true }))).toBeUndefined();
     const nullable = columnArbitrary(column({ nullable: true })) as fc.Arbitrary<unknown>;
     expect(fc.sample(nullable, 200)).toContain(null);
+  });
+
+  it("reads literals and user comparisons from policies and stream SQL", () => {
+    const { hints, users } = sqlHints(
+      `(owner_id = ( SELECT auth.uid() AS uid)) OR (visibility = 'public'::text) OR "Tier" IN ('gold', 'silver')` +
+        ` OR l.score <> 3 OR 'x' = kind OR auth.user_id() = "editorId"`,
+    );
+    expect(Object.fromEntries([...hints].map(([k, v]) => [k, [...v]]))).toEqual({ visibility: ["public"], score: ["3"], kind: ["x"], Tier: ["gold", "silver"] });
+    expect([...users]).toEqual(["owner_id", "editorId"]);
   });
 });
 
@@ -91,6 +105,9 @@ describe("compare", () => {
 describe("streamOfBucket", () => {
   it("takes the stream name between the version and the parameters", () => {
     expect(streamOfBucket('3#inspector|1["t","u"]')).toBe("inspector");
+    expect(streamOfBucket('user_lists["5a3e5a3e-0000-4000-8000-000000000001"]')).toBe("user_lists");
+    expect(streamOfBucket("global[]")).toBe("global");
+    expect(streamOfBucket('by_email["a#b@x.test"]')).toBe("by_email");
     expect(streamOfBucket("m12|0[]")).toBe("m12");
   });
 });
@@ -113,10 +130,22 @@ describe("rowsFromOps", () => {
           { stream: "viewer", columns: ["id", "title"] },
           { stream: "m7", columns: ["id", "title", "internalNotes"] },
         ],
+        copies: [
+          { stream: "viewer", data: { id: "a", title: "x" } },
+          { stream: "m7", data: { id: "a", title: "x", internalNotes: "secret" } },
+        ],
       },
     ]);
     const model: TableModel[] = [{ ...table("Inspection"), columns: [column({ name: "id", type: "uuid" })] }];
     const [hidden] = compare(rows, new Map([[rowKey("Inspection", "a"), { id: "a", title: "x", internalNotes: "secret" }]]), new Map([["Inspection", ["internalNotes"]]]), model);
     expect(hidden).toMatchObject({ kind: "hidden", streams: ["m7"], columns: ["internalNotes"] });
+  });
+
+  it("compares each bucket's copy, so a wrong copy cannot hide behind a right one", () => {
+    const rows = rowsFromOps([op('3#viewer|1["t"]', "a", { id: "a", title: "SECRET" }), op('3#admin|1["t"]', "a", { id: "a", title: "public" })]);
+    const model: TableModel[] = [{ ...table("Inspection"), columns: [column({ name: "id", type: "uuid" }), column({ name: "title" })] }];
+    expect(compare(rows, new Map([[rowKey("Inspection", "a"), { id: "a", title: "public" }]]), new Map(), model)).toEqual([
+      expect.objectContaining({ kind: "differs", columns: ["title"] }),
+    ]);
   });
 });

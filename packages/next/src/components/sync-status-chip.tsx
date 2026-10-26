@@ -8,7 +8,7 @@ import {
   type SyncCopy,
   type SyncProfile,
   type SyncStatus,
-} from "../sync-state";
+} from "../sync-state.ts";
 
 export interface ChipCopy {
   states?: Record<SyncStatus, SyncCopy>;

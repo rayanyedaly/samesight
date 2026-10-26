@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import fc from "fast-check";
-import { buildIR, loadPolicy, outputPaths, PUBLICATION, plan, type SchemaInfo } from "samesight/compiler";
+import { buildIR, introspect, loadPolicy, outputPaths, PUBLICATION, plan, resolvePolicyPath, type SchemaInfo } from "samesight/compiler";
 import { audit } from "./audit/run.ts";
 import { connectLocal } from "./db.ts";
 import { differential, setUp, tearDown } from "./differential/run.ts";
@@ -37,11 +37,13 @@ import { checkStreams, parseStreams } from "./static/streams.ts";
 import { checkVersionFloor } from "./static/version-floor.ts";
 import { checkWritePath } from "./writepath.ts";
 
+const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
 const USAGE = `Usage: samesight-verify [options]
        samesight-verify audit [audit options]
 
 Options:
-  --policy <file>       policy file (default: samesight.policy.ts); paths are relative to it
+  --policy <file>       policy file (default: samesight.policy.ts, or samesight.policy.mts); paths are relative to it
   --powersync <url>     the local PowerSync service (default: http://127.0.0.1:8080)
   --compose <file>      the compose file that runs PowerSync (default: docker-compose.yml)
   --static              run the static and catalog checks only
@@ -59,6 +61,12 @@ Audit options (a project with hand-written RLS and sync config, no policy file):
   --compose <file>      the compose file that runs PowerSync, to check its version floor
   --powersync <url>     the project's PowerSync service (default: http://127.0.0.1:8080; check the port)
   --static, --runs, --seed, --time-limit   as above
+
+  -v, --version         print the version
+  -h, --help            print this help
+
+Needs the project's local stack running: Supabase (supabase start) and PowerSync.
+Docs: https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme
 `;
 
 /** A whole-number flag, checked before anything runs: a zero count would pass while testing nothing. */
@@ -70,6 +78,10 @@ function int(name: string, v: string | undefined, fallback: number, min = 1): nu
 }
 
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === "-v" || argv[0] === "--version") {
+    process.stdout.write(`${VERSION}\n`);
+    return 0;
+  }
   if (argv[0] === "audit") return auditMain(argv.slice(1));
   const { values } = parseArgs({
     args: argv,
@@ -96,7 +108,7 @@ async function main(argv: string[]): Promise<number> {
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
   const mutateDatasets = int("mutate-datasets", values["mutate-datasets"], 8);
   if (values.static && values.mutate) throw new Error("--static and --mutate cannot be combined");
-  const policyPath = resolve(values.policy ?? "samesight.policy.ts");
+  const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const powersync = values.powersync ?? "http://127.0.0.1:8080";
   const findings: Finding[] = [];
@@ -119,9 +131,18 @@ async function main(argv: string[]): Promise<number> {
   const schema = JSON.parse(snapshot) as SchemaInfo;
   const ir = buildIR(policy, schema);
   const manifest = JSON.parse(manifestText) as Manifest;
-  const latest = plan(policy, schema, root).migration.latest;
+  const planned = plan(policy, schema, root);
+  const latest = planned.migration.latest;
   const syncYaml = file(out.syncConfig) ?? "";
   const statics: Finding[] = checkManifest(manifest, (p) => (p === "migration" ? (latest?.content ?? null) : file(p)));
+  // The manifest vouches for the files it lists; the policy itself says what they must be.
+  const stale = [...planned.files].filter(([p, content]) => file(p) !== content).map(([p]) => p);
+  if (latest && latest.content !== planned.migration.content) stale.push(latest.path);
+  statics.push(
+    stale.length
+      ? { status: "fail", check: "generated files", detail: `${stale.join(", ")} differ from what the policy generates; run samesight generate` }
+      : { status: "ok", check: "generated files", detail: "every generated file is what the policy generates" },
+  );
   try {
     statics.push(...checkStreams(ir, parseStreams(syncYaml)));
   } catch (e) {
@@ -145,6 +166,13 @@ async function main(argv: string[]): Promise<number> {
   const db = await connectLocal(stack.db);
   try {
     const catalog = await checkCatalog(db, manifest, PUBLICATION);
+    // The checks above read schema.json; the database must still be what it describes.
+    const live = `${JSON.stringify(await introspect(stack.db), null, 2)}\n`;
+    catalog.unshift(
+      live === snapshot
+        ? { status: "ok", check: "schema", detail: `the database matches ${out.schemaSnapshot}` }
+        : { status: "fail", check: "schema", detail: `the database differs from ${out.schemaSnapshot}; run samesight generate (and apply the migration)` },
+    );
     catalog.push(
       ...(latest
         ? await checkCatalogParity(db, latest.path, latest.content)

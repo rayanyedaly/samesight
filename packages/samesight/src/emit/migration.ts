@@ -116,7 +116,8 @@ export function emitMigration(ir: IR): string {
   if (readable.length) add(`grant select on ${list(readable.map((t) => t.name))} to authenticated;`);
   for (const t of writable) {
     // The author column may be sent (RLS requires it to be the caller); other server-owned ones may not.
-    const insertable = ["id", t.tenant, ...t.insertColumns, ...(t.author ? [t.author] : [])];
+    // Writable tables always have a tenant: the compiler refuses writes to shared ones.
+    const insertable = ["id", t.tenant as string, ...t.insertColumns, ...(t.author ? [t.author] : [])];
     if (t.insert.size > 0) add(`grant insert (${insertable.map(ident).join(", ")}) on ${tbl(t.name)} to authenticated;`);
     if (t.update.size > 0 && t.updateColumns.length > 0) {
       add(`grant update (${t.updateColumns.map(ident).join(", ")}) on ${tbl(t.name)} to authenticated;`);
@@ -313,8 +314,14 @@ export function emitMigration(ir: IR): string {
   add(
     "",
     "-- Altered in place when it exists, so a running replication slot keeps its publication.",
+    "-- One made FOR ALL TABLES (as PowerSync's own Supabase guide does) cannot be altered to a",
+    "-- table list, so it is replaced; PowerSync picks the new one up when it restarts.",
     "do $$",
     "begin",
+    `  if exists (select from pg_publication where pubname = ${literal(PUBLICATION)} and puballtables) then`,
+    `    raise notice 'replacing publication ${PUBLICATION} (FOR ALL TABLES) with the synced tables only; restart PowerSync';`,
+    `    drop publication ${PUBLICATION};`,
+    "  end if;",
     `  if exists (select from pg_publication where pubname = ${literal(PUBLICATION)}) then`,
     `    alter publication ${PUBLICATION} set table ${list(readable.map((t) => t.name))};`,
     "  else",
@@ -338,7 +345,8 @@ function section(out: string[], title: string, ...comment: string[]): void {
 // Policies -------------------------------------------------------------------------------------
 
 function tablePolicies(t: IRTable): string[] {
-  const gate = `${ident(t.tenant)} = ${TENANT}`;
+  // A shared table has no tenant gate: every tenant reads the same rows (and writes none).
+  const gate = t.tenant === null ? undefined : `${ident(t.tenant)} = ${TENANT}`;
   const author = t.author ? `${ident(t.author)} = ${RLS_USER}` : undefined;
   const check = t.check ? paren(t.check, rls(t.check)) : undefined;
   const out: string[] = [];
@@ -352,10 +360,10 @@ function tablePolicies(t: IRTable): string[] {
   };
   const defined = (xs: (string | undefined)[]) => xs.filter((x): x is string => x !== undefined);
 
-  if (t.read.size) policy("read", "select", { using: [gate, ...roles(t.read)] });
+  if (t.read.size) policy("read", "select", { using: defined([gate, ...roles(t.read)]) });
   if (t.insert.size) policy("insert", "insert", { check: defined([gate, ...roles(t.insert), author, check]) });
-  if (t.update.size) policy("update", "update", { using: [gate, ...roles(t.update)], check: defined([gate, ...roles(t.update), check]) });
-  if (t.delete.size) policy("delete", "delete", { using: [gate, ...roles(t.delete)] });
+  if (t.update.size) policy("update", "update", { using: defined([gate, ...roles(t.update)]), check: defined([gate, ...roles(t.update), check]) });
+  if (t.delete.size) policy("delete", "delete", { using: defined([gate, ...roles(t.delete)]) });
   return out;
 }
 
@@ -399,7 +407,10 @@ function writePath(ir: IR, writable: IRTable[]): string[] {
   const spec = writable
     .map((t) => {
       const field = (name: string, cols: string[]) => `"${name}": [${cols.map((c) => JSON.stringify(c)).join(", ")}]`;
-      return `    ${JSON.stringify(t.name)}: {"appendOnly": ${t.appendOnly ? "true" : "false"}, "tenant": ${JSON.stringify(t.tenant)}, ${field("insert", t.insertColumns)},\n      ${" ".repeat(JSON.stringify(t.name).length)}${field("update", t.updateColumns)}}`;
+      // PowerSync clients hold json, jsonb and array columns as JSON text; apply_batch parses it.
+      const json = t.columns.filter((c) => (t.insertColumns.includes(c.name) || t.updateColumns.includes(c.name)) && /^(json|jsonb)$|\[\]$/.test(c.type));
+      const pad = `,\n      ${" ".repeat(JSON.stringify(t.name).length)}`;
+      return `    ${JSON.stringify(t.name)}: {"appendOnly": ${t.appendOnly ? "true" : "false"}, "tenant": ${JSON.stringify(t.tenant)}, ${field("insert", t.insertColumns)}${pad}${field("update", t.updateColumns)}${json.length ? `${pad}${field("json", json.map((c) => c.name))}` : ""}}`;
     })
     .join(",\n");
   const readers = ir.rejectionReaders;
@@ -414,8 +425,10 @@ function writePath(ir: IR, writable: IRTable[]): string[] {
     "  - a table outside the allowlist below, or an unknown op, raises SS001 (held, not dropped);",
     "  - PUT reads only the insert columns from data (a PUT carries the whole local row, so",
     "    server-owned columns are dropped); the tenant comes from the token, and a row stored",
-    "    under another tenant is refused; append-only tables insert or do nothing on replay,",
-    "    others upsert the update columns (last write wins);",
+    "    under another tenant is refused; a row that exists already (a replay, or a second",
+    "    PUT) must be readable, and is then updated with the update columns where the caller",
+    "    may update it (last write wins) and otherwise left as it is, so a replayed insert by a",
+    "    role that cannot update the row succeeds instead of being refused;",
     "  - PATCH carries only changed columns, so a key outside the update list is refused;",
     "    zero rows affected (missing, or hidden by RLS) raises;",
     "  - DELETE is refused on append-only tables; a row gone or hidden is a replay (no-op), a",
@@ -425,8 +438,11 @@ function writePath(ir: IR, writable: IRTable[]): string[] {
     "are quoted with format('%I'); payload values reach SQL only as a bound jsonb parameter.",
   );
   out.push(
-    "create or replace function public.apply_batch(ops jsonb)",
-    "returns void",
+    "-- It returns how many ops it applied: the connector takes a batch out of the queue only",
+    "-- on that answer, so a 2xx with no body (a proxy, a wrong URL) never drops writes.",
+    "drop function if exists public.apply_batch(jsonb);",
+    "create function public.apply_batch(ops jsonb)",
+    "returns integer",
     "language plpgsql",
     "security invoker",
     "set search_path = ''",
@@ -448,7 +464,6 @@ function writePath(ir: IR, writable: IRTable[]): string[] {
     "  upd text[];",
     "  record_json jsonb;",
     "  col_list text;",
-    "  conflict text;",
     "  affected bigint;",
     "  found_row boolean;",
     "begin",
@@ -479,6 +494,13 @@ function writePath(ir: IR, writable: IRTable[]): string[] {
     "      raise exception 'apply_batch: data for % % must be an object', tbl, row_id;",
     "    end if;",
     "    tenant_col := t ->> 'tenant';",
+    "    -- JSON text from the client (PowerSync stores json, jsonb and arrays as text) becomes",
+    "    -- the JSON value jsonb_populate_record expects for those columns.",
+    "    data := data || coalesce((",
+    "      select jsonb_object_agg(c, (data ->> c)::jsonb)",
+    "        from jsonb_array_elements_text(coalesce(t -> 'json', '[]'::jsonb)) c",
+    "       where jsonb_typeof(data -> c) = 'string'",
+    "    ), '{}'::jsonb);",
     "",
     "    if kind = 'PUT' then",
     "      cols := array(",
@@ -497,26 +519,33 @@ function writePath(ir: IR, writable: IRTable[]): string[] {
     "      record_json := (",
     "        select coalesce(jsonb_object_agg(key, value), '{}'::jsonb) from jsonb_each(data) where key = any(cols)",
     "      ) || jsonb_build_object('id', row_id, tenant_col, tenant);",
-    "      col_list := (select string_agg(format('%I', c), ', ') from unnest(cols) c);",
-    "      if (t ->> 'appendOnly')::boolean or cardinality(upd) = 0 then",
-    "        conflict := 'do nothing';",
-    "      else",
-    "        conflict := 'do update set ' ||",
-    "          (select string_agg(format('%I = excluded.%I', c, c), ', ') from unnest(upd) c);",
-    "      end if;",
-    "      execute format(",
-    "        'insert into public.%I (%s) select %s from jsonb_populate_record(null::public.%I, $1) on conflict (id) %s',",
-    "        tbl, col_list, col_list, tbl, conflict",
-    "      ) using record_json;",
-    "      get diagnostics affected = row_count;",
-    "      if affected = 0 then",
-    "        -- A replay finds its own row. Finding none (or one this caller cannot read)",
-    "        -- means the id belongs to someone else's row.",
-    "        execute format('select exists (select 1 from public.%I where id = $1)', tbl)",
-    "          into found_row using row_id;",
-    "        if not found_row then",
+    "      -- A row that exists already: a replay of this insert, or a second PUT. Looked up first,",
+    "      -- so the INSERT policy (checked before any conflict) never judges a row that is not",
+    "      -- being inserted, and not ON CONFLICT DO UPDATE, which puts the row through the",
+    "      -- caller's UPDATE policy and raises when it fails: a role that may insert but not",
+    "      -- update a row could never replay its own insert.",
+    "      execute format('select exists (select 1 from public.%I where id = $1)', tbl)",
+    "        into found_row using row_id;",
+    "      if not found_row then",
+    "        col_list := (select string_agg(format('%I', c), ', ') from unnest(cols) c);",
+    "        execute format(",
+    "          'insert into public.%I (%s) select %s from jsonb_populate_record(null::public.%I, $1) on conflict (id) do nothing',",
+    "          tbl, col_list, col_list, tbl",
+    "        ) using record_json;",
+    "        get diagnostics affected = row_count;",
+    "        -- Invisible to the caller and yet taken: the id belongs to someone else's row.",
+    "        if affected = 0 then",
     "          raise exception 'apply_batch: % % conflicts with a row you cannot write', tbl, row_id;",
     "        end if;",
+    "      elsif not (t ->> 'appendOnly')::boolean and cardinality(upd) > 0 then",
+    "        -- Last write wins where the caller may update the row. RLS skips a row its UPDATE",
+    "        -- policy does not allow (the replay is then a no-op, and the server's copy syncs",
+    "        -- back), and still raises on a WITH CHECK violation.",
+    "        col_list := (select string_agg(format('%I', c), ', ') from unnest(upd) c);",
+    "        execute format(",
+    "          'update public.%I as t set (%s) = (select %s from jsonb_populate_record(null::public.%I, $1)) where t.id = $2',",
+    "          tbl, col_list, col_list, tbl",
+    "        ) using (select jsonb_object_agg(key, value) from jsonb_each(data) where key = any(upd)), row_id;",
     "      end if;",
     "",
     "    elsif kind = 'PATCH' then",
@@ -561,6 +590,7 @@ function writePath(ir: IR, writable: IRTable[]): string[] {
     "      end if;",
     "    end if;",
     "  end loop;",
+    "  return jsonb_array_length(ops);",
     "end;",
     "$$;",
     "",

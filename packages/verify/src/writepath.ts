@@ -79,6 +79,7 @@ export function writeFamilies(s: Setup): string[] {
   for (const t of writableTables(s)) {
     out.push(`${t.name}: PUT into another tenant`, `${t.name}: PATCH, PUT over and DELETE another tenant's row`, `${t.name}: PUT without a membership`);
     if (t.insert.size) out.push(`${t.name}: insert with forged server-owned columns, then replay`);
+    for (const role of s.ir.claims.roles) out.push(...withoutRule(t, role).map((op) => `${t.name}: ${role} may not ${op}`));
     if (t.appendOnly) out.push(`${t.name}: PATCH and DELETE an append-only row`);
     else if (t.updateColumns.length) {
       out.push(`${t.name}: PATCH an own row`);
@@ -88,7 +89,16 @@ export function writeFamilies(s: Setup): string[] {
   return out;
 }
 
-const writableTables = (s: Setup) => s.ir.tables.filter((t) => t.insert.size || t.update.size || t.delete.size);
+/** Tables clients write; the compiler keeps shared tables (tenant: null) out of them. */
+const writableTables = (s: Setup) =>
+  s.ir.tables.filter((t): t is IRTable & { tenant: string } => t.tenant !== null && (t.insert.size > 0 || t.update.size > 0 || t.delete.size > 0));
+/** What some role may do on this table but `role` may not at all, inside its own tenant. */
+const withoutRule = (t: IRTable, role: string) =>
+  [
+    t.insert.size && !t.insert.has(role) ? "insert" : null,
+    !t.appendOnly && t.updateColumns.length && t.update.size && !t.update.has(role) ? "update" : null,
+    !t.appendOnly && t.delete.size && !t.delete.has(role) ? "delete" : null,
+  ].filter((op): op is "insert" | "update" | "delete" => op !== null);
 /** Columns a client may set on insert, or never, but not change. */
 const immutable = (t: IRTable) => [...new Set([...t.insertColumns, ...t.serverOwned])].filter((c) => c !== "id" && !t.updateColumns.includes(c));
 
@@ -115,7 +125,9 @@ export async function forgeBatches(s: Setup, prepare?: (client: pg.Client) => Pr
   for (const t of s.ir.tables) {
     data.set(t.name, (await rows<{ row: Row }>(s.client, `select row_to_json(x) as row from public.${ident(t.name)} x`)).map((r) => r.row));
   }
-  const inTenant = (t: IRTable, tenant: string | null) => (data.get(t.name) ?? []).filter((r) => tenant !== null && r[t.tenant] === tenant);
+  // A shared table's rows belong to every tenant.
+  const inTenant = (t: IRTable, tenant: string | null) =>
+    (data.get(t.name) ?? []).filter((r) => tenant !== null && (t.tenant === null || r[t.tenant] === tenant));
   const pick = (r: Row, cols: string[]) => Object.fromEntries(cols.filter((c) => r[c] !== undefined).map((c) => [c, r[c]]));
 
   /** A value for `column` that differs from the row's and fits its constraints, if one can be found. */
@@ -171,7 +183,15 @@ export async function forgeBatches(s: Setup, prepare?: (client: pg.Client) => Pr
         // sent twice. Rows whose values this user may not insert are refused; the next is tried.
         // Columns no one can set (generated, identity ALWAYS) are left to Postgres.
         const forgeable = t.serverOwned.filter((c) => c !== "id" && c !== t.tenant && !model(t.name, c)?.computed);
-        for (const row of own.slice(0, 4)) {
+        // A copy of a row can only break a unique key over client columns, as a membership's
+        // (project, user) does; copies naming another user of the tenant in the keys to
+        // auth.users are tried too.
+        const userKeys = (s.model.find((m) => m.name === t.name)?.foreignKeys ?? [])
+          .filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1 && t.insertColumns.includes(fk.columns[0] as string))
+          .map((fk) => fk.columns[0] as string);
+        const peers = s.fixed.users.filter((u) => u.tenant === user.tenant);
+        const copies = own.slice(0, 4).flatMap((row) => [row, ...(userKeys.length ? peers.map((p) => ({ ...row, ...Object.fromEntries(userKeys.map((k) => [k, p.id])) })) : [])]);
+        for (const row of copies.slice(0, 12)) {
           const c = await run(user, `${t.name}: insert with forged server-owned columns, then replay`, `PUT ${t.name} with forged ${forgeable.join(", ") || "nothing"}, twice`, async (claims) => {
             const id = prefixedUuid(s.fixed.prefix);
             const fakes = Object.fromEntries(forgeable.map((col) => [col, forged(t, col, user)]).filter(([, v]) => v !== undefined));
@@ -221,6 +241,32 @@ export async function forgeBatches(s: Setup, prepare?: (client: pg.Client) => Pr
         });
         const all = patch.covered && put.covered && del.covered;
         for (const c of [patch, put, del]) c.covered = all;
+      }
+
+      // Inside its own tenant, a role with no rule for an operation others have: refused.
+      for (const op of user.role && first ? withoutRule(t, user.role) : []) {
+        if (!first) break;
+        const id = String(first.id);
+        await run(user, `${t.name}: ${user.role} may not ${op}`, `${op} ${t.name} in its own tenant as ${user.role}`, async (claims) => {
+          if (op === "insert") {
+            const fresh = prefixedUuid(s.fixed.prefix);
+            const error = await call(s.client, claims, [{ op: "PUT", table: t.name, id: fresh, data: pick(first, t.insertColumns) }]);
+            const problem = (await asRow(s.client, t.name, fresh)) ? "stored it" : error ? unexpected(error) : "accepted it without an error";
+            return { error, problem, covered: true };
+          }
+          if (op === "update") {
+            const column = t.updateColumns.find((col) => changed(t, col, first, own) !== undefined);
+            if (!column) return { error: null, problem: null, covered: false };
+            const before = await asRow(s.client, t.name, id);
+            const error = await call(s.client, claims, [{ op: "PATCH", table: t.name, id, data: { [column]: changed(t, column, first, own) } }]);
+            const problem = !same(before, await asRow(s.client, t.name, id)) ? `changed its ${column}` : error ? unexpected(error) : "accepted it without an error";
+            return { error, problem, covered: true };
+          }
+          // A row this role cannot see is gone as far as it knows: a no-op, as for a replay.
+          const error = await call(s.client, claims, [{ op: "DELETE", table: t.name, id }]);
+          const problem = (await asRow(s.client, t.name, id)) ? (error ? unexpected(error) : null) : "deleted it";
+          return { error, problem, covered: true };
+        });
       }
 
       if (t.appendOnly && first) {
@@ -275,7 +321,7 @@ export async function forgeBatches(s: Setup, prepare?: (client: pg.Client) => Pr
 
     // Tables no client writes, with a row that would otherwise be valid (for the membership
     // table, the caller's own membership as the first role), and a table that does not exist.
-    for (const t of s.ir.tables.filter((x) => !writableTables(s).includes(x))) {
+    for (const t of s.ir.tables.filter((x) => !writableTables(s).some((w) => w.name === x.name))) {
       const m = s.ir.membership;
       const mine = inTenant(t, user.tenant);
       const source = (t.name === m.table ? mine.find((r) => r[m.user] === user.id) : undefined) ?? mine[0];

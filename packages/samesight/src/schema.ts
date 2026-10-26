@@ -28,6 +28,8 @@ export interface TableInfo {
   uniqueColumns: string[];
   /** Validated foreign keys to other public tables, columns in constraint order. */
   foreignKeys: ForeignKey[];
+  /** Present (true) only for a partitioned table. */
+  partitioned?: true;
 }
 
 export interface ForeignKey {

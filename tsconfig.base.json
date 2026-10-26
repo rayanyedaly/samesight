@@ -13,6 +13,9 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
+    // Relative imports name the .ts file; the build rewrites them to .js.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
 
     "strict": true,
     "noImplicitOverride": true,

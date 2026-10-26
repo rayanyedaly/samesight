@@ -3,15 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The unlock path must never wipe the store when it fails to open: that would destroy
 // unsynced offline writes. The key derivation and salt are mocked so the store's probe
 // result can be driven directly.
-vi.mock("./kdf", () => ({ deriveStoreKey: vi.fn(async () => "deadbeef") }));
-vi.mock("./kdf-salt", () => ({
+vi.mock("./kdf.ts", () => ({ deriveStoreKey: vi.fn(async () => "deadbeef") }));
+vi.mock("./kdf-salt.ts", () => ({
   peekSalt: vi.fn(() => new Uint8Array(16)),
   getOrCreateSalt: vi.fn(() => new Uint8Array(16)),
 }));
 
-import type { EncryptedStore } from "./db";
-import { getSessionKey } from "./session-key";
-import { tryUnlock } from "./unlock";
+import type { EncryptedStore } from "./db.ts";
+import { getSessionKey } from "./session-key.ts";
+import { tryUnlock } from "./unlock.ts";
 
 const store = {
   prefix: "app",

@@ -1,13 +1,32 @@
 {
   "name": "samesight",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "One access policy for Supabase RLS and PowerSync sync config: policy language, compiler and CLI",
   "license": "MIT",
+  "author": "Rayan Yedaly",
+  "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/samesight#readme",
+  "bugs": "https://github.com/rayanyedaly/samesight/issues",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rayanyedaly/samesight.git",
     "directory": "packages/samesight"
+  },
+  "keywords": [
+    "supabase",
+    "powersync",
+    "rls",
+    "row-level-security",
+    "sync",
+    "offline-first",
+    "local-first",
+    "postgres",
+    "policy",
+    "access-control",
+    "codegen",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=22.18"
   },
   "type": "module",
   "exports": {
@@ -15,9 +34,11 @@
     "./compiler": "./src/compiler.ts"
   },
   "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "pg": "8.23.1"
@@ -27,5 +48,33 @@
   },
   "bin": {
     "samesight": "./src/cli.ts"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/fixtures",
+    "!src/**/__golden__"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./compiler": {
+        "types": "./dist/compiler.d.ts",
+        "default": "./dist/compiler.js"
+      },
+      "./package.json": "./package.json"
+    },
+    "bin": {
+      "samesight": "./dist/cli.js"
+    }
   }
 }

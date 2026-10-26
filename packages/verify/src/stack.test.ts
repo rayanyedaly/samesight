@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseEnv, stackFromStatus } from "./stack.ts";
+import { findSupabaseCli, parseEnv, stackFromStatus } from "./stack.ts";
 
 const status = parseEnv(
   [
@@ -31,5 +34,18 @@ describe("stackFromStatus", () => {
     expect(() => stackFromStatus(status, "https://powersync.example.com", { NODE_ENV: "test" })).toThrow(/PowerSync: powersync.example.com is not this machine/);
     expect(() => stackFromStatus({ ...status, API_URL: "https://abc.supabase.co" }, "http://127.0.0.1:8080", { NODE_ENV: "test" })).toThrow(/Supabase API/);
     expect(() => stackFromStatus({ ...status, DB_URL: "" }, "http://127.0.0.1:8080", { NODE_ENV: "test" })).toThrow(/none of DB_URL/);
+  });
+});
+
+describe("findSupabaseCli", () => {
+  it("takes the nearest node_modules/.bin/supabase above the project, else the PATH", () => {
+    const root = mkdtempSync(join(tmpdir(), "samesight-cli-"));
+    const project = join(root, "apps", "web");
+    mkdirSync(project, { recursive: true });
+    expect(findSupabaseCli(project)).toBe("supabase");
+    mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
+    writeFileSync(join(root, "node_modules", ".bin", "supabase"), "");
+    expect(findSupabaseCli(project, "linux")).toBe(join(root, "node_modules", ".bin", "supabase"));
+    expect(findSupabaseCli(project, "win32")).toBe("supabase");
   });
 });

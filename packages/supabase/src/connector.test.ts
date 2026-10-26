@@ -1,16 +1,18 @@
 import type { AbstractPowerSyncDatabase } from "@powersync/common";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
-import { SupabaseConnector } from "./connector";
+import { SupabaseConnector } from "./connector.ts";
 
-type RpcResult = { error: { code?: string; message: string } | null; status: number };
+type RpcResult = { error: { code?: string; message: string } | null; status: number; data?: unknown };
+/** apply_batch's answer for the two-op transaction below. */
+const APPLIED = { error: null, status: 200, data: 2 };
 
 function setup(
   results: RpcResult[],
   options: { localRecordFails?: boolean; owner?: string | null; sessionUser?: string } = {},
 ) {
   const headers: [string, string][] = [];
-  const call = vi.fn(async (_fn: string, _args: unknown): Promise<RpcResult> => results.shift() ?? { error: null, status: 204 });
+  const call = vi.fn(async (_fn: string, _args: unknown): Promise<RpcResult> => results.shift() ?? (_fn === "apply_batch" ? APPLIED : { error: null, status: 204 }));
   // supabase.rpc returns a builder; the connector chains .abortSignal() on apply_batch.
   const rpc = vi.fn((fn: string, args: unknown) => {
     const result = call(fn, args);
@@ -58,7 +60,7 @@ function setup(
 
 describe("SupabaseConnector.uploadData", () => {
   it("sends the whole transaction as one apply_batch call and completes it", async () => {
-    const { connector, db, rpc, complete } = setup([{ error: null, status: 204 }]);
+    const { connector, db, rpc, complete } = setup([APPLIED]);
     await connector.uploadData(db);
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(rpc).toHaveBeenCalledWith("apply_batch", {
@@ -161,6 +163,34 @@ describe("SupabaseConnector owner check", () => {
 });
 
 describe("SupabaseConnector.uploadData edge cases", () => {
+  // postgrest-js turns a 404 with an empty body into 204 and one with [] into 200, with no error.
+  it.each([
+    [{ error: null, status: 204, data: null }],
+    [{ error: null, status: 200, data: [] }],
+    [{ error: null, status: 200, data: 1 }],
+  ])("holds a batch apply_batch did not confirm (%o)", async (result) => {
+    const { connector, db, complete, onStuck, localRows } = setup([result]);
+    await expect(connector.uploadData(db)).rejects.toThrow(/without confirming the 2 op/);
+    expect(complete).not.toHaveBeenCalled();
+    expect(localRows).toEqual([]);
+    expect(onStuck).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells someone once a batch has kept failing, and keeps retrying it", async () => {
+    const timeout = { error: { code: "57014", message: "canceling statement due to statement timeout" }, status: 500 };
+    const { connector, db, onStuck, complete } = setup(Array.from({ length: 9 }, () => timeout));
+    for (let i = 0; i < 9; i++) await expect(connector.uploadData(db)).rejects.toThrow(/will retry/);
+    expect(onStuck).toHaveBeenCalledTimes(1);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused batch it cannot record locally", async () => {
+    const { connector, db, onStuck, complete } = setup([{ error: { code: "P0001", message: "no" }, status: 400 }], { localRecordFails: true });
+    await expect(connector.uploadData(db)).rejects.toThrow(/disk full/);
+    expect(onStuck).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/could not be recorded locally: disk full/) }));
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it("holds a batch when the response is not 2xx, even without an error", async () => {
     const { connector, db, complete, onStuck } = setup([{ error: null, status: 404 }]);
     await expect(connector.uploadData(db)).rejects.toThrow(/held/);

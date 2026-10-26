@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { earlierVersions, latestOnly, type SupersedingRow } from "./latest-only";
+import { earlierVersions, latestOnly, type SupersedingRow } from "./latest-only.ts";
 
 describe("latestOnly: append-only chain reduction (server-seq fork resolution)", () => {
   it("drops a row that a later row supersedes (linear chain)", () => {

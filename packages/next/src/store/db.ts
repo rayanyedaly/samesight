@@ -1,8 +1,8 @@
 import type { Schema } from "@powersync/common";
 import { PowerSyncDatabase } from "@powersync/web";
 import { pendingUploadCount } from "@samesight/supabase";
-import { clearSalt, storeExists } from "./kdf-salt";
-import { clearSessionKey, getSessionKey, getSessionUserId } from "./session-key";
+import { clearSalt, storeExists } from "./kdf-salt.ts";
+import { clearSessionKey, getSessionKey, getSessionUserId } from "./session-key.ts";
 
 /**
  * The encrypted local PowerSync store for a browser app.

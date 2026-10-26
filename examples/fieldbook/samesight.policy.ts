@@ -1,6 +1,6 @@
 import { and, claim, col, definePolicy, or, rowsOf, table, via } from "samesight";
 // Regenerate after a schema migration: supabase gen types typescript --local --schema public > supabase/types.ts
-import type { Database } from "./supabase/types";
+import type { Database } from "./supabase/types.ts";
 
 // Fieldbook's whole access policy. `samesight generate` turns it into the access
 // migration (RLS, grants, triggers, write path), the PowerSync sync config, and the

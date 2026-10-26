@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveStoreKey } from "./kdf";
+import { deriveStoreKey } from "./kdf.ts";
 
 // The key must be deterministic from password and salt: that is what lets the unlock
 // screen reopen the same encrypted store offline. A random or salt-independent key
