@@ -1,0 +1,198 @@
+#!/usr/bin/env node
+/**
+ * samesight-verify: proves, against the local stack, that no device receives a row RLS
+ * would refuse its user.
+ *
+ *   1. static checks, no services: manifest, sync streams, client schema, PowerSync version;
+ *   2. catalog checks on the local database: RLS, policies, grants, hook, publication,
+ *      triggers, and catalog parity with the generated migration;
+ *   3. the differential test: generated data, real users, headless devices, RLS reads;
+ *      then the write path: forged upload batches through apply_batch as each user;
+ *   4. with --mutate, the mutation test: every mutant of the access layer must be caught.
+ *
+ * It refuses any database or service that is not on this machine: it creates users,
+ * writes and deletes rows, and (with --mutate) restarts PowerSync.
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { parseArgs } from "node:util";
+import { buildIR, loadPolicy, outputPaths, PUBLICATION, plan, type SchemaInfo } from "samesight/compiler";
+import { connectLocal } from "./db.ts";
+import fc from "fast-check";
+import { differential, setUp, tearDown } from "./differential/run.ts";
+import { worldArbitrary } from "./differential/world.ts";
+import { mutationTest } from "./mutate/run.ts";
+import { failed, type Finding, formatFindings } from "./report.ts";
+import { readStack } from "./stack.ts";
+import { checkCatalogParity } from "./static/catalog-parity.ts";
+import { checkCatalog } from "./static/catalog.ts";
+import { checkClientSchema } from "./static/client-schema.ts";
+import { checkManifest, type Manifest } from "./static/manifest.ts";
+import { checkStreams, parseStreams } from "./static/streams.ts";
+import { checkVersionFloor } from "./static/version-floor.ts";
+import { checkWritePath } from "./writepath.ts";
+
+const USAGE = `Usage: samesight-verify [options]
+
+Options:
+  --policy <file>       policy file (default: samesight.policy.ts); paths are relative to it
+  --powersync <url>     the local PowerSync service (default: http://127.0.0.1:8080)
+  --compose <file>      the compose file that runs PowerSync (default: docker-compose.yml)
+  --static              run the static and catalog checks only
+  --runs <n>            generated datasets for the differential (default: 8)
+  --seed <n>            fast-check seed, to replay a run
+  --time-limit <s>      stop generating datasets after this many seconds (default: 120)
+  --mutate              also run the mutation test (rewrites the sync config and restarts PowerSync)
+  --mutate-datasets <n> datasets to try per mutant before calling it missed (default: 8)
+  --restart <command>   restarts PowerSync (default: docker compose restart powersync)
+`;
+
+async function main(argv: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      policy: { type: "string" },
+      powersync: { type: "string" },
+      compose: { type: "string" },
+      static: { type: "boolean" },
+      runs: { type: "string" },
+      seed: { type: "string" },
+      "time-limit": { type: "string" },
+      mutate: { type: "boolean" },
+      "mutate-datasets": { type: "string" },
+      restart: { type: "string" },
+      help: { type: "boolean", short: "h" },
+    },
+  });
+  if (values.help) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+  // Every flag is checked before anything runs; a zero count would pass while testing nothing.
+  const int = (name: string, v: string | undefined, fallback: number, min = 1) => {
+    if (v === undefined) return fallback;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < min) throw new Error(`--${name} must be a whole number of at least ${min}, not "${v}"`);
+    return n;
+  };
+  const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
+  const runs = int("runs", values.runs, 8);
+  const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
+  const mutateDatasets = int("mutate-datasets", values["mutate-datasets"], 8);
+  if (values.static && values.mutate) throw new Error("--static and --mutate cannot be combined");
+  const policyPath = resolve(values.policy ?? "samesight.policy.ts");
+  const root = dirname(policyPath);
+  const powersync = values.powersync ?? "http://127.0.0.1:8080";
+  const findings: Finding[] = [];
+  const section = (title: string, f: Finding[]) => {
+    findings.push(...f);
+    process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
+  };
+  const started = Date.now();
+
+  // 1. Static.
+  const policy = await loadPolicy(policyPath);
+  const out = outputPaths(policy);
+  const file = (p: string) => (existsSync(join(root, p)) ? readFileSync(join(root, p), "utf8") : null);
+  const snapshot = file(out.schemaSnapshot);
+  const manifestText = file(out.manifest);
+  if (!snapshot || !manifestText) {
+    process.stderr.write(`No ${snapshot ? out.manifest : out.schemaSnapshot} next to ${policyPath}; run samesight generate first.\n`);
+    return 1;
+  }
+  const schema = JSON.parse(snapshot) as SchemaInfo;
+  const ir = buildIR(policy, schema);
+  const manifest = JSON.parse(manifestText) as Manifest;
+  const latest = plan(policy, schema, root).migration.latest;
+  const syncYaml = file(out.syncConfig) ?? "";
+  const statics: Finding[] = checkManifest(manifest, (p) => (p === "migration" ? (latest?.content ?? null) : file(p)));
+  try {
+    statics.push(...checkStreams(ir, parseStreams(syncYaml)));
+  } catch (e) {
+    statics.push({ status: "fail", check: "streams", detail: `${out.syncConfig}: ${(e as Error).message}` });
+  }
+  const client = file(out.clientSchema);
+  statics.push(
+    ...(client === null ? [{ status: "fail" as const, check: "client schema", detail: `${out.clientSchema} is missing` }] : checkClientSchema(ir, out.clientSchema, client)),
+  );
+  const composePath = values.compose ?? "docker-compose.yml";
+  const compose = file(composePath);
+  statics.push(
+    ...(compose === null
+      ? [{ status: "warn" as const, check: "powersync version", detail: `no ${composePath}; pass --compose to check the PowerSync version floor` }]
+      : checkVersionFloor(composePath, compose)),
+  );
+  section("Static checks", statics);
+
+  // 2. Catalog.
+  const stack = readStack(root, powersync);
+  const db = await connectLocal(stack.db);
+  try {
+    const catalog = await checkCatalog(db, manifest, PUBLICATION);
+    catalog.push(
+      ...(latest
+        ? await checkCatalogParity(db, latest.path, latest.content)
+        : [{ status: "fail" as const, check: "catalog parity", detail: `no generated migration in ${out.migrations}` }]),
+    );
+    section("Database catalog", catalog);
+    if (values.static) return report(findings, started);
+    if (failed(findings)) {
+      process.stdout.write("\nSkipping the differential: fix the failures above first.\n");
+      return report(findings, started);
+    }
+
+    // 3. Differential, and 4. mutation.
+    const log = (line: string) => process.stdout.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
+    log("creating users and tenants");
+    const s = await setUp(db, stack, ir);
+    try {
+      log("generating datasets for the differential");
+      const result = await differential(s, {
+        runs,
+        timeLimitMs,
+        ...(seed !== undefined ? { seed } : {}),
+      });
+      section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, result.findings);
+      log("forging upload batches");
+      // Datasets are tried until every forgery has the rows it needs.
+      const worlds = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 20 }), { numRuns: 6, seed: seed ?? 7 });
+      section("Write path", (await checkWritePath(s, worlds)).findings);
+      if (values.mutate) {
+        if (failed(findings)) process.stdout.write("\nSkipping the mutation test: fix the failures above first.\n");
+        else {
+          const restart = (values.restart ?? "docker compose restart powersync").split(/\s+/).filter(Boolean);
+          const m = await mutationTest(
+            s,
+            { configPath: join(root, out.syncConfig), restart, cwd: root, url: stack.powersync },
+            syncYaml,
+            { maxWorlds: mutateDatasets, seed: seed ?? 7, log },
+          );
+          const equivalent = m.equivalent.map((e) => ({ status: "ok" as const, check: "equivalent mutant", detail: `${e.description} (${e.reason})` }));
+          section("Mutation", [...m.findings, ...equivalent]);
+        }
+      }
+    } finally {
+      await tearDown(s);
+    }
+  } finally {
+    await db.end();
+  }
+  return report(findings, started);
+}
+
+function report(findings: Finding[], started: number): number {
+  const fails = findings.filter((f) => f.status === "fail").length;
+  const warns = findings.filter((f) => f.status === "warn").length;
+  const time = `${((Date.now() - started) / 1000).toFixed(0)}s`;
+  process.stdout.write(`\n${fails ? `FAILED: ${fails} failing` : "PASSED"}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
+  return fails ? 1 : 0;
+}
+
+// PowerSync's worker threads can keep the process alive, so it exits explicitly, once the
+// report has been written out.
+const exit = (code: number) => process.stdout.write("", () => process.exit(code));
+main(process.argv.slice(2)).then(exit, (e) => {
+  process.stderr.write(`samesight-verify: ${(e as Error).message}\n`);
+  exit(1);
+});

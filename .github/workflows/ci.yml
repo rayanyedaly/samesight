@@ -1,8 +1,8 @@
 # Samesight CI.
 #
 # `quality` (typecheck + lint + unit tests + samesight check) needs no services or secrets and is the
-# fast signal. A job that runs `supabase start` and the full verifier against the
-# Fieldbook example is added in Phase 4.
+# fast signal. `verify` starts Fieldbook's local stack (Supabase and PowerSync, in Docker) and
+# runs the database tests and the full verifier, mutation test included, against it.
 name: CI
 
 on:
@@ -36,3 +36,31 @@ jobs:
       - run: pnpm test
       # Generated access files (migration, sync config, client schema) match the policy.
       - run: pnpm --filter fieldbook policy:check
+
+  verify:
+    name: verifier on Fieldbook
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Supabase (supabase start) and the PowerSync service, with local random passwords.
+      - run: pnpm --filter fieldbook stack:up
+      - run: pnpm --filter fieldbook seed
+      - run: pnpm --filter fieldbook test:db
+      # Catalog tamper cases, the differential and the write path (rolled back, or cleaned up).
+      - run: pnpm --filter @samesight/verify test:stack
+      # The gate: static, catalog, differential, write path and every mutant caught, in under 5 minutes.
+      - name: samesight-verify --mutate
+        working-directory: examples/fieldbook
+        run: timeout 300 pnpm exec samesight-verify --mutate --runs 4
+      - if: failure()
+        working-directory: examples/fieldbook
+        run: docker compose logs powersync --tail 100
+      - if: always()
+        run: pnpm --filter fieldbook stack:down
