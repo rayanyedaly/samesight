@@ -8,8 +8,8 @@
  */
 
 import { parse } from "yaml";
-import type { Finding } from "../report.ts";
-import { parseStreams, type Stream } from "../static/streams.ts";
+import type { Finding } from "../doctor.ts";
+import { parseStreams, type Stream } from "./streams.ts";
 
 export interface SyncConfig {
   kind: "streams" | "bucket definitions";
