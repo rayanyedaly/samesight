@@ -26,6 +26,7 @@ describe("user-metadata", () => {
     expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE team_id = auth.parameter('user_metadata.team_id')\n"))).toHaveLength(1);
     expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE team_id = json_extract(request.jwt(), '$.user_metadata.team')\n"))).toHaveLength(1);
     expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE team_id = auth.parameters() ->> '$.user_metadata.team'\n"))).toHaveLength(1);
+    expect(lint(stream("  t:\n    query: SELECT * FROM tasks WHERE team_id = (auth.parameters() ->> 'user_metadata')::json ->> 'team'\n"))).toHaveLength(1);
   });
 
   it("accepts app_metadata, other claims, legacy token_parameters and plain strings", () => {
@@ -34,6 +35,8 @@ describe("user-metadata", () => {
     // token_parameters read the token's own "parameters" claim, which Supabase does not set.
     expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT token_parameters.user_metadata ->> 'org' AS org\n    data: [SELECT * FROM t WHERE org = bucket.org]\n")).toEqual([]);
     expect(lint(stream("  t:\n    query: SELECT * FROM events WHERE kind = 'user_metadata' AND owner_id = auth.user_id()\n"))).toEqual([]);
+    // Selected into the synced rows, it decides nothing.
+    expect(lint(stream("  t:\n    query: SELECT id, auth.parameter('user_metadata') ->> 'name' AS name FROM t WHERE owner_id = auth.user_id()\n"))).toEqual([]);
   });
 });
 
