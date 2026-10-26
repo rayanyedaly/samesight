@@ -12,3 +12,5 @@ ignoredBuiltDependencies:
   # Serwist's build tooling; @swc/core ships its binary as an optional dependency.
   - "@swc/core"
   - unrs-resolver
+  # Ships prebuilt binaries for each platform; @powersync/node loads them directly.
+  - better-sqlite3

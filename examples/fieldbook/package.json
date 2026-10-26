@@ -36,6 +36,7 @@
     "serwist": "9.5.13"
   },
   "devDependencies": {
+    "@samesight/verify": "workspace:*",
     "@tailwindcss/turbopack": "^4.3.3",
     "@types/react": "^19",
     "@types/react-dom": "^19",
