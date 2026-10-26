@@ -10,19 +10,22 @@
  * - A sync rules parameter query whose bucket parameters, as the data queries use them,
  *   come from neither the token nor the client: it hands its buckets to every user.
  *
- * Unfiltered, it is an error, and so is a check every ordinary signed-in user passes. It is a
+ * Unfiltered, it is an error, and so is a check every signed-in user passes. It is a
  * warning when something else filters the rows: fixed values (status = 'public', often
- * public by design), a check on a token claim such as a role, or, for sync rules, a bucket
- * whose parameter queries only admit users passing a fixed check on their own row or a
- * token claim (is_admin = true). Lint cannot tell a role from any other fixed check, so the
- * warning says what to confirm. Queries the client alone limits are client-scoped's.
+ * public by design); a check on who is asking, such as a role claim or an admin list
+ * (auth.user_id() IN (SELECT user_id FROM admins)); both, OR'd (public rows for all, every
+ * row for admins); or, for sync rules, a parameter query that gives its buckets by a role
+ * claim, or a bucket whose parameter queries only admit users passing a fixed check on
+ * their own row or a token claim (is_admin = true). Lint cannot tell a role from any other
+ * fixed check, so the warning says what to confirm. Queries the client alone limits are
+ * client-scoped's.
  */
 
 import type { Token } from "../../sync/sql.ts";
 import { bucketAccess, checksClaim, checksEveryToken, filtered, streamAccess } from "../access.ts";
 import type { LintFinding } from "../finding.ts";
 import { defineRule, type LintRule } from "../lint.ts";
-import { names, readsClient, readsToken, tableOf, tokens } from "../sql.ts";
+import { readsClient, readsToken, sources, tableOf, tokens } from "../sql.ts";
 
 const RULE = "unscoped-query";
 
@@ -43,7 +46,7 @@ export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf 
       for (const q of s.queries) {
         const t = tokens(q.sql);
         if (!t) continue;
-        const ctes = [...s.ctes].filter(([k]) => names(t).has(k.toLowerCase()));
+        const ctes = [...s.ctes].filter(([k]) => sources(t).has(k.toLowerCase()));
         const cteTokens = ctes.map(([, sql]) => tokens(sql));
         if (cteTokens.some((c) => c === null)) continue;
         const access = streamAccess(q.sql, s.ctes);
@@ -78,7 +81,7 @@ export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf 
           false,
           [s.name, table],
           [q.sql, ...ctes.map(([, sql]) => sql)].some(checksEveryToken)
-            ? `${where} checks a claim every ordinary signed-in Supabase user passes (role or aud = 'authenticated', is_anonymous = false), so every user gets every row of ${table}`
+            ? `${where} checks a claim every signed-in Supabase user passes (role or aud = 'authenticated') or every non-anonymous one (is_anonymous = false), so every user gets every row of ${table}`
             : what
               ? `${where} reads ${what}, but not in a way that limits which rows of ${table} it sends, so every user gets every row`
               : `${where} sends every row of ${table} to every user: nothing in it reads the requesting user (auth.user_id()) or a token claim`,

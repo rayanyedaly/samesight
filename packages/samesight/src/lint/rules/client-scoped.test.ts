@@ -5,6 +5,7 @@ import { clientScoped } from "./client-scoped.ts";
 
 const lint = (yaml: string) => lintSyncConfig(yaml, "s.yaml", [clientScoped]).map((f) => [f.level, f.line, f.message]);
 const stream = (body: string) => `config:\n  edition: 3\nstreams:\n${body}`;
+const levels = (found: unknown[][]) => found.map((f) => f[0]);
 
 describe("client-scoped on sync streams", () => {
   it("fails rows picked by a subscription or connection parameter alone", () => {
@@ -42,6 +43,21 @@ describe("client-scoped on sync streams", () => {
         (f) => f[0],
       ),
     ).toEqual(["error"]);
+  });
+
+  it("fails a value that mixes the client's choice with the token", () => {
+    expect(levels(lint(stream("  s:\n    query: SELECT * FROM docs WHERE owner = coalesce(subscription.parameter('uid'), auth.user_id())\n")))).toEqual(["error"]);
+    for (const rules of [
+      "parameters: SELECT coalesce(request.parameters() ->> 'uid', request.user_id()) AS uid\n    data: [SELECT * FROM t WHERE owner = bucket.uid]",
+      "parameters: SELECT id AS uid FROM users WHERE id = coalesce(request.parameters() ->> 'uid', request.user_id())\n    data: [SELECT * FROM t WHERE owner = bucket.uid]",
+    ]) {
+      expect(levels(lint(`bucket_definitions:\n  b:\n    ${rules}\n`)), rules).toEqual(["error"]);
+    }
+  });
+
+  it("does not take a literal or client value IN a set for a check on who is asking", () => {
+    expect(levels(lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND 1 IN (SELECT 1)\n")))).toEqual(["error"]);
+    expect(levels(lint(stream("  s:\n    query: SELECT * FROM docs WHERE id = subscription.parameter('id') AND subscription.parameter('k') IN (SELECT k FROM keys)\n")))).toEqual(["error"]);
   });
 
   it("fails a client parameter in an OR branch beside the token check", () => {
