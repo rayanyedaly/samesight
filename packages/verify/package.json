@@ -63,7 +63,8 @@
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
     "!src/fixtures",
-    "!src/**/__golden__"
+    "!src/**/__golden__",
+    "!src/**/__snapshots__"
   ],
   "publishConfig": {
     "access": "public",
