@@ -64,3 +64,34 @@ jobs:
         run: docker compose logs powersync --tail 100
       - if: always()
         run: pnpm --filter fieldbook stack:down
+
+  audit:
+    name: audit mode on the to-do list demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Fetches PowerSync's demo at a pinned commit (hash-checked), then Supabase and PowerSync.
+      - run: pnpm --filter audit-todolist stack:up
+      # Planted catalog, RLS and insert-policy breakages (rolled back).
+      - run: pnpm --filter @samesight/verify test:audit
+      # The Phase 5 gate: the demo as published passes, and a planted sync config divergence is caught.
+      - name: samesight-verify audit
+        working-directory: examples/audit-todolist
+        run: timeout 300 pnpm run verify --runs 4
+      - name: samesight-verify audit on a planted sync config
+        working-directory: examples/audit-todolist
+        run: timeout 420 pnpm run verify:planted
+      - if: failure()
+        working-directory: examples/audit-todolist
+        run: |
+          PS_STORAGE_PASSWORD=${PS_STORAGE_PASSWORD:-unused} PS_REPLICATION_PASSWORD=${PS_REPLICATION_PASSWORD:-unused} docker compose logs powersync --tail 100 || true
+          docker logs supabase_db_react-supabase-todolist --tail 100 || true
+      - if: always()
+        run: pnpm --filter audit-todolist stack:down
