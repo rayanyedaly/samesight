@@ -167,7 +167,7 @@ Then check the whole setup:
 npx samesight doctor
 ```
 
-`doctor` reports the migration, RLS, the hook, replica identity, the publication, the replication role and the slot's lag, and whether the database still matches the policy.
+`doctor` reports the migration, RLS, the hook (in the database and in `supabase/config.toml`), replica identity, the publication, the replication role and the slot's lag, and whether the database still matches the policy.
 
 ## 7. Verify
 

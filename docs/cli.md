@@ -56,7 +56,10 @@ ok    replica identity: FULL on every synced table
 ok    publication: powersync publishes exactly the synced tables
 ok    replication role: powersync_role is ready
 ok    replication: powersync_3_00a0: active, lag 1089056 bytes
+ok    auth config: the access token hook is on and calls samesight.custom_access_token_hook
 ```
+
+The last line reads `supabase/config.toml`: it fails while the access token hook is off (as `supabase init` leaves it) or calls another function, and warns without an Auth signing key, which PowerSync needs to verify tokens.
 
 ### `explain`
 
