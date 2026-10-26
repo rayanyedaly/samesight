@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { auditScope } from "./scope.ts";
 import { checkUserEditableClaims } from "./catalog.ts";
-import { parseSyncConfig } from "./sync-config.ts";
+import { parseSyncConfig } from "samesight/compiler";
 
 // PowerSync's to-do list demo, as its sync rules were written before sync streams.
 const rules = `
