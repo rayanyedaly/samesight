@@ -1,0 +1,13 @@
+# Planted leak: access decided by user_metadata.
+# Based on real/powersync-js-nuxt.yaml. Tasks are scoped by a team id read from
+# the token's user_metadata, which every Supabase user can set on themselves
+# (supabase.auth.updateUser), so anyone can join any team.
+# Expected: lint user-metadata (error).
+config:
+  edition: 3
+
+streams:
+  team_tasks:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM tasks WHERE team_id = auth.parameter('user_metadata') ->> 'team_id'
