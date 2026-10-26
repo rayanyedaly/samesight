@@ -47,7 +47,7 @@ exports[`corpus > parses planted/user-metadata-scope.yaml 1`] = `
   "findings": [],
   "format": "streams",
   "streams": [
-    "team_tasks",
+    "user_tasks",
   ],
   "synced": [
     "tasks",
@@ -100,60 +100,6 @@ exports[`corpus > parses real/powersync-dart-trello-legacy.yaml 1`] = `
     "member",
     "trellouser",
     "workspace",
-  ],
-}
-`;
-
-exports[`corpus > parses real/powersync-js-group-chat.yaml 1`] = `
-{
-  "findings": [
-    "warn: group_messages reads client parameters",
-    "warn: group_memberships reads client parameters",
-    "warn: group_member_profiles reads client parameters",
-    "warn: group_messages is not auto_subscribe",
-    "warn: group_memberships is not auto_subscribe",
-    "warn: group_member_profiles is not auto_subscribe",
-  ],
-  "format": "streams",
-  "streams": [
-    "user",
-    "contact_profiles",
-    "member_groups",
-    "chats",
-    "chat_profiles",
-    "group_messages",
-    "group_memberships",
-    "group_member_profiles",
-  ],
-  "synced": [
-    "contacts",
-    "groups",
-    "memberships",
-    "messages",
-    "profiles",
-  ],
-}
-`;
-
-exports[`corpus > parses real/powersync-js-group-chat-legacy.yaml 1`] = `
-{
-  "findings": [
-    "fail: chats data[0] calls profiles chats",
-  ],
-  "format": "bucket definitions",
-  "streams": [
-    "user",
-    "contacts",
-    "groups",
-    "group_draft_messages",
-    "chats",
-  ],
-  "synced": [
-    "contacts",
-    "groups",
-    "memberships",
-    "messages",
-    "profiles",
   ],
 }
 `;

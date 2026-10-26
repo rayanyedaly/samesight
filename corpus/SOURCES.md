@@ -9,8 +9,6 @@ byte for byte from PowerSync's public demos; nothing is reformatted or annotated
 | File | Source | Format | License |
 | --- | --- | --- | --- |
 | `powersync-js-todolist.yaml` | powersync-js `demos/react-supabase-todolist/sync-config.yaml` at [js-current] | streams | CC0 1.0 |
-| `powersync-js-group-chat.yaml` | powersync-js `demos/react-native-supabase-group-chat/sync-config.yaml` at [js-current] | streams | Apache 2.0 |
-| `powersync-js-group-chat-legacy.yaml` | powersync-js `demos/react-native-supabase-group-chat/sync-rules.yml` at [js-legacy] | bucket definitions | Apache 2.0 |
 | `powersync-js-text-collab.yaml` | powersync-js `demos/yjs-react-supabase-text-collab/sync-config.yaml` at [js-current] | streams | CC0 1.0 |
 | `powersync-js-text-collab-legacy.yaml` | powersync-js `demos/yjs-react-supabase-text-collab/sync-rules.yaml` at [js-legacy] | bucket definitions | CC0 1.0 |
 | `powersync-js-nextjs.yaml` | powersync-js `demos/example-nextjs/powersync/sync-config.yaml` at [js-current] | streams | CC0 1.0 |
@@ -30,11 +28,17 @@ Commits:
 
 `powersync-js-todolist.yaml` is the same file `examples/audit-todolist` fetches and audits.
 
+The test in `packages/verify/src/audit/corpus.test.ts` snapshots what audit makes of each
+file. For the files in `real/`, a `warn` or `fail` there is not a verdict on the demo: it
+is audit noting a client parameter it does not try, a stream no device subscribes to by
+default, or that no stream it can compare is left.
+
 ## Planted leaks
 
-Each file in `planted/` is a real config with one change that leaks rows, described in a
-comment at its top with the lint rule that should catch it. They are written for this
-repository and share its license.
+Each file in `planted/` is a real config with one line changed so that it leaks rows, and
+a comment at its top saying what changed and which lint rule should catch it. Our changes
+are under this repository's license; the parts copied from an Apache 2.0 file stay under
+Apache 2.0, and the header comment is the notice of change that license asks for.
 
 | File | Based on | The leak | Lint rule |
 | --- | --- | --- | --- |
@@ -49,10 +53,13 @@ The CC0 1.0 files come from demos that carry their own CC0 `LICENSE`, which plac
 the public domain. The Apache 2.0 files come from demos with no license of their own, so
 the powersync-js repository's license applies: [`LICENSE-APACHE-2.0.txt`](LICENSE-APACHE-2.0.txt)
 is a copy of it, and the repository has no NOTICE file. Copyright in those files belongs to
-their authors at JourneyApps (PowerSync).
+their respective authors.
 
-PowerSync's `self-host-demo` repository also has sync configs, but it publishes no license,
-so none of its files are copied here.
+Left out on purpose:
+
+- powersync-js's group chat demo, whose own `package.json` says `"license": "UNLICENSED"`
+  although the repository is Apache 2.0;
+- PowerSync's `self-host-demo` repository, which has no license covering its sync configs.
 
 ## Hashes
 
@@ -60,8 +67,6 @@ SHA-256 of each file in `real/`, so a copy that drifts from its source shows up:
 
 ```text
 cdb4c5da98be9618f80f0ce2a7e0f13ddc277647af523d9b933b7762080604cd  powersync-js-todolist.yaml
-49cf7478767edcb59e6be8b83002340d8a935bdce0afb4e1805e2ed669af7855  powersync-js-group-chat.yaml
-21c2d7f26e8a676acb3b8009426a793aebd16158ab091eac8e0993ca25c0a969  powersync-js-group-chat-legacy.yaml
 58e38306364a7e24771e654906a732ddd6c950d647ef38d47a9cd033af702698  powersync-js-text-collab.yaml
 4a4b2c7baa93c175548a50e4e4add3b7bc2a0074e57edd8ca9d3971516515f64  powersync-js-text-collab-legacy.yaml
 11b3224db116fb141b2256f393dec472c3e47595cbbd9d755f0910847d439a9b  powersync-js-nextjs.yaml
