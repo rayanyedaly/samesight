@@ -40,12 +40,17 @@ a comment at its top saying what changed and which lint rule should catch it. Ou
 are under this repository's license; the parts copied from an Apache 2.0 file stay under
 Apache 2.0, and the header comment is the notice of change that license asks for.
 
+Every planted file passes PowerSync's own validator (`@powersync/service-sync-rules`
+0.44.0), so each is a config PowerSync would deploy, not one it would refuse. The
+validator does warn about one of them, `client-parameter-scope.yaml`, for basing access
+on parameters the client sets, and raises nothing about access for the other three.
+
 | File | Based on | The leak | Lint rule |
 | --- | --- | --- | --- |
 | `missing-owner-filter.yaml` | `powersync-js-todolist.yaml` | A join query lost its owner filter | `unscoped-query` |
 | `client-parameter-scope.yaml` | `powersync-js-nuxt-legacy.yaml` | The bucket parameter comes from `request.parameters()` | `client-scoped` |
 | `user-metadata-scope.yaml` | `powersync-js-nuxt.yaml` | Rows scoped by a `user_metadata` claim users set themselves | `user-metadata` |
-| `unused-bucket-parameter.yaml` | `powersync-js-multi-client-legacy.yaml` | The data query never reads the bucket parameter | `unscoped-query` |
+| `unbound-parameter-query.yaml` | `powersync-js-multi-client-legacy.yaml` | The bucket parameter query lists every owner, not the requesting user | `unscoped-query` |
 
 ## Licenses
 

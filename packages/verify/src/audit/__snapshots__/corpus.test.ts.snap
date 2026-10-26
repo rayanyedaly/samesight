@@ -29,7 +29,7 @@ exports[`corpus > parses planted/missing-owner-filter.yaml 1`] = `
 }
 `;
 
-exports[`corpus > parses planted/unused-bucket-parameter.yaml 1`] = `
+exports[`corpus > parses planted/unbound-parameter-query.yaml 1`] = `
 {
   "findings": [],
   "format": "bucket definitions",

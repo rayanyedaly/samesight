@@ -1,6 +1,7 @@
 # Planted leak: a join that lost its owner filter.
-# Based on real/powersync-js-todolist.yaml. The todos query no longer ends in
-# WHERE lists.owner_id = auth.user_id(), so every user receives every todo.
+# Based on real/powersync-js-todolist.yaml (CC0 1.0), with one line changed: the todos
+# query no longer ends in WHERE lists.owner_id = auth.user_id(), so every user
+# receives every todo.
 # Expected: lint unscoped-query (error), and audit fails on todos.
 config:
   edition: 3
