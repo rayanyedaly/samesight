@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { fieldbookPolicy, fieldbookSchema } from "./fixtures/fieldbook.ts";
 import { nextVersion, outputPaths, plan } from "./generate.ts";
-import { assertLocal } from "./introspect.ts";
+import { assertLocal, DEFAULT_DB_URL, projectDbUrl } from "./introspect.ts";
 import { definePolicy, isPolicy } from "./policy.ts";
 
 describe("assertLocal", () => {
@@ -23,6 +23,18 @@ describe("assertLocal", () => {
     expect(() => assertLocal("postgresql:///db?host=remote")).toThrow(/cannot set host/);
     expect(() => assertLocal("postgresql:///db")).toThrow(/an empty host/);
     expect(() => assertLocal("http://localhost/db")).toThrow(/must start with postgres/);
+  });
+});
+
+describe("projectDbUrl", () => {
+  it("reads the [db] port from supabase/config.toml", () => {
+    const dir = mkdtempSync(join(tmpdir(), "samesight-db-"));
+    expect(projectDbUrl(dir)).toBe(DEFAULT_DB_URL);
+    mkdirSync(join(dir, "supabase"));
+    writeFileSync(join(dir, "supabase", "config.toml"), '[api]\nport = 56321\n\n[db]\n# The port\nport = 56322 # local\nshadow_port = 56320\n');
+    expect(projectDbUrl(dir)).toBe("postgresql://postgres:postgres@127.0.0.1:56322/postgres");
+    writeFileSync(join(dir, "supabase", "config.toml"), "[api]\nport = 56321\n");
+    expect(projectDbUrl(dir)).toBe(DEFAULT_DB_URL);
   });
 });
 

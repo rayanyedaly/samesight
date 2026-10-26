@@ -1,0 +1,140 @@
+{
+  "generator": "samesight",
+  "claims": {
+    "tenant": "tenant_id",
+    "role": "app_role",
+    "roles": [
+      "owner",
+      "member"
+    ]
+  },
+  "membership": {
+    "table": "members",
+    "user": "user_id",
+    "tenant": "org_id",
+    "role": "role"
+  },
+  "tenantTable": "organizations",
+  "tables": [
+    {
+      "name": "organizations",
+      "tenant": "id",
+      "read": {
+        "owner": "all",
+        "member": "all"
+      },
+      "insert": {},
+      "update": {},
+      "delete": {},
+      "check": null,
+      "hide": {},
+      "insertColumns": [],
+      "updateColumns": [],
+      "appendOnly": null
+    },
+    {
+      "name": "members",
+      "tenant": "org_id",
+      "read": {
+        "owner": "all",
+        "member": {
+          "kind": "eq",
+          "column": "user_id",
+          "value": {
+            "kind": "user"
+          }
+        }
+      },
+      "insert": {},
+      "update": {},
+      "delete": {},
+      "check": null,
+      "hide": {},
+      "insertColumns": [],
+      "updateColumns": [],
+      "appendOnly": null
+    },
+    {
+      "name": "projects",
+      "tenant": "org_id",
+      "read": {
+        "owner": "all",
+        "member": "all"
+      },
+      "insert": {
+        "owner": "all"
+      },
+      "update": {
+        "owner": "all"
+      },
+      "delete": {
+        "owner": "all"
+      },
+      "check": null,
+      "hide": {},
+      "insertColumns": [
+        "name"
+      ],
+      "updateColumns": [
+        "name"
+      ],
+      "appendOnly": null
+    },
+    {
+      "name": "tasks",
+      "tenant": "org_id",
+      "read": {
+        "owner": {
+          "kind": "via",
+          "column": "project_id",
+          "parent": "projects",
+          "parentKey": "id"
+        },
+        "member": {
+          "kind": "via",
+          "column": "project_id",
+          "parent": "projects",
+          "parentKey": "id"
+        }
+      },
+      "insert": {
+        "owner": "all",
+        "member": "all"
+      },
+      "update": {
+        "owner": "all",
+        "member": {
+          "kind": "eq",
+          "column": "assignee_id",
+          "value": {
+            "kind": "user"
+          }
+        }
+      },
+      "delete": {
+        "owner": "all"
+      },
+      "check": null,
+      "hide": {},
+      "insertColumns": [
+        "project_id",
+        "title",
+        "status",
+        "assignee_id"
+      ],
+      "updateColumns": [
+        "title",
+        "status",
+        "assignee_id"
+      ],
+      "appendOnly": null
+    }
+  ],
+  "outputs": {
+    "powersync/sync-config.yaml": "1a38205f8482ae68615e1553cf2f6780f612af944232014b96b95aee8ca0f8a6",
+    "powersync/service.yaml": "bfe50c991437194b79154075b06729914675e327811ffeea01c77c50ff5f67bb",
+    "src/samesight/app-schema.ts": "b9a8d7c115ec6a8c2ce84b291a84602f2fd83503b179c312c7e24c800aeffbdd",
+    "src/samesight/policy-types.ts": "46e1320b8ae3d192108d3e6f2b91becbc6f09665cd478d957fd65b05fa819097",
+    "migration": "864094fba180bcd60e3e79ea354f514568804df0d7e4d4479d6429b20bc3e824"
+  }
+}

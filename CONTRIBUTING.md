@@ -8,6 +8,7 @@
 | `packages/verify` | `samesight-verify`. |
 | `packages/supabase`, `packages/next` | The runtime packages. |
 | `examples/fieldbook` | The example app, and the stack every verifier test runs against. |
+| `examples/quickstart` | The getting-started guide's result: a `supabase init` project with a policy drafted by `samesight init`. |
 | `examples/audit-todolist` | Audit mode on PowerSync's to-do list demo, fetched at a pinned commit. |
 | `scripts/pack-smoke.mjs` | Packs, installs with npm and uses the packages as a user would. |
 | `docs/` | User documentation. |
@@ -34,7 +35,7 @@ pnpm install
 | `pnpm --filter fieldbook policy:verify` | Fieldbook's stack | The full verifier with the mutation test. |
 | `pnpm --filter @samesight/verify test:audit` | the to-do demo's stack | Audit mode tamper cases. |
 
-Start the stacks with `pnpm --filter fieldbook stack:up` (then `seed`) and `pnpm --filter audit-todolist stack:up`. They run side by side.
+Start the stacks with `pnpm --filter fieldbook stack:up` (then `seed`), `pnpm --filter quickstart stack:up` and `pnpm --filter audit-todolist stack:up`. They run side by side; `pnpm --filter quickstart policy:verify` runs the full verifier on the quickstart.
 
 When an emitter's output changes on purpose, update the golden files in `packages/samesight/src/emit/__golden__` and regenerate Fieldbook (`pnpm --filter fieldbook policy:generate` with its stack up), and say in the changelog what users must do.
 

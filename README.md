@@ -108,6 +108,7 @@ See [auditing an existing project](docs/verify.md#audit-mode).
 - [The CLIs](docs/cli.md)
 - [The verifier and audit mode](docs/verify.md)
 - [Fieldbook](examples/fieldbook), the example app: multi-tenant inspections with three roles, offline writes and append-only records
+- [Quickstart](examples/quickstart): what the getting-started guide produces, verified in CI
 - [Changelog](CHANGELOG.md)
 
 ## What it does not do

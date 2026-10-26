@@ -8,7 +8,7 @@ export { ident, literal } from "./emit/expr.ts";
 export { emitMigration, PUBLICATION, REPLICATION_ROLE } from "./emit/migration.ts";
 export { emitSyncConfig } from "./emit/sync.ts";
 export { DEFAULT_OUTPUT, outputPaths, type Plan, plan } from "./generate.ts";
-export { assertLocal, DEFAULT_DB_URL, introspect, withLocalClient } from "./introspect.ts";
+export { assertLocal, DEFAULT_DB_URL, introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
 export { buildIR, CompileError, type IR, type IRTable, type Rule, snake } from "./ir.ts";
 export { loadPolicy, POLICY_FILES, resolvePolicyPath } from "./load.ts";
 export { explainPolicy } from "./explain.ts";
