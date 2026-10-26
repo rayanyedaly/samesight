@@ -10,6 +10,7 @@ import { parseSyncConfig, type SyncConfig } from "../sync/config.ts";
 import type { LintFinding } from "./finding.ts";
 import { clientScoped } from "./rules/client-scoped.ts";
 import { unscopedQuery } from "./rules/unscoped-query.ts";
+import { userMetadata } from "./rules/user-metadata.ts";
 
 /** Where projects keep their sync config, tried in order when no file is named. */
 export const SYNC_CONFIG_FILES = ["sync-config.yaml", "sync-rules.yaml", "powersync/sync-config.yaml", "powersync/sync-rules.yaml"];
@@ -24,7 +25,7 @@ export interface LintContext {
 
 export type LintRule = (context: LintContext) => LintFinding[];
 
-export const RULES: LintRule[] = [unscopedQuery, clientScoped];
+export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata];
 
 /** Every rule's findings for one sync config; throws when the file cannot be read as one. */
 export function lintSyncConfig(text: string, file: string, rules: LintRule[] = RULES): LintFinding[] {

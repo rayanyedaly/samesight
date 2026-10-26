@@ -48,6 +48,17 @@ export function readsClient(t: Token[]): boolean {
   );
 }
 
+/**
+ * Reads the token's user_metadata, which Supabase users set on themselves: the claim named
+ * in a string ('user_metadata', as auth.parameter() and -> take it) or after
+ * token_parameters.
+ */
+export function readsUserMetadata(t: Token[]): boolean {
+  return t.some(
+    (x, i) => (x.kind === "string" && x.text === "user_metadata") || (word(x, "user_metadata") && sym(t[i - 1], ".") && word(t[i - 2], "token_parameters")),
+  );
+}
+
 /** Reads a bucket parameter (bucket.x), as a sync rules data query must to be per-user. */
 export function readsBucket(t: Token[]): boolean {
   return t.some((_, i) => word(t[i], "bucket") && sym(t[i + 1], "."));
