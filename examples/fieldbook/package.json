@@ -21,7 +21,8 @@
     "prestart": "pnpm assets",
     "policy:generate": "samesight generate",
     "policy:check": "samesight check",
-    "policy:doctor": "samesight doctor"
+    "policy:doctor": "samesight doctor",
+    "policy:verify": "samesight-verify --mutate"
   },
   "dependencies": {
     "@powersync/react": "^2.1.0",
