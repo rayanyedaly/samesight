@@ -1,0 +1,14 @@
+# Planted leak: the client says whose rows it gets.
+# Based on real/powersync-js-nuxt-legacy.yaml. The bucket parameter comes from
+# request.parameters(), which the client sends, instead of request.user_id(),
+# which comes from the verified token: any client can ask for any user's tasks.
+# Expected: lint client-scoped (error).
+config:
+  edition: 2
+
+bucket_definitions:
+  tasks:
+    parameters:
+      - SELECT request.parameters() ->> 'user_id' AS user_id
+    data:
+      - SELECT * FROM tasks WHERE tasks.user_id = bucket.user_id

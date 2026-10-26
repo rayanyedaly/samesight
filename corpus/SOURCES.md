@@ -30,6 +30,19 @@ Commits:
 
 `powersync-js-todolist.yaml` is the same file `examples/audit-todolist` fetches and audits.
 
+## Planted leaks
+
+Each file in `planted/` is a real config with one change that leaks rows, described in a
+comment at its top with the lint rule that should catch it. They are written for this
+repository and share its license.
+
+| File | Based on | The leak | Lint rule |
+| --- | --- | --- | --- |
+| `missing-owner-filter.yaml` | `powersync-js-todolist.yaml` | A join query lost its owner filter | `unscoped-query` |
+| `client-parameter-scope.yaml` | `powersync-js-nuxt-legacy.yaml` | The bucket parameter comes from `request.parameters()` | `client-scoped` |
+| `user-metadata-scope.yaml` | `powersync-js-nuxt.yaml` | Rows scoped by a `user_metadata` claim users set themselves | `user-metadata` |
+| `unused-bucket-parameter.yaml` | `powersync-js-multi-client-legacy.yaml` | The data query never reads the bucket parameter | `unscoped-query` |
+
 ## Licenses
 
 The CC0 1.0 files come from demos that carry their own CC0 `LICENSE`, which places them in
