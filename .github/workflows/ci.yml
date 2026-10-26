@@ -1,7 +1,8 @@
 # Samesight CI.
 #
 # `quality` (typecheck + lint + unit tests + samesight check) needs no services or secrets and is the
-# fast signal. `verify` starts Fieldbook's local stack (Supabase and PowerSync, in Docker) and
+# fast signal. `package` packs the npm packages and uses them from outside the workspace, on Linux
+# and Windows. `verify` starts Fieldbook's local stack (Supabase and PowerSync, in Docker) and
 # runs the database tests and the full verifier, mutation test included, against it.
 name: CI
 
@@ -36,6 +37,25 @@ jobs:
       - run: pnpm test
       # Generated access files (migration, sync config, client schema) match the policy.
       - run: pnpm --filter fieldbook policy:check
+
+  package:
+    name: packed packages (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Packs each package as it would publish, installs the tarballs with npm outside the
+      # workspace, and runs the CLIs, imports and a TypeScript consumer against them.
+      - run: pnpm smoke
 
   verify:
     name: verifier on Fieldbook

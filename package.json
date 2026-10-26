@@ -7,10 +7,12 @@
   },
   "scripts": {
     "build": "turbo build",
+    "build:packages": "turbo build --filter=./packages/*",
     "dev": "turbo dev",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo test --concurrency=1",
+    "smoke": "node scripts/pack-smoke.mjs",
     "format": "biome format --write ."
   },
   "devDependencies": {

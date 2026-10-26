@@ -16,8 +16,8 @@ export interface Draft {
 }
 
 export interface DraftOptions {
-  /** Import path of the `supabase gen types` output, from the policy file. */
-  typesImport?: string;
+  /** The `supabase gen types` output, relative to the policy file. */
+  typesFile?: string;
   /** Values of the membership role column, when the database lists them (enum or CHECK). */
   roles?: string[];
 }
@@ -41,7 +41,7 @@ export function findMembership(schema: SchemaInfo): { table: string; user: strin
 }
 
 export function draftPolicy(schema: SchemaInfo | null, options: DraftOptions = {}): Draft {
-  const typesImport = options.typesImport ?? "./supabase/types";
+  const typesFile = options.typesFile ?? "supabase/types.ts";
   const roles = options.roles?.length && options.roles.every((r) => IDENT.test(r)) ? options.roles : DEFAULT_ROLES;
   const notes: string[] = [];
   const membership = schema ? findMembership(schema) : null;
@@ -50,7 +50,7 @@ export function draftPolicy(schema: SchemaInfo | null, options: DraftOptions = {
       "no membership table found (a table with a unique uuid user column, a uuid tenant column and a role column); wrote a template",
     );
   }
-  if (!schema || !membership) return { source: template(typesImport, roles), notes };
+  if (!schema || !membership) return { source: template(typesFile, roles), notes };
 
   const m = schema.tables.find((t) => t.name === membership.table) as TableInfo;
   const tenantFk = m.foreignKeys.find((fk) => fk.columns.length === 1 && fk.columns[0] === membership.tenant && fk.references[0] === "id");
@@ -90,8 +90,7 @@ export function draftPolicy(schema: SchemaInfo | null, options: DraftOptions = {
   for (const s of skipped) notes.push(`left out ${s}`);
 
   const source = `import { claim, col, definePolicy, table } from "samesight";
-// Regenerate after a schema migration: supabase gen types typescript --local --schema public > supabase/types.ts
-import type { Database } from ${JSON.stringify(typesImport)};
+${typesComment("Regenerate after a schema migration", typesFile)}
 
 // Drafted by \`samesight init\` from the local database. As written, every role reads
 // every row of its own tenant, each user reads their own ${membership.table} row, and
@@ -143,10 +142,15 @@ export async function roleValues(client: pg.Client, table: string, column: strin
   return [];
 }
 
-function template(typesImport: string, roles: string[]): string {
+/** The Database type import; a type-only import may name the .ts file under any module resolution. */
+function typesComment(lead: string, typesFile: string): string {
+  return `// ${lead}: supabase gen types typescript --local --schema public > ${typesFile}
+import type { Database } from ${JSON.stringify(`./${typesFile}`)};`;
+}
+
+function template(typesFile: string, roles: string[]): string {
   return `import { claim, col, definePolicy, table } from "samesight";
-// Generate with: supabase gen types typescript --local --schema public > supabase/types.ts
-import type { Database } from ${JSON.stringify(typesImport)};
+${typesComment("Generate with", typesFile)}
 
 export default definePolicy<Database>({
   auth: "supabase",
