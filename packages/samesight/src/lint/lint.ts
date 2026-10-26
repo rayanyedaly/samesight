@@ -12,6 +12,7 @@ import type { Migrations } from "./migrations.ts";
 import { clientScoped } from "./rules/client-scoped.ts";
 import { notAutoSubscribed } from "./rules/not-auto-subscribed.ts";
 import { rlsOff } from "./rules/rls-off.ts";
+import { rlsOpen } from "./rules/rls-open.ts";
 import { unreadableQuery } from "./rules/unreadable-query.ts";
 import { unscopedQuery } from "./rules/unscoped-query.ts";
 import { userMetadata } from "./rules/user-metadata.ts";
@@ -31,7 +32,7 @@ export interface LintContext {
 
 export type LintRule = (context: LintContext) => LintFinding[];
 
-export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed, rlsOff];
+export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed, rlsOff, rlsOpen];
 
 /** Every rule's findings for one sync config; throws when the file cannot be read as one. */
 export function lintSyncConfig(text: string, file: string, rules: LintRule[] = RULES, migrations?: Migrations): LintFinding[] {
