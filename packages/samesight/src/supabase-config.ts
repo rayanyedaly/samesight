@@ -26,8 +26,8 @@ export function readSupabaseConfig(dir: string): SupabaseConfig | null {
       config.set(name, section);
       continue;
     }
-    const pair = /^\s*([A-Za-z0-9_-]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^#]*?)\s*(#.*)?$/.exec(line);
-    if (pair?.[1] && pair[2] !== undefined) section.set(pair[1], pair[2].replace(/^"(.*)"$/, "$1"));
+    const pair = /^\s*([A-Za-z0-9_-]+)\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*'|[^#]*?)\s*(#.*)?$/.exec(line);
+    if (pair?.[1] && pair[2] !== undefined) section.set(pair[1], pair[2].replace(/^"(.*)"$|^'(.*)'$/, "$1$2"));
   }
   return config;
 }

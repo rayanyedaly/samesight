@@ -423,6 +423,7 @@ export async function explore<W>(
 
 export async function differential(s: Run, options: { runs: number; seed?: number; timeLimitMs: number }): Promise<DifferentialResult> {
   const check = "differential";
+  lastInsertError.clear();
   // What the run actually compared: a dataset whose rows all fail to insert, that nobody may
   // read, or that no device receives would agree (or only warn) on both sides and prove nothing.
   const inserted = new Map<string, number>();

@@ -34,7 +34,10 @@ let failures = 0;
 /** npm, npx and pnpm are .cmd shims on Windows and need a shell there; node runs directly, so its arguments need no quoting. */
 function run(cmd, argv, opts = {}) {
   const node = cmd === "node";
-  return execFileSync(node ? process.execPath : cmd, argv, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: win && !node, ...opts });
+  const shell = win && !node;
+  // cmd.exe joins arguments with spaces and does not quote them.
+  const args = shell ? argv.map((a) => (/\s/.test(a) ? `"${a}"` : a)) : argv;
+  return execFileSync(node ? process.execPath : cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell, ...opts });
 }
 
 /** Runs a command that must fail; returns its stderr and stdout. */

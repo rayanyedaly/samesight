@@ -35,7 +35,10 @@ export function findMembership(schema: SchemaInfo): { table: string; user: strin
     const user = t.columns.find((c) => USER_COLUMN.test(c.name) && uuid(c.name) && t.uniqueColumns.includes(c.name));
     const tenant = t.columns.find((c) => TENANT_COLUMN.test(c.name) && uuid(c.name) && c.name !== user?.name);
     const role = t.columns.find((c) => ROLE_COLUMN.test(c.name));
-    if (user && tenant && role) return { table: t.name, user: user.name, tenant: tenant.name, role: role.name };
+    // Only identifiers: these names are written into the policy's source and comments.
+    if (user && tenant && role && [t.name, user.name, tenant.name, role.name].every((n) => IDENT.test(n))) {
+      return { table: t.name, user: user.name, tenant: tenant.name, role: role.name };
+    }
   }
   return null;
 }
@@ -68,7 +71,7 @@ export function draftPolicy(schema: SchemaInfo | null, options: DraftOptions = {
   const ordered = [...schema.tables].sort((a, b) => rank(a) - rank(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const t of ordered) {
     if (!IDENT.test(t.name)) {
-      skipped.push(`${t.name}: the name needs quoting`);
+      skipped.push(`${shown(t.name)}: the name needs quoting`);
       continue;
     }
     if (t.primaryKey.length !== 1 || t.primaryKey[0] !== "id") {
@@ -177,6 +180,22 @@ function tenantColumn(t: TableInfo, preferred: string): string | null {
   };
   if (ok(preferred)) return preferred;
   return t.columns.find((c) => TENANT_COLUMN.test(c.name) && ok(c.name))?.name ?? null;
+}
+
+/**
+ * A name from the database, safe inside a // comment and on a terminal: a name that is not
+ * an identifier is shown as an escaped string, so no newline, U+2028 or U+2029 can end the
+ * comment and put a line of code in the policy file.
+ */
+function shown(name: string): string {
+  if (IDENT.test(name)) return name;
+  // JSON.stringify escapes C0 controls; U+2028, U+2029 and C1 controls are escaped here.
+  return [...JSON.stringify(name)]
+    .map((c) => {
+      const code = c.charCodeAt(0);
+      return code === 0x2028 || code === 0x2029 || (code >= 0x7f && code <= 0x9f) ? `\\u${code.toString(16).padStart(4, "0")}` : c;
+    })
+    .join("");
 }
 
 function obj(o: Record<string, string>): string {

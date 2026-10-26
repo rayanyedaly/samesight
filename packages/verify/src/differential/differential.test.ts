@@ -93,6 +93,7 @@ describe("streamOfBucket", () => {
     expect(streamOfBucket('3#inspector|1["t","u"]')).toBe("inspector");
     expect(streamOfBucket('user_lists["5a3e5a3e-0000-4000-8000-000000000001"]')).toBe("user_lists");
     expect(streamOfBucket("global[]")).toBe("global");
+    expect(streamOfBucket('by_email["a#b@x.test"]')).toBe("by_email");
     expect(streamOfBucket("m12|0[]")).toBe("m12");
   });
 });

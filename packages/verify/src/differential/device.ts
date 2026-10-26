@@ -32,7 +32,7 @@ export interface Op {
  * "user_lists". PowerSync names a bucket shared by identical queries after the first stream.
  */
 export function streamOfBucket(name: string): string {
-  const afterVersion = name.includes("#") ? name.slice(name.indexOf("#") + 1) : name;
+  const afterVersion = name.replace(/^\d+#/, "");
   return afterVersion.split(/[|[]/)[0] ?? afterVersion;
 }
 
