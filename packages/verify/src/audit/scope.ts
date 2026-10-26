@@ -95,8 +95,10 @@ export function outputTable(sql: string): { table: string; reads: string[] } {
   } else throw new Error("selects columns of more than one table");
   if (refs.length > 1) {
     // In a join, an unqualified name could be another table's column, sent with this table's rows.
+    // AS and the alias after it name the device column, not a source column.
     const bare = projection.find(
-      (t, n) => isName(t) && !sym(projection[n - 1], ".") && !sym(projection[n + 1], ".") && !sym(projection[n + 1], "(") && !isWord(projection[n - 1], "as"),
+      (t, n) =>
+        isName(t) && !isWord(t, "as") && !sym(projection[n - 1], ".") && !sym(projection[n + 1], ".") && !sym(projection[n + 1], "(") && !isWord(projection[n - 1], "as"),
     );
     if (bare) throw new Error(`selects ${bare.text} without its table in a join; qualify it, as in ${out.alias}.${bare.text}`);
   }
