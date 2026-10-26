@@ -6,12 +6,12 @@
  * (see migrations.ts), so a table whose RLS is switched on some other way is reported too.
  */
 
-import type { LintRule } from "../lint.ts";
+import { defineRule, type LintRule } from "../lint.ts";
 import { sentTables } from "../sql.ts";
 
 const RULE = "rls-off";
 
-export const rlsOff: LintRule = ({ file, config, migrations, lineOf }) => {
+export const rlsOff: LintRule = defineRule(RULE, ({ file, config, migrations, lineOf }) => {
   if (!migrations) return [];
   return [...sentTables(config)]
     .filter(([table]) => !migrations.rls.has(table))
@@ -23,4 +23,4 @@ export const rlsOff: LintRule = ({ file, config, migrations, lineOf }) => {
       subjects: [table],
       message: `${table} is synced, but the migrations never enable row level security on it, so with Supabase's default grants any client can read and change every row through the API`,
     }));
-};
+});
