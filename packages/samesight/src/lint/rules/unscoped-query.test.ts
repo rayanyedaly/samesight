@@ -27,6 +27,7 @@ describe("unscoped-query on sync streams", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM projects WHERE org_id = auth.parameter('org_id')\n"))).toEqual([]);
     expect(lint(stream("  s:\n    query: SELECT todos.* FROM todos JOIN lists ON todos.list_id = lists.id AND lists.owner_id = auth.user_id()\n"))).toEqual([]);
     expect(lint(stream("  s:\n    with:\n      mine: SELECT id FROM lists WHERE owner_id = auth.user_id()\n    query: SELECT * FROM todos WHERE list_id IN mine\n"))).toEqual([]);
+    expect(lint(stream("  s:\n    with:\n      mine: SELECT id FROM lists WHERE owner_id = auth.user_id()\n    query: SELECT * FROM docs WHERE list_id IN (SELECT mine.id FROM mine JOIN x ON x.id = mine.id)\n"))).toEqual([]);
     expect(
       lint(stream("  s:\n    with:\n      mine: SELECT org_id FROM members WHERE user_id = auth.user_id()\n    query: SELECT * FROM projects WHERE org_id IN (SELECT org_id FROM mine)\n")),
     ).toEqual([]);
@@ -125,7 +126,8 @@ describe("unscoped-query on sync streams", () => {
       expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["warning"]);
     }
     // Nobody's role is 'AUTHENTICATED': a check, not every user.
-    for (const where of ["auth.parameter('role') = 'AUTHENTICATED'"]) {
+    // ->> reads is_anonymous as the number 0, which equals no string.
+    for (const where of ["auth.parameter('role') = 'AUTHENTICATED'", "auth.parameter('is_anonymous') = 'false'", "auth.parameter('is_anonymous') = '0'"]) {
       expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE ${where}\n`)).map((f) => f[0]), where).toEqual(["warning"]);
     }
     // app_metadata.role is the app's own, so a check on it is a role, not every token.
@@ -141,20 +143,20 @@ describe("unscoped-query on sync streams", () => {
     }
   });
 
-  it("takes one column of one table for a set, however written", () => {
+  it("takes a set that selects a column, however written", () => {
     for (const set of [
       "SELECT DISTINCT role FROM user_roles WHERE user_id = auth.user_id()",
+      "SELECT role::text FROM user_roles WHERE user_id = auth.user_id()",
+      "SELECT (role) FROM user_roles WHERE user_id = auth.user_id()",
+      "SELECT r.role FROM user_roles r JOIN users u ON u.id = r.user_id WHERE u.id = auth.user_id()",
+      // Lint does not relate a join's tables, so a cross join only warns too; audit tests it.
+      "SELECT role FROM user_roles JOIN users ON true WHERE users.id = auth.user_id()",
+      "SELECT role FROM user_roles, users WHERE users.id = auth.user_id()",
       "SELECT role AS r FROM user_roles WHERE user_id = auth.user_id()",
       "SELECT user_roles.role FROM user_roles WHERE user_roles.user_id = auth.user_id()",
       "SELECT role FROM user_roles WHERE user_id = auth.user_id() ORDER BY role, id",
     ]) {
       expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE 'admin' IN (${set})\n`)).map((f) => f[0]), set).toEqual(["warning"]);
-    }
-    for (const set of [
-      "SELECT role FROM user_roles JOIN users ON true WHERE users.id = auth.user_id()",
-      "SELECT role FROM user_roles, users WHERE users.id = auth.user_id()",
-    ]) {
-      expect(lint(stream(`  s:\n    query: SELECT * FROM docs WHERE 'admin' IN (${set})\n`)).map((f) => f[0]), set).toEqual(["error"]);
     }
     // EXCEPT may leave every org but the user's own.
     expect(lint(stream("  s:\n    query: SELECT * FROM docs WHERE org_id IN (SELECT id FROM orgs EXCEPT SELECT org_id FROM members WHERE user_id = auth.user_id())\n")).map((f) => f[0])).toEqual([
@@ -224,6 +226,7 @@ describe("unscoped-query on sync streams", () => {
     const message = "stream s, query sends every row of customers to every user who passes its check on who is asking (a role claim, or a list such as admins), not each user their own; fine if only users meant to see them all pass it";
     expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE auth.parameter('app_metadata') ->> 'role' = 'admin'\n"))).toEqual([["warning", 5, message]]);
     expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE auth.user_id() IN (SELECT user_id FROM admins)\n"))).toEqual([["warning", 5, message]]);
+    expect(lint(stream("  s:\n    query: SELECT * FROM customers WHERE auth.user_id() IN (SELECT DISTINCT user_id FROM admins)\n"))).toEqual([["warning", 5, message]]);
     for (const where of [
       "auth.parameter('app_metadata') ->> 'role' = 'admin'::text",
       "auth.parameter('app_metadata') ->> 'role' = lower('ADMIN')",

@@ -181,8 +181,8 @@ const flag: Gate = (term) =>
 /** Claims every signed-in (role, aud) or every non-anonymous (is_anonymous) Supabase user's token carries, with that value. */
 const EVERY_TOKEN: [RegExp, Set<string>][] = [
   [/^(\$\.)?(role|aud)$/, new Set(["string:authenticated"])],
-  // As JSON text (-> 'is_anonymous') or cast (::text), false reads 'false' or '0'.
-  [/^(\$\.)?is_anonymous$/, new Set(["word:false", "number:0", "string:false", "string:0"])],
+  // ->> reads false as 0; as JSON text (-> 'is_anonymous') it is 'false', and cast to text '0'.
+  [/^(\$\.)?is_anonymous$/, new Set(["word:false", "number:0", "json:false", "cast:0"])],
 ];
 
 /**
@@ -192,12 +192,16 @@ const EVERY_TOKEN: [RegExp, Set<string>][] = [
  */
 const claimValue = (x: Token, folded: boolean) => `${x.kind}:${(folded ? x.text.toLowerCase() : x.text).replace(/^"(.*)"$/, "$1")}`;
 
+/** How a string compares with a claim read as JSON text (->) or cast to text: 'false' or '0'. */
+const textValues = (term: Token[], x: Token) =>
+  x.kind !== "string" ? [] : [...(term.some((y) => sym(y, "->")) ? [`json:${x.text}`] : []), ...(term.some((y) => sym(y, "::") || word(y, "cast")) ? [`cast:${x.text}`] : [])];
+
 /** A check every signed-in Supabase user passes (role or aud = 'authenticated'), or every non-anonymous one (is_anonymous = false). */
 export const everyToken: Gate = (term) => {
   const s = sides(term);
   if (!s || !readsToken(term)) return false;
   const folded = term.some((x) => word(x, "lower") || word(x, "upper"));
-  return EVERY_TOKEN.some(([claim, values]) => topClaim(term, claim) && s.some((side) => literal(side) && side.some((x) => values.has(claimValue(x, folded)))));
+  return EVERY_TOKEN.some(([claim, values]) => topClaim(term, claim) && s.some((side) => literal(side) && side.some((x) => values.has(claimValue(x, folded)) || textValues(term, x).some((v) => values.has(v)))));
 };
 
 /**
@@ -286,24 +290,25 @@ function plainSet(sub: Token[]): boolean {
   return !readsClient(sub.slice(0, end ?? sub.length));
 }
 
-/** Whether a subquery selects one column of one source, with no join and no UNION. */
+/**
+ * Whether a set selects one column, not a fixed value or a token or client value: SELECT
+ * 'admin' FROM ... or SELECT subscription.parameter('u') holds whatever it says, for anyone.
+ * DISTINCT, casts, parentheses and joins are fine; lint does not relate a join's tables.
+ */
 function columnSet(sub: Token[]): boolean {
   const top = topLevel(sub);
-  if (top.some((j) => word(sub[j], "union") || word(sub[j], "intersect") || word(sub[j], "except") || word(sub[j], "join"))) return false;
   const from = top.find((j) => word(sub[j], "from"));
   const end = top.find((j) => word(sub[j], "where"));
-  if (from !== undefined && top.some((j) => j > from && (end === undefined || j < end) && sym(sub[j], ","))) return false;
-  // SELECT DISTINCT role selects one column all the same.
   const first = word(sub[1], "distinct") || word(sub[1], "all") ? 2 : 1;
   const items = splitTop(sub.slice(first, from ?? end ?? sub.length), (x) => sym(x, ","));
   if (items.length !== 1) return false;
   const item = items[0] as Token[];
   const as = topLevel(item).find((j) => word(item[j], "as"));
   const value = as === undefined ? item : item.slice(0, as);
-  return (value.length === 1 && isName(value[0])) || (value.length === 3 && isName(value[0]) && sym(value[1], ".") && isName(value[2]));
+  return value.length > 0 && !literal(value) && !readsAny(value);
 }
 
-/** The CTE a column set reads, by name: SELECT org_id FROM mine. */
+/** The CTE a column set reads, by name: SELECT org_id FROM mine (JOIN ...). */
 function cteSource(sub: Token[]): string | undefined {
   const from = topLevel(sub).find((j) => word(sub[j], "from"));
   return from !== undefined && columnSet(sub) && isName(sub[from + 1]) ? (sub[from + 1] as Token).text.toLowerCase() : undefined;
