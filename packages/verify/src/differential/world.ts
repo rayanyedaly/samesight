@@ -135,9 +135,11 @@ function resolve(fk: ForeignKeyModel, pick: number, row: Record<string, unknown>
   const unset = fk.columns.filter((c) => row[c] === undefined);
   if (!unset.length) return true;
   const nullable = unset.every((c) => t.columns.find((x) => x.name === c)?.nullable);
+  // Without a tenant column (audit mode), every row is in the one "tenant" of the run.
+  const rowTenant = t.tenant === undefined ? undefined : row[t.tenant];
   if (fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1) {
     // Users of the row's own tenant come up most often: they are the ones rules compare with.
-    const own = fixed.users.filter((u) => u.tenant !== null && u.tenant === row[t.tenant]);
+    const own = fixed.users.filter((u) => u.tenant !== null && u.tenant === rowTenant);
     const choices = [...own, ...own, ...fixed.users];
     const user = choices[pick % (choices.length + (nullable ? 1 : 0))];
     row[fk.columns[0] as string] = user ? user.id : null;
@@ -147,7 +149,7 @@ function resolve(fk: ForeignKeyModel, pick: number, row: Record<string, unknown>
     .filter((d) => d.table === fk.table)
     .filter((d) => fk.columns.every((c, i) => row[c] === undefined || d.row[fk.references[i] as string] === row[c]));
   // Parents in the row's own tenant come up most often; others stay possible where the schema allows them.
-  const own = fits.filter((d) => d.tenant === row[t.tenant]);
+  const own = fits.filter((d) => d.tenant === rowTenant);
   const candidates = [...own, ...own, ...fits];
   const n = candidates.length + (nullable ? 1 : 0);
   const parent = n ? candidates[pick % n] : undefined;
@@ -170,40 +172,55 @@ export async function insertWorld(client: pg.Client, tables: TableModel[], world
     // keys through the tenant column first (they anchor the row in its tenant), and keys with
     // more columns first, so a composite key fixes its columns before a single one picks.
     const self = (fk: ForeignKeyModel) => (fk.schema === "public" && fk.table === t.name ? 1 : 0);
-    const anchored = (fk: ForeignKeyModel) => (fk.columns.includes(t.tenant) ? 0 : 1);
+    const tenant = t.tenant;
+    const anchored = (fk: ForeignKeyModel) => (tenant !== undefined && fk.columns.includes(tenant) ? 0 : 1);
     const fks = t.foreignKeys
       .map((fk, i) => ({ fk, i }))
       .sort((a, b) => self(a.fk) - self(b.fk) || anchored(a.fk) - anchored(b.fk) || b.fk.columns.length - a.fk.columns.length);
     for (const gene of world[t.name] ?? []) {
       const row: Record<string, unknown> = { ...gene.values };
-      row[t.tenant] = fixed.tenants[gene.tenant % fixed.tenants.length];
+      if (tenant !== undefined) row[tenant] = fixed.tenants[gene.tenant % fixed.tenants.length];
       // A required key through the tenant column, with no parent in the gene's tenant: the row
       // moves to a tenant that has one rather than being dropped, so small datasets still
       // reach the tables at the bottom of the tree.
-      for (const { fk, i } of fks) {
-        if (fk.schema !== "public" || self(fk) || !fk.columns.includes(t.tenant)) continue;
-        if (!fk.columns.some((c) => c !== t.tenant && t.columns.find((x) => x.name === c)?.nullable === false)) continue;
+      for (const { fk, i } of tenant === undefined ? [] : fks) {
+        if (tenant === undefined || fk.schema !== "public" || self(fk) || !fk.columns.includes(tenant)) continue;
+        if (!fk.columns.some((c) => c !== tenant && t.columns.find((x) => x.name === c)?.nullable === false)) continue;
         const parents = done.filter((d) => d.table === fk.table);
-        if (parents.length && !parents.some((d) => d.tenant === row[t.tenant])) row[t.tenant] = parents[(gene.picks[i] ?? 0) % parents.length]?.tenant;
+        if (parents.length && !parents.some((d) => d.tenant === row[tenant])) row[tenant] = parents[(gene.picks[i] ?? 0) % parents.length]?.tenant;
       }
       for (const pk of t.primaryKey) {
         const col = t.columns.find((c) => c.name === pk);
         if (col?.type === "uuid") row[pk] = prefixedUuid(fixed.prefix);
       }
       if (!fks.every(({ fk, i }) => resolve(fk, gene.picks[i] ?? 0, row, t, fixed, done))) continue;
-      if (await insert(client, t.name, row)) done.push({ table: t.name, row, tenant: row[t.tenant] });
+      if (await insert(client, t.name, row)) done.push({ table: t.name, row, tenant: tenant === undefined ? undefined : row[tenant] });
     }
   }
   return done;
 }
 
-/** Deletes every row of the run's tenants from `tables`, bypassing the append-only triggers. */
-export async function deleteRows(client: pg.Client, tables: TableModel[], prefix: string): Promise<void> {
+/**
+ * Deletes the run's rows from `tables`, bypassing the append-only triggers: every row of
+ * the run's tenants, or, for a table without a tenant column, every row whose primary key
+ * carries the run's prefix (the generator gives uuid keys the prefix) or that points at one
+ * of `users` (the run's users) through a key to auth.users, which also catches rows the
+ * project's own triggers made for the run's rows.
+ */
+export async function deleteRows(client: pg.Client, tables: TableModel[], prefix: string, users: string[] = []): Promise<void> {
   await client.query("begin");
   try {
     await client.query("set local session_replication_role = replica");
     for (const t of [...tables].reverse()) {
-      await client.query(`delete from public.${ident(t.name)} where ${ident(t.tenant)}::text like $1`, [`${prefix}%`]);
+      if (t.tenant !== undefined) {
+        await client.query(`delete from public.${ident(t.name)} where ${ident(t.tenant)}::text like $1`, [`${prefix}%`]);
+        continue;
+      }
+      const [key] = t.primaryKey;
+      if (t.primaryKey.length !== 1 || !key) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column and no single-column primary key`);
+      const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
+      const byUser = owners.map((c) => ` or ${ident(c)} = any($2::uuid[])`).join("");
+      await client.query(`delete from public.${ident(t.name)} where ${ident(key)}::text like $1${byUser}`, owners.length ? [`${prefix}%`, users] : [`${prefix}%`]);
     }
     await client.query("commit");
   } catch (e) {

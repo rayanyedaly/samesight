@@ -1,7 +1,7 @@
 /**
- * What the data generator needs to know about each policy table, read from the live
+ * What the data generator needs to know about each table of the run, read from the live
  * database: columns, foreign keys (auth.users ones included), the value lists and
- * patterns of single-column check constraints, and the literals the policy compares
+ * patterns of single-column check constraints, and the literals the rules compare
  * columns with, so generated rows land on both sides of every rule.
  */
 
@@ -32,9 +32,17 @@ export interface ForeignKeyModel {
   references: string[];
 }
 
+/** A table the run covers: its tenant column, if it has one, and literals its rules compare columns with. */
+export interface ScopeTable {
+  name: string;
+  tenant?: string;
+  hints?: Map<string, Set<string>>;
+}
+
 export interface TableModel {
   name: string;
-  tenant: string;
+  /** Absent outside a Samesight policy (audit mode), where rows belong to users, not tenants. */
+  tenant?: string;
   primaryKey: string[];
   /** Columns with a single-column unique constraint or index (the primary key included). */
   unique: string[];
@@ -78,8 +86,18 @@ function ruleHints(rule: Rule, out: Map<string, Set<string>>): void {
   }
 }
 
-export async function readModel(client: pg.Client, ir: IR): Promise<TableModel[]> {
-  const names = ir.tables.map((t) => t.name);
+/** A policy's tables, with the literals its rules compare each column with. */
+export function policyTables(ir: IR): ScopeTable[] {
+  return ir.tables.map((t) => {
+    const hints = new Map<string, Set<string>>();
+    for (const op of [t.read, t.insert, t.update, t.delete]) for (const rule of op.values()) ruleHints(rule, hints);
+    if (t.check) ruleHints(t.check, hints);
+    return { name: t.name, tenant: t.tenant, hints };
+  });
+}
+
+export async function readModel(client: pg.Client, tables: ScopeTable[]): Promise<TableModel[]> {
+  const names = tables.map((t) => t.name);
   const columns = await rows<{ table: string; name: string; type: string; nullable: boolean; has_default: boolean; computed: boolean }>(
     client,
     `select c.relname as table, a.attname as name, format_type(a.atttypid, a.atttypmod) as type, not a.attnotnull as nullable,
@@ -112,10 +130,8 @@ export async function readModel(client: pg.Client, ir: IR): Promise<TableModel[]
       where n.nspname = 'public' and c.relname = any($1) and i.indisunique and i.indnatts = 1 and i.indpred is null`,
     [names],
   );
-  return ir.tables.map((t) => {
-    const hints = new Map<string, Set<string>>();
-    for (const op of [t.read, t.insert, t.update, t.delete]) for (const rule of op.values()) ruleHints(rule, hints);
-    if (t.check) ruleHints(t.check, hints);
+  return tables.map((t) => {
+    const hints = t.hints ?? new Map<string, Set<string>>();
     const mine = constraints.filter((k) => k.table === t.name);
     const cols: ColumnModel[] = columns
       .filter((c) => c.table === t.name)
@@ -136,7 +152,7 @@ export async function readModel(client: pg.Client, ir: IR): Promise<TableModel[]
       });
     return {
       name: t.name,
-      tenant: t.tenant,
+      ...(t.tenant !== undefined ? { tenant: t.tenant } : {}),
       primaryKey: mine.find((k) => k.type === "p")?.columns ?? ["id"],
       unique: unique.filter((u) => u.table === t.name).map((u) => u.column),
       columns: cols,

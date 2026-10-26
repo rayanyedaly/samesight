@@ -126,23 +126,7 @@ export async function checkCatalog(client: pg.Client, m: Manifest, publication: 
   if (problems.length) for (const p of problems) add("fail", "policies", p);
   else add("ok", "policies", `exactly the ${[...expected.values()].reduce((n, s) => n + s.size, 0)} generated policies, by name, command and role`);
 
-  // Roles: RLS binds anon and authenticated only if they bypass nothing.
-  const roles = await rows<{ what: string }>(
-    client,
-    `select format('%s has %s', rolname, concat_ws(' and ', case when rolsuper then 'SUPERUSER' end, case when rolbypassrls then 'BYPASSRLS' end)) as what
-       from pg_roles where rolname in ('anon', 'authenticated') and (rolsuper or rolbypassrls)
-     union all
-     select format('%s has the privileges of %s', r.rolname, x.rolname)
-       from pg_roles r, pg_roles x
-      where r.rolname in ('anon', 'authenticated') and x.oid <> r.oid and pg_has_role(r.oid, x.oid, 'USAGE')
-     union all
-     select format('%s owns %s, so RLS does not apply to it there', r.rolname, c.relname)
-       from pg_class c join pg_namespace n on n.oid = c.relnamespace, pg_roles r
-      where r.rolname in ('anon', 'authenticated') and ${PROTECTED} and pg_has_role(r.oid, c.relowner, 'USAGE')`,
-    [names],
-  );
-  if (roles.length) for (const r of roles) add("fail", "roles", r.what);
-  else add("ok", "roles", "anon and authenticated bypass no RLS, inherit no other role and own no policy table");
+  out.push(...(await checkRoles(client, names)));
 
   // anon: nothing at all, inherited and PUBLIC grants included.
   const anon = await rows<{ what: string }>(
@@ -172,59 +156,7 @@ export async function checkCatalog(client: pg.Client, m: Manifest, publication: 
   if (anon.length) for (const a of anon) add("fail", "anon", a.what);
   else add("ok", "anon", "no policy, grant or generated function reaches anon");
 
-  // Owner's-rights paths around RLS: every view anon or authenticated can select, followed
-  // through views on views down to the tables it reads. One owner's-rights view on the
-  // path is enough, since Postgres reads its sources as that view's owner.
-  const walk = `with recursive walk(top, rel, owner_rights, depth) as (
-       select v.oid, v.oid, ${OWNER_RIGHTS("v")}, 0
-         from pg_class v join pg_namespace vn on vn.oid = v.relnamespace
-        where v.relkind in ('v', 'm') and vn.nspname not in ('pg_catalog', 'information_schema') and ${REACHABLE("vn")}
-          and (has_table_privilege('anon', v.oid, 'SELECT') or has_table_privilege('authenticated', v.oid, 'SELECT'))
-       union
-       select w.top, r.oid, w.owner_rights or ${OWNER_RIGHTS("r")}, w.depth + 1
-         from walk w join pg_rewrite rw on rw.ev_class = w.rel
-         join pg_depend d on d.classid = 'pg_rewrite'::regclass and d.objid = rw.oid and d.refclassid = 'pg_class'::regclass
-         join pg_class r on r.oid = d.refobjid
-        where d.refobjid <> w.rel and w.depth < 16
-     )`;
-  const views = await rows<{ what: string }>(
-    client,
-    `${walk}
-     select distinct format('%s.%s reads %s.%s through a view with its owner''s rights (not security_invoker), and %s can select it',
-                            vn.nspname, v.relname, n.nspname, c.relname,
-                            case when has_table_privilege('anon', v.oid, 'SELECT') then 'anon' else 'authenticated' end) as what
-       from walk w join pg_class c on c.oid = w.rel join pg_namespace n on n.oid = c.relnamespace
-       join pg_class v on v.oid = w.top join pg_namespace vn on vn.oid = v.relnamespace
-      where w.owner_rights and ${PROTECTED}`,
-    [names],
-  );
-  // A view can also reach rows through a SECURITY DEFINER function, wherever it lives: once
-  // the view resolves it, callers need only EXECUTE, not USAGE on its schema.
-  const viaFunctions = await rows<{ what: string }>(
-    client,
-    `${walk}
-     select distinct format('%s.%s reads rows through %s, which runs as its owner; check that it applies the tenant itself',
-                            vn.nspname, v.relname, p.oid::regprocedure) as what
-       from walk w join pg_rewrite rw on rw.ev_class = w.rel
-       join pg_depend d on d.classid = 'pg_rewrite'::regclass and d.objid = rw.oid and d.refclassid = 'pg_proc'::regclass
-       join pg_proc p on p.oid = d.refobjid join pg_namespace pn on pn.oid = p.pronamespace
-       join pg_class v on v.oid = w.top join pg_namespace vn on vn.oid = v.relnamespace
-      where p.prosecdef and pn.nspname <> all($1) and pn.nspname <> 'samesight'`,
-    [PLATFORM],
-  );
-  for (const v of viaFunctions) add("warn", "views", v.what);
-  if (views.length) for (const v of views) add("fail", "views", v.what);
-  else add("ok", "views", "no view anon or authenticated can select reads a protected table past RLS");
-  const definers = await rows<{ what: string }>(
-    client,
-    `select format('%s runs as its owner and %s can call it; check that it applies the tenant itself', p.oid::regprocedure,
-                   case when has_function_privilege('anon', p.oid, 'execute') then 'anon' else 'authenticated' end) as what
-       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname <> all($1) and n.nspname <> 'samesight' and p.prosecdef
-        and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))`,
-    [PLATFORM],
-  );
-  for (const d of definers) add("warn", "definer functions", d.what);
+  out.push(...(await checkBypasses(client, names)));
 
   // The access token hook.
   const hook = await rows<{ exists: boolean; auth_admin: boolean | null; others: string[] | null }>(
@@ -300,5 +232,89 @@ export async function checkCatalog(client: pg.Client, m: Manifest, publication: 
     if (bad.length) for (const b of bad) add("fail", "append-only", b);
     else add("ok", "append-only", `${appendOnly.join(", ")} reject updates, deletes and truncates`);
   }
+  return out;
+}
+
+/** anon and authenticated: no SUPERUSER or BYPASSRLS, no other role's privileges, no protected table owned. */
+export async function checkRoles(client: pg.Client, names: string[]): Promise<Finding[]> {
+  const out: Finding[] = [];
+  const add = (status: Finding["status"], check: string, detail: string) => out.push({ status, check, detail });
+  // Roles: RLS binds anon and authenticated only if they bypass nothing.
+  const roles = await rows<{ what: string }>(
+    client,
+    `select format('%s has %s', rolname, concat_ws(' and ', case when rolsuper then 'SUPERUSER' end, case when rolbypassrls then 'BYPASSRLS' end)) as what
+       from pg_roles where rolname in ('anon', 'authenticated') and (rolsuper or rolbypassrls)
+     union all
+     select format('%s has the privileges of %s', r.rolname, x.rolname)
+       from pg_roles r, pg_roles x
+      where r.rolname in ('anon', 'authenticated') and x.oid <> r.oid and pg_has_role(r.oid, x.oid, 'USAGE')
+     union all
+     select format('%s owns %s, so RLS does not apply to it there', r.rolname, c.relname)
+       from pg_class c join pg_namespace n on n.oid = c.relnamespace, pg_roles r
+      where r.rolname in ('anon', 'authenticated') and ${PROTECTED} and pg_has_role(r.oid, c.relowner, 'USAGE')`,
+    [names],
+  );
+  if (roles.length) for (const r of roles) add("fail", "roles", r.what);
+  else add("ok", "roles", "anon and authenticated bypass no RLS, inherit no other role and own no policy table");
+  return out;
+}
+
+/** Paths around RLS to the protected tables: owner's-rights views, and SECURITY DEFINER functions anon or authenticated can reach. */
+export async function checkBypasses(client: pg.Client, names: string[]): Promise<Finding[]> {
+  const out: Finding[] = [];
+  const add = (status: Finding["status"], check: string, detail: string) => out.push({ status, check, detail });
+  // Owner's-rights paths around RLS: every view anon or authenticated can select, followed
+  // through views on views down to the tables it reads. One owner's-rights view on the
+  // path is enough, since Postgres reads its sources as that view's owner.
+  const walk = `with recursive walk(top, rel, owner_rights, depth) as (
+       select v.oid, v.oid, ${OWNER_RIGHTS("v")}, 0
+         from pg_class v join pg_namespace vn on vn.oid = v.relnamespace
+        where v.relkind in ('v', 'm') and vn.nspname not in ('pg_catalog', 'information_schema') and ${REACHABLE("vn")}
+          and (has_table_privilege('anon', v.oid, 'SELECT') or has_table_privilege('authenticated', v.oid, 'SELECT'))
+       union
+       select w.top, r.oid, w.owner_rights or ${OWNER_RIGHTS("r")}, w.depth + 1
+         from walk w join pg_rewrite rw on rw.ev_class = w.rel
+         join pg_depend d on d.classid = 'pg_rewrite'::regclass and d.objid = rw.oid and d.refclassid = 'pg_class'::regclass
+         join pg_class r on r.oid = d.refobjid
+        where d.refobjid <> w.rel and w.depth < 16
+     )`;
+  const views = await rows<{ what: string }>(
+    client,
+    `${walk}
+     select distinct format('%s.%s reads %s.%s through a view with its owner''s rights (not security_invoker), and %s can select it',
+                            vn.nspname, v.relname, n.nspname, c.relname,
+                            case when has_table_privilege('anon', v.oid, 'SELECT') then 'anon' else 'authenticated' end) as what
+       from walk w join pg_class c on c.oid = w.rel join pg_namespace n on n.oid = c.relnamespace
+       join pg_class v on v.oid = w.top join pg_namespace vn on vn.oid = v.relnamespace
+      where w.owner_rights and ${PROTECTED}`,
+    [names],
+  );
+  // A view can also reach rows through a SECURITY DEFINER function, wherever it lives: once
+  // the view resolves it, callers need only EXECUTE, not USAGE on its schema.
+  const viaFunctions = await rows<{ what: string }>(
+    client,
+    `${walk}
+     select distinct format('%s.%s reads rows through %s, which runs as its owner; check that it applies the tenant itself',
+                            vn.nspname, v.relname, p.oid::regprocedure) as what
+       from walk w join pg_rewrite rw on rw.ev_class = w.rel
+       join pg_depend d on d.classid = 'pg_rewrite'::regclass and d.objid = rw.oid and d.refclassid = 'pg_proc'::regclass
+       join pg_proc p on p.oid = d.refobjid join pg_namespace pn on pn.oid = p.pronamespace
+       join pg_class v on v.oid = w.top join pg_namespace vn on vn.oid = v.relnamespace
+      where p.prosecdef and pn.nspname <> all($1) and pn.nspname <> 'samesight'`,
+    [PLATFORM],
+  );
+  for (const v of viaFunctions) add("warn", "views", v.what);
+  if (views.length) for (const v of views) add("fail", "views", v.what);
+  else add("ok", "views", "no view anon or authenticated can select reads a protected table past RLS");
+  const definers = await rows<{ what: string }>(
+    client,
+    `select format('%s runs as its owner and %s can call it; check that it applies the tenant itself', p.oid::regprocedure,
+                   case when has_function_privilege('anon', p.oid, 'execute') then 'anon' else 'authenticated' end) as what
+       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname <> all($1) and n.nspname <> 'samesight' and p.prosecdef
+        and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))`,
+    [PLATFORM],
+  );
+  for (const d of definers) add("warn", "definer functions", d.what);
   return out;
 }

@@ -5,6 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
 import { assertLocalTargets } from "./guard.ts";
 
 export interface Stack {
@@ -46,7 +47,15 @@ export function stackFromStatus(status: Record<string, string>, powersync: strin
 
 /** Runs the project's Supabase CLI (a workspace dev dependency) for the stack's addresses and keys. */
 export function readStack(projectDir: string, powersync: string): Stack {
-  const out = execFileSync("pnpm", ["exec", "supabase", "status", "-o", "env"], {
+  // --workdir: pnpm exec runs in the package root, which need not hold supabase/. On Windows
+  // the command goes through cmd.exe, which does not escape arguments: the path is quoted,
+  // and refused if it holds a character cmd.exe would still act on.
+  const win = process.platform === "win32";
+  const dir = resolve(projectDir);
+  // A trailing separator (a drive root) would escape the closing quote.
+  if (win && (/["%^&|<>!]/.test(dir) || /[\\/]$/.test(dir))) throw new Error(`cannot pass ${dir} to the Supabase CLI safely on Windows; move the project to a plainer path`);
+  const workdir = win ? `"${dir}"` : dir;
+  const out = execFileSync("pnpm", ["exec", "supabase", "--workdir", workdir, "status", "-o", "env"], {
     cwd: projectDir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

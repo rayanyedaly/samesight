@@ -71,6 +71,16 @@ describe("compare", () => {
     ]);
   });
 
+  it("names a column the device has that the table does not", () => {
+    const problems = compare([device({ id: "a", list_name: "secret" })], rls([{ id: "a" }]), new Map(), model);
+    expect(problems.map((p) => [p.kind, p.columns])).toEqual([["differs", ["list_name"]]]);
+  });
+
+  it("names a column the device lacks, but not a null it was never sent", () => {
+    const problems = compare([device({ id: "a", status: null })], rls([{ id: "a", status: null, updatedAt: "2021-01-01T00:00:00Z", internalNotes: null }]), new Map(), model);
+    expect(problems.map((p) => [p.kind, p.id, p.columns])).toEqual([["unsent", "a", ["updatedAt"]]]);
+  });
+
   it("normalises the types PowerSync sends as text or integers", () => {
     expect(normalize("boolean", 1)).toBe(true);
     expect(normalize("bigint", "5")).toBe(5);

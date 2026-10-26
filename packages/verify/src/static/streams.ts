@@ -20,6 +20,8 @@ import { type ParsedQuery, parseQuery, render, tokenize } from "./stream-sql.ts"
 export interface Stream {
   name: string;
   ctes: Map<string, string>;
+  /** Devices subscribe without being asked (auto_subscribe: true). */
+  autoSubscribe: boolean;
   /** Labelled as the config names them: "query", or "queries[n]". */
   queries: { label: string; sql: string }[];
 }
@@ -47,6 +49,7 @@ export function parseStreams(yaml: string): Stream[] {
     }
     return {
       name,
+      autoSubscribe: s.auto_subscribe === true,
       ctes: new Map(Object.entries(ctes as Record<string, string>)),
       queries: [
         ...(s.query !== undefined ? [{ label: "query", sql: s.query as string }] : []),
