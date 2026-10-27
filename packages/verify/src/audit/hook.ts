@@ -127,14 +127,15 @@ function bodiesOf(call: string, functions: ReadonlyMap<string, string>): string[
   return [...new Set([...functions].filter(([k]) => !k.includes("/") && (k === call || k.endsWith(`.${call}`))).map(([, b]) => b))];
 }
 
-/** One body's scan, and the calls that led to it from the hook (none for the hook's own). */
+/** One body's scan, the body, and the calls that led to it from the hook (none for the hook's own). */
 export interface DeepScan extends BodyScan {
+  body: string;
   via: string[];
 }
 
 /** The scans of a body and of the functions it calls, `levels` deep, each function once. */
 export function scanDeep(body: string, functions: ReadonlyMap<string, string>, levels = 2): DeepScan[] {
-  const out: DeepScan[] = [{ ...scanBody(body), via: [] }];
+  const out: DeepScan[] = [{ ...scanBody(body), body, via: [] }];
   const seen = new Set<string>();
   let frontier = (out[0]?.calls ?? []).map((call) => ({ call, via: [] as string[] }));
   for (let level = 0; level < levels && frontier.length; level++) {
@@ -143,7 +144,7 @@ export function scanDeep(body: string, functions: ReadonlyMap<string, string>, l
       if (seen.has(call)) continue;
       seen.add(call);
       for (const b of bodiesOf(call, functions)) {
-        const scan = { ...scanBody(b), via: [...via, call] };
+        const scan = { ...scanBody(b), body: b, via: [...via, call] };
         out.push(scan);
         next.push(...scan.calls.map((c) => ({ call: c, via: scan.via })));
       }
@@ -155,8 +156,8 @@ export function scanDeep(body: string, functions: ReadonlyMap<string, string>, l
 
 export interface HookPlan {
   uri: string;
-  /** The function, when the URI names one that exists. */
-  fn?: { schema: string; name: string; body: string };
+  /** The function, when the URI names one that exists; `read`, its body and those of the functions it calls, as scanned. */
+  fn?: { schema: string; name: string; body: string; read: string };
   /** The role its body runs as: its owner when SECURITY DEFINER, else supabase_auth_admin. */
   role?: string;
   /** The public tables it reads, as the database names them. */
@@ -235,7 +236,7 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
   const definer = (call: string) => definers.some((d) => (call.includes(".") ? d.name === call : d.bare === call));
   const asHook = new Set([...(depends?.tables ?? []), ...scans.filter((x) => !x.via.some(definer)).flatMap((x) => x.reads)]);
   findings.push(...(await hookAccess(client, role, tables.filter((t) => asHook.has(`public.${t}`)), shown)));
-  const plan: HookPlan = { uri, fn: { schema: parsed.schema, name: parsed.fn, body: fn.body }, role, tables, findings };
+  const plan: HookPlan = { uri, fn: { schema: parsed.schema, name: parsed.fn, body: fn.body, read: scans.map((x) => x.body).join("\n;\n") }, role, tables, findings };
   if (!tables.length) plan.cannot = views.length ? `it reads no public table, only ${views.join(", ")}` : "its body reads no public table";
   return plan;
 }
