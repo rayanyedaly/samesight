@@ -60,7 +60,7 @@ function topLevel(tokens: Token[], match: (t: Token, i: number) => boolean, from
 }
 
 /** The table one stream query's rows land in on the device, and every table it reads. */
-export function outputTable(sql: string): { table: string; reads: string[] } {
+export function outputTable(sql: string): { table: string; reads: string[]; aliases: Record<string, string> } {
   const tokens = tokenize(sql);
   if (!isWord(tokens[0], "select")) throw new Error("does not start with SELECT");
   const from = topLevel(tokens, (t) => isWord(t, "from"), 1);
@@ -104,7 +104,7 @@ export function outputTable(sql: string): { table: string; reads: string[] } {
   }
   // PowerSync may name the device table after an alias; audit mode compares by source table.
   if (out.alias !== out.table) throw new Error(`calls ${out.table} ${out.alias}, which may rename it on the device; audit mode does not map renamed tables yet`);
-  return { table: out.table, reads: [...new Set(refs.map((r) => r.table))] };
+  return { table: out.table, reads: [...new Set(refs.map((r) => r.table))], aliases: Object.fromEntries(refs.map((r) => [r.alias, r.table])) };
 }
 
 /** Every public table a query names after FROM or JOIN, at any depth (subqueries included). */

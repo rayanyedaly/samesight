@@ -218,6 +218,12 @@ describe("claimReads on inputs a scan gets wrong without care", () => {
       unreadable: [],
     });
     expect(claimReads("public.role_in('a'::text)", "postgres", { functions }).unreadable).toHaveLength(1);
+    // A claim read behind a quoted call still counts: "getOrg"() is a call of getOrg.
+    const quoted = new Map([
+      ["h", "select auth.uid() = u and \"getOrg\"() = o"],
+      ["getOrg", "select auth.jwt() ->> 'org'"],
+    ]);
+    expect(claimReads("h(owner_id, org_id)", "postgres", { functions: quoted }).unreadable).toHaveLength(1);
   });
 
   it("reads a BEGIN ATOMIC wrapper as Postgres prints it, with its column alias", () => {

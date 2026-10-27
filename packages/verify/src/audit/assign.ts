@@ -4,11 +4,13 @@
  * none of them match. Users take every combination of the pools when there are at most six,
  * else as many as six users can show, holding every value when each pool fits; then one user
  * holds the same claims as the first (rows of someone else with the same role), and one holds
- * none. A path compared only with columns gets two values of the columns' type (from a
- * CHECK list, or fresh run uuids), and generated rows take a path's values in the columns
- * it is compared with: a key column's first rows take them as keys (a foreign key's
- * referenced table, for a foreign key), any other column draws them often. Columns are
- * matched by bare name in the tables of the rules that compare them. Pure: the run signs
+ * none. A path compared only with columns gets two values of the claim's cast or the first
+ * column's type (fresh run uuids, two numbers, true and false, two short strings, or a
+ * CHECK or enum list's first two), and generated rows take a path's values in the columns
+ * it is compared with, where their type, length and list take them: a uuid key column's
+ * first rows take the run's own uuids among them as keys (a foreign key's referenced table,
+ * for a foreign key), any other column draws them often. Columns are matched by bare name
+ * in the tables of the rules that compare them. Pure: the run signs
  * the users up, and generates rows, with what this gives.
  */
 
@@ -99,6 +101,7 @@ function targetsOf(columns: string[], columnTables: Record<string, string[]>, fa
         else skipped.push(`${t.name}.${name} (a key to ${fk.table}.${ref}, which the run does not generate keys for)`);
       } else if (t.primaryKey.length === 1 && t.primaryKey[0] === name) {
         if (known) targets.push({ table: t.name, column: name, key: true, type: col.type });
+        else skipped.push(`${t.name}.${name} (a primary key, and no rule comparing it names its table)`);
       } else targets.push({ table: t.name, column: name, key: false, type: col.type, ...(col.values?.length ? { values: col.values } : {}) });
     }
   }
@@ -111,12 +114,16 @@ export function fitsType(v: ClaimValue, type: string): boolean {
   switch (castFamily(type)) {
     case "uuid":
       return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
-    case "number":
-      return typeof v === "number" || (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v));
+    case "number": {
+      const whole = /^(smallint|integer|int|int2|int4|int8|bigint)$/.test(type);
+      const n = typeof v === "number" ? v : typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : undefined;
+      return n !== undefined && (!whole || Number.isInteger(n));
+    }
     case "boolean":
       return typeof v === "boolean";
     case "text": {
-      if (typeof v === "object") return false;
+      // A json column takes only JSON text, which no pool value is meant to be.
+      if (typeof v === "object" || /^jsonb?$/.test(type)) return false;
       const n = /\((\d+)\)$/.exec(type);
       return !n || String(v).length <= Number(n[1]);
     }
@@ -227,10 +234,10 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
         }
         if (x.key) {
           const keys = fits.filter((v) => typeof v === "string" && minted.has(v));
-          if (!keys.length) {
-            skipped.push(`${x.table}.${x.column} (a key, which takes only the run's own uuids, never a rule's literal)`);
-            continue;
-          }
+          const left = fits.filter((v) => !keys.includes(v));
+          // A key takes only fresh run uuids, so cleanup finds its rows: a rule's own literal is held by a user, by no row.
+          if (left.length) skipped.push(`${x.table}.${x.column} for ${left.map(show).join(", ")} (a key takes only fresh run uuids, so cleanup finds its rows)`);
+          if (!keys.length) continue;
           // One pool of keys per table: a second claim keyed on the same table is not placed.
           const taken = keyPools.get(x.table);
           if (taken && taken.column !== x.column) {

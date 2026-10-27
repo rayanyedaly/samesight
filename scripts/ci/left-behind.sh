@@ -16,7 +16,7 @@ containers=$(docker ps --all --quiet --filter label=dev.samesight.audit.run | tr
 roles=$(sql "select count(*) from pg_roles where starts_with(rolname, 'samesight_audit_')")
 slots=$(sql "select count(*) from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')")
 users=$(sql "select count(*) from auth.users where email like '%@verify.samesight.test'")
-planted=$(sql "select (select count(*) from pg_policy where starts_with(polname, 'samesight_')) + (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and starts_with(p.proname, 'samesight_'))")
+planted=$(sql "select (select count(*) from pg_policy where starts_with(polname, 'samesight_')) + (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname in ('public', 'extensions') and starts_with(p.proname, 'samesight_'))")
 # Every uuid column of every public table: a run's rows are keyed, and point at each other, by prefixed uuids.
 rows=$(sql "select coalesce(sum((xpath('/row/n/text()', query_to_xml(format('select count(*) as n from %I.%I where %I::text like %L', table_schema, table_name, column_name, '5a3e5a3e%'), false, true, '')))[1]::text::int), 0)
               from information_schema.columns where table_schema = 'public' and data_type = 'uuid'")

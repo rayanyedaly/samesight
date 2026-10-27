@@ -197,7 +197,8 @@ function readsTokenThrough(fn: string, functions: ReadonlyMap<string, string>, s
     const bare = other.split(".").at(-1) as string;
     // Any name, quoted ones with regex characters included, is matched as text.
     const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (other !== fn && new RegExp(`(^|[^A-Za-z0-9_$])${escaped}\\s*\\(`, "i").test(body) && readsTokenThrough(other, functions, seen, reads)) return true;
+    // Quoted or not: f( and "f"( both call it.
+    if (other !== fn && new RegExp(`(^|[^A-Za-z0-9_$])"?${escaped}"?\\s*\\(`, "i").test(body) && readsTokenThrough(other, functions, seen, reads)) return true;
   }
   return false;
 }

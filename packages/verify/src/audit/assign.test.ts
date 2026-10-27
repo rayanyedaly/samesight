@@ -1,11 +1,11 @@
-import type { ClaimValue } from "samesight/compiler";
+import { type ClaimValue, parseSyncConfig } from "samesight/compiler";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { claimLabel } from "../differential/run.ts";
 import type { TableModel } from "../differential/model.ts";
 import { createUsers, signIn } from "../differential/users.ts";
 import type { Stack } from "../stack.ts";
 import { assignClaims, fitsType, metadataOf, otherValue, pickCombinations, show } from "./assign.ts";
-import { claimFindings, planClaims, type RuleSql } from "./claims.ts";
+import { claimFindings, planClaims, type RuleSql, syncRules } from "./claims.ts";
 
 const policy = (where: string, sql: string): RuleSql => ({ where, sql, dialect: "postgres" });
 const role = (where: string, value: string) => policy(where, `(((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text) = '${value}'::text)`);
@@ -278,7 +278,8 @@ describe("claims compared with columns", () => {
     expect(a.claimValues.get("documents")?.get("status")).toEqual(["published"]);
   });
 
-  const stream = (table: string, sql: string): RuleSql => ({ where: `${table} stream`, sql, dialect: "streams", table });
+  // As syncRules gives them: the output table, and every table the query names.
+  const stream = (table: string, sql: string): RuleSql => ({ where: `${table} stream`, sql, dialect: "streams", table, tables: [...new Set([table, ...(/JOIN (\w+)/i.exec(sql)?.slice(1) ?? [])])] });
 
   it("takes a joined column's table from its qualifier", () => {
     const plan = planClaims([
@@ -309,5 +310,39 @@ describe("claims compared with columns", () => {
     expect(a.paths[0]?.pool).toContain(literal);
     expect(a.keyPools.get("orgs")?.values).not.toContain(literal);
     expect(a.keyPools.get("orgs")?.values).toHaveLength(1);
+  });
+
+  it("reads an alias as the query's one table, and skips composite keys and types it has no values for", () => {
+    const aliased = planClaims([
+      { where: "s", sql: "SELECT * FROM documents d WHERE d.org_id = auth.parameter('app_metadata') ->> 'org_id'", dialect: "streams", tables: ["documents"] },
+    ]);
+    expect(aliased.uses.find((u) => u.key === "app_metadata.org_id")?.columnTables).toEqual({ org_id: ["documents"] });
+    const wide: TableModel[] = [
+      ...model,
+      {
+        name: "pins",
+        primaryKey: ["id"],
+        unique: ["id"],
+        columns: [col("id", "uuid"), col("org_id", "uuid"), col("site", "uuid"), col("shape", "geometry")],
+        foreignKeys: [{ columns: ["org_id", "site"], schema: "public", table: "sites", references: ["org_id", "id"] }],
+      },
+    ];
+    const plan = planClaims([on("pins", `(site = (${read("site")})::uuid)`), on("pins", `(shape = ${read("shape")})`)]);
+    const a = assignClaims(plan, fresh, wide);
+    expect(Object.fromEntries(a.notSet)).toEqual({
+      "app_metadata.shape": expect.stringContaining("pins.shape (geometry, which audit generates no claim values for)"),
+      "app_metadata.site": expect.stringContaining("pins.site (part of a composite foreign key"),
+    });
+  });
+
+  it("resolves a join's alias, names a rule's literal no key takes, and keeps values a column refuses out", () => {
+    const joined = planClaims(
+      syncRules(parseSyncConfig("config:\n  edition: 3\nstreams:\n  s:\n    auto_subscribe: true\n    queries:\n      - SELECT documents.* FROM documents INNER JOIN orgs o ON documents.org_id = o.id WHERE o.id = auth.parameter('app_metadata') ->> 'org'\n")),
+    );
+    expect(joined.uses.find((u) => u.key === "app_metadata.org")?.columnTables).toEqual({ id: ["orgs"] });
+    const literal = "11111111-2222-4333-8444-555555555555";
+    const plan = planClaims([on("documents", `(org_id = (${read("org_id")})::uuid)`), on("orgs", `((${read("org_id")})::uuid = '${literal}'::uuid)`)]);
+    expect(assignClaims(plan, fresh, model).paths[0]?.skipped).toEqual([`orgs.id for ${literal} (a key takes only fresh run uuids, so cleanup finds its rows)`]);
+    expect([fitsType(1.5, "integer"), fitsType(2, "integer"), fitsType(1.5, "numeric"), fitsType("ss-a", "jsonb")]).toEqual([false, true, true, false]);
   });
 });

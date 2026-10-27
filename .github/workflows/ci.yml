@@ -169,7 +169,7 @@ jobs:
       # Claim discovery and the catalog on an app whose rules read app_metadata.
       - run: pnpm --filter @samesight/verify test:roles
       # Every policy and stream, the role and org ones included, is seen both ways (a fixed
-      # seed, so a change in the summary replays exactly).
+      # seed, so a changed summary replays its datasets).
       - name: samesight-verify audit
         run: >-
           timeout 300 bash scripts/ci/verify-coverage.sh examples/audit-roles
