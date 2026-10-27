@@ -26,6 +26,9 @@ export class Teardown {
     this.steps.push({ what, fn });
   }
 
+  /** Whether every step has run. */
+  finished = false;
+
   /** Whether the teardown has begun: a run still starting stops at its next step. */
   get started(): boolean {
     return this.done !== undefined;
@@ -56,6 +59,7 @@ export class Teardown {
           this.log(`could not remove ${step.what}: ${(e as Error).message}; the next audit that starts PowerSync removes it`);
         }
       }
+      this.finished = true;
       return failed;
     })();
     return this.done;
@@ -63,6 +67,10 @@ export class Teardown {
 }
 
 type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
+
+/** What to do about a run's leftovers: run users can hold privileged app_metadata (role=admin) until removed. */
+export const LEFT_FOR_NEXT =
+  "the next audit removes what is left, run users included (they may hold privileged app_metadata); `delete from auth.users where email like '%@verify.samesight.test'` removes those now";
 
 /** What onSignals needs of `process`. */
 export interface Signals {
@@ -95,6 +103,13 @@ export function onSignals(
 ): () => void {
   let code: number | undefined;
   const first = new Map<string, number>();
+  // Said when the process exits before the teardown is done: what is left may include privileged run users.
+  const unfinished = () => {
+    if (teardown.finished) return;
+    try {
+      log(`stopped before the clean-up finished: ${LEFT_FOR_NEXT}`);
+    } catch {}
+  };
   const end = (why: string, exitCode: number) => {
     const at = now();
     const firstAt = first.get(why);
@@ -102,14 +117,20 @@ export function onSignals(
     if (code !== undefined) {
       // Only a signal sent again means "now": a broken output errors on each write, and
       // the same signal can arrive twice at once (from the terminal, and forwarded by npx).
-      if (firstAt !== undefined && at - firstAt >= REPEAT_MS && why !== "output closed") proc.exit(code);
+      if (firstAt !== undefined && at - firstAt >= REPEAT_MS && why !== "output closed") {
+        unfinished();
+        proc.exit(code);
+      }
       return;
     }
     code = exitCode;
     try {
       log(`${why}: removing what this run made (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next audit)`);
     } catch {}
-    setTimeout(() => proc.exit(exitCode), graceMs).unref();
+    setTimeout(() => {
+      unfinished();
+      proc.exit(exitCode);
+    }, graceMs).unref();
     // A teardown the run began itself finishes and reports on its own.
     if (!teardown.started) {
       teardown.stoppedBy = why;

@@ -38,7 +38,7 @@ import { audit } from "./audit/run.ts";
 import { type AutoStarted, autoStart } from "./autostart/run.ts";
 import { onSignals, Teardown } from "./autostart/teardown.ts";
 import { connectLocal } from "./db.ts";
-import { differential, setUp, tearDown } from "./differential/run.ts";
+import { brokeDown, differential, setUp, tearDown } from "./differential/run.ts";
 import { worldArbitrary } from "./differential/world.ts";
 import { mutationTest } from "./mutate/run.ts";
 import { failed, type Finding, formatFindings } from "./report.ts";
@@ -357,8 +357,8 @@ async function auditMain(argv: string[]): Promise<number> {
     signalled = stopped();
     auditDone = true;
     // A run that broke down (an error, or datasets the run could not finish) shows the service's last words before they are removed.
-    const brokeDown = !signalled && (threw || findings.some((f) => f.status === "fail" && /^the run failed: |\(then a run failed: /.test(f.detail)));
-    const left = (await started?.stop(brokeDown ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? (await teardown.run());
+    const broke = !signalled && (threw || brokeDown(findings));
+    const left = (await started?.stop(broke ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? (await teardown.run());
     stopListening();
     if (left.length && !signalled) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit that starts PowerSync removes it` })));
     await client?.end().catch(() => {});

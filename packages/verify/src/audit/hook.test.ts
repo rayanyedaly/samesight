@@ -12,6 +12,8 @@ describe("parseHookUri", () => {
     expect(showUri("https://user:secret@hooks.example.com/token/abc123?key=abc#x")).toBe("https://hooks.example.com/...");
     expect(showUri(" https://u:pw@hooks.example.com/ ")).toBe("https://hooks.example.com");
     expect(showUri("pg-functions://postgres/public/hook")).toBe("pg-functions://postgres/public/hook");
+    expect(showUri("postgres://user:secret@db/x")).toBe("postgres:...");
+    expect(showUri("not a uri")).toBe("(a hook uri audit does not read)");
   });
 });
 
@@ -60,7 +62,7 @@ describe("scanBody", () => {
     expect(s.reads).toEqual(["public.memberships", "public.teams", "public.profiles", "public.orgs"]);
     expect(s.writes).toEqual(["public.http_log", "public.profiles", "public.seen"]);
     expect(s.calls).not.toContain("http_log");
-    expect(s.calls).toEqual(expect.arrayContaining(["extensions.dblink_exec", "pg_catalog.pg_notify"]));
+    expect(s.calls).toEqual(["now", "extensions.dblink_exec", "pg_catalog.pg_notify"]);
   });
 
   it("tells metadata set in the token from metadata read", () => {

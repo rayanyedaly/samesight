@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { onSignals, type Signals, Teardown } from "./teardown.ts";
+import { LEFT_FOR_NEXT, onSignals, type Signals, Teardown } from "./teardown.ts";
 
 describe("Teardown", () => {
   it("runs steps last first, once, and goes on past a failing one", async () => {
@@ -154,9 +154,12 @@ describe("onSignals", () => {
     const late = proc();
     const slow = new Teardown(() => {});
     slow.add("hung", () => new Promise(() => {}));
-    onSignals(slow, () => {}, late.p, 20);
+    const lines: string[] = [];
+    onSignals(slow, (l) => lines.push(l), late.p, 20);
     late.p.emit("SIGHUP");
     expect(await late.exited).toBe(129);
+    // What is left may hold privileged run users: said, with how to remove them now.
+    expect(lines.at(-1)).toBe(`stopped before the clean-up finished: ${LEFT_FOR_NEXT}`);
 
     // Begun by the run itself (its end): the grace starts with the signal.
     const own = proc();

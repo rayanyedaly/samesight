@@ -259,7 +259,7 @@ export function callsIn(body: string): string[] {
 
 
 /** Keywords Postgres writes before a parenthesis that are no function: EXISTS (...), IN (...). */
-const NOT_CALLS = new Set(["exists", "in", "any", "all", "some", "array", "values", "row", "filter", "over", "if", "elsif", "while", "and", "or", "not", "when", "then", "else", "case", "select", "from", "where", "on", "using", "return", "returning", "into", "as", "cast", "coalesce", "nullif", "greatest", "least"]);
+const NOT_CALLS = new Set(["exists", "lateral", "in", "any", "all", "some", "array", "values", "row", "filter", "over", "if", "elsif", "while", "and", "or", "not", "when", "then", "else", "case", "select", "from", "where", "on", "using", "return", "returning", "into", "as", "cast", "coalesce", "nullif", "greatest", "least"]);
 
 /**
  * A plpgsql body with its comments and string literals blanked, in one pass, so a quote or

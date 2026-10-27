@@ -8,6 +8,7 @@
 import fc from "fast-check";
 import type pg from "pg";
 import { type IR, ident } from "samesight/compiler";
+import { LEFT_FOR_NEXT } from "../autostart/teardown.ts";
 import { connectLocal, rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
@@ -137,7 +138,7 @@ export async function stoppable(
       if (ending) return ending.catch(() => {});
       if (!holdingLock.has(client)) return;
       stopping = true;
-      const later = "the next run removes them";
+      const later = LEFT_FOR_NEXT;
       let fresh: pg.Client | undefined;
       try {
         fresh = await connectLocal(stack.db);
@@ -167,6 +168,15 @@ export async function stoppable(
 
 export async function setUp(client: pg.Client, stack: Stack, ir: IR): Promise<Setup> {
   return exclusive(client, stack, policyTables(ir), () => prepareRun(client, stack, ir));
+}
+
+/** How a differential finding says a dataset could not be run (the service failed, say), alone or after a counterexample. */
+const RUN_FAILED = "the run failed: ";
+const THEN_FAILED = "(then a run failed: ";
+
+/** Whether the differential broke down rather than found something: its service's logs are then worth showing. */
+export function brokeDown(findings: Finding[]): boolean {
+  return findings.some((f) => f.status === "fail" && (f.detail.startsWith(RUN_FAILED) || f.detail.includes(THEN_FAILED)));
 }
 
 /** Users a run without a policy signs up. */
@@ -693,7 +703,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
     datasets += x.datasets;
   }
   x = { ...x, datasets };
-  const crashed = x.crash === undefined ? "" : ` (then a run failed: ${String(x.crash)})`;
+  const crashed = x.crash === undefined ? "" : ` ${THEN_FAILED}${String(x.crash)})`;
   if (x.lastFailing) {
     const world = x.lastFailing;
     const counterexample = describeFailures(s, failing(await withWorld(s, world, () => compareAll(s))));
@@ -710,7 +720,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       ]),
     };
   }
-  if (x.crash !== undefined) return { ...fail(`the run failed: ${String(x.crash)}`, x.datasets), stopped: x.stopped };
+  if (x.crash !== undefined) return { ...fail(`${RUN_FAILED}${String(x.crash)}`, x.datasets), stopped: x.stopped };
   if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit" }] };
   const untested = s.tables
     .filter((t) => s.synced.includes(t.name))

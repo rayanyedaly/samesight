@@ -87,7 +87,7 @@ describe("claimFindings", () => {
       ["u1", {}],
     ]);
     expect(details(claimFindings(plan, hook, same)).find((l) => l.includes("app_role"))).toMatch(
-      /added by the access token hook pg-functions:\/\/postgres\/public\/custom_access_token_hook; users signed in before any rows were generated, so every token carries the same value \(u0: null, u1: null\)\. Rules that read it are tested for that value only; steering hook claims is planned \(B3b\)$/,
+      /added by the access token hook pg-functions:\/\/postgres\/public\/custom_access_token_hook; every token carries the same value \(u0: null, u1: null\)\. Rules that read it are tested for that value only$/,
     );
     const none = details(claimFindings(plan, undefined, same)).find((l) => l.includes("app_role"));
     expect(none).toMatch(/no run user's token carries it \(and supabase\/config\.toml enables no access token hook\), so every user reads it as null$/);

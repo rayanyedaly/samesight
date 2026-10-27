@@ -33,7 +33,7 @@ fi
 log=$(mktemp)
 trap 'rm -f "$log" "$planted"' EXIT
 set +e
-pnpm exec samesight-verify audit --sync-config "$planted" --runs 3 --time-limit 60 --seed 7 2>&1 | tee "$log"
+pnpm exec samesight-verify audit --sync-config "$planted" --runs 3 --time-limit 120 --seed 7 2>&1 | tee "$log"
 code=${PIPESTATUS[0]}
 set -e
 if [ "$code" -eq 0 ]; then

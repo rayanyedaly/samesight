@@ -149,10 +149,10 @@ describe("run users holding the roles, the orgs and the hook's teams", () => {
     expect(lines.find((f) => f.detail.startsWith("app_metadata.org_id"))?.detail).toMatch(/; generated rows take them in orgs\.id$/);
   });
 
-  it("keeps the hook from anon and authenticated, as the migration says", async () => {
+  it("lets only supabase_auth_admin run the hook, as the migration says", async () => {
     const can = async (role: string) =>
       (await client.query<{ ok: boolean }>("select has_function_privilege($1, 'public.custom_access_token_hook(jsonb)', 'execute') as ok", [role])).rows[0]?.ok;
-    expect([await can("anon"), await can("authenticated"), await can("supabase_auth_admin")]).toEqual([false, false, true]);
+    expect([await can("anon"), await can("authenticated"), await can("service_role"), await can("supabase_auth_admin")]).toEqual([false, false, false, true]);
   });
 });
 

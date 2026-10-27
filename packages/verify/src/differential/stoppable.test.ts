@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import type { Stack } from "../stack.ts";
+import { LEFT_FOR_NEXT } from "../autostart/teardown.ts";
 import { holdingLock, stoppable } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
@@ -72,8 +73,11 @@ describe("stoppable", () => {
     holdingLock.add(client);
     fresh.lock = false;
     await stop.step();
+    // The run's own backend was still ended, and the run no longer counts as holding the lock.
+    expect(fresh.sql[0]).toBe("select pg_terminate_backend($1, 5000)");
+    expect(holdingLock.has(client)).toBe(false);
     expect(fresh.sql.some((s) => /from auth\.users/.test(s))).toBe(false);
-    expect(lines).toEqual(["could not take the run's lock to remove its users and rows; the next run removes them"]);
+    expect(lines).toEqual([`could not take the run's lock to remove its users and rows; ${LEFT_FOR_NEXT}`]);
   });
 
   it("waits for the run's own tearDown when it has begun, instead of cleaning twice", async () => {
@@ -97,6 +101,6 @@ describe("stoppable", () => {
       throw new Error("refusing to connect");
     });
     await expect(stop.step()).resolves.toBeUndefined();
-    expect(lines).toEqual(["could not remove the run's users and rows: refusing to connect; the next run removes them"]);
+    expect(lines).toEqual([`could not remove the run's users and rows: refusing to connect; ${LEFT_FOR_NEXT}`]);
   });
 });
