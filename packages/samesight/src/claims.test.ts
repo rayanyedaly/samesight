@@ -133,7 +133,7 @@ describe("claimReads on sync streams", () => {
       { path: "app_metadata.role", compared: lit(["admin"]) },
       { path: "sub", compared: col("owner_id") },
     ]],
-    ["SELECT * FROM docs WHERE docs.org_id = auth.parameter('app_metadata') ->> 'org_id' AND docs.status = 'published'", [{ path: "app_metadata.org_id", compared: col("org_id") }]],
+    ["SELECT * FROM docs WHERE docs.org_id = auth.parameter('app_metadata') ->> 'org_id' AND docs.status = 'published'", [{ path: "app_metadata.org_id", compared: { ...col("org_id"), qualifier: "docs" } }]],
   ])("%s", (sql, expected) => {
     expect(reads(sql, "streams")).toEqual(expected);
   });

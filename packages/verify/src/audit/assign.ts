@@ -68,7 +68,10 @@ function targetsOf(columns: string[], columnTables: Record<string, string[]>, fa
   const targets: Target[] = [];
   const skipped: string[] = [];
   for (const name of columns) {
-    const tables = columnTables[name]?.length ? model.filter((t) => columnTables[name]?.includes(t.name)) : model;
+    // Rules whose table is unknown (a subquery, a CTE) leave every table with the name: then
+    // a primary key is never keyed, since \`id\` would match every table's.
+    const known = Boolean(columnTables[name]?.length);
+    const tables = known ? model.filter((t) => columnTables[name]?.includes(t.name)) : model;
     if (!tables.some((t) => t.columns.some((c) => c.name === name))) skipped.push(`${name} (no generated table has it)`);
     for (const t of tables) {
       const col = t.columns.find((c) => c.name === name);
@@ -76,6 +79,14 @@ function targetsOf(columns: string[], columnTables: Record<string, string[]>, fa
       const kind = castFamily(col.type);
       if (family !== undefined && kind !== family) {
         skipped.push(`${t.name}.${name} (${col.type}, which the rules do not cast the claim to)`);
+        continue;
+      }
+      if (kind === "unknown" && !col.values?.length) {
+        skipped.push(`${t.name}.${name} (${col.type}, which audit generates no claim values for)`);
+        continue;
+      }
+      if (t.foreignKeys.some((k) => k.columns.length > 1 && k.columns.includes(name))) {
+        skipped.push(`${t.name}.${name} (part of a composite foreign key, which generated rows fill from parent rows)`);
         continue;
       }
       const fk = t.foreignKeys.find((k) => k.columns.length === 1 && k.columns[0] === name);
@@ -87,12 +98,32 @@ function targetsOf(columns: string[], columnTables: Record<string, string[]>, fa
         if (parent && parent.primaryKey.length === 1 && parent.primaryKey[0] === ref) targets.push({ table: parent.name, column: ref, key: true, type: col.type });
         else skipped.push(`${t.name}.${name} (a key to ${fk.table}.${ref}, which the run does not generate keys for)`);
       } else if (t.primaryKey.length === 1 && t.primaryKey[0] === name) {
-        targets.push({ table: t.name, column: name, key: true, type: col.type });
+        if (known) targets.push({ table: t.name, column: name, key: true, type: col.type });
       } else targets.push({ table: t.name, column: name, key: false, type: col.type, ...(col.values?.length ? { values: col.values } : {}) });
     }
   }
   const seen = new Set<string>();
   return { targets: targets.filter((x) => !seen.has(`${x.table}.${x.column}`) && seen.add(`${x.table}.${x.column}`)), skipped };
+}
+
+/** Whether a column of this type takes the value: generated rows never hold one the database refuses. */
+export function fitsType(v: ClaimValue, type: string): boolean {
+  switch (castFamily(type)) {
+    case "uuid":
+      return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+    case "number":
+      return typeof v === "number" || (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v));
+    case "boolean":
+      return typeof v === "boolean";
+    case "text": {
+      if (typeof v === "object") return false;
+      const n = /\((\d+)\)$/.exec(type);
+      return !n || String(v).length <= Number(n[1]);
+    }
+    default:
+      // An enum or another type: only its own listed values, checked by the caller.
+      return typeof v === "string";
+  }
 }
 
 /** Two values of the targets' type for a path compared only with columns; undefined when audit has none. */
@@ -107,7 +138,7 @@ function columnPool(targets: Target[], family: string | undefined, fresh: () => 
     case "boolean":
       return [true, false];
     case "text":
-      return targets.some((x) => x.key) ? undefined : ["samesight-a", "samesight-b"];
+      return targets.some((x) => x.key) ? undefined : ["ss-a", "ss-b"];
     default:
       return undefined;
   }
@@ -128,7 +159,7 @@ export function otherValue(values: ClaimValue[], casts: string[], fresh: () => s
   return "samesight-other";
 }
 
-function castFamily(cast: string): "uuid" | "number" | "boolean" | "text" | "unknown" {
+export function castFamily(cast: string): "uuid" | "number" | "boolean" | "text" | "unknown" {
   if (cast === "uuid") return "uuid";
   if (/^(smallint|integer|int|int2|int4|int8|bigint|numeric|decimal|real|double precision|float4|float8)(\(.*\))?$/.test(cast)) return "number";
   if (/^(boolean|bool)$/.test(cast)) return "boolean";
@@ -151,12 +182,20 @@ export function assignClaims(plan: ClaimsPlan, fresh: () => string, model: Table
     else {
       const families = new Set(u.casts.map(castFamily));
       const family = families.size === 1 && !families.has("unknown") ? [...families][0] : undefined;
-      const { targets, skipped } = targetsOf(u.columns, u.columnTables, family, model);
+      const found = targetsOf(u.columns, u.columnTables, family, model);
+      const skipped = found.skipped;
+      // Without a cast, the pool follows the first column's type; columns of another type get none.
+      const lead = family ?? (found.targets[0] ? castFamily(found.targets[0].type) : undefined);
+      const targets = found.targets.filter((x) => {
+        if (family !== undefined || castFamily(x.type) === lead || x.values?.length) return true;
+        skipped.push(`${x.table}.${x.column} (${x.type}, unlike ${found.targets[0]?.table}.${found.targets[0]?.column})`);
+        return false;
+      });
       // A user with no claims shows null (IS NULL): the pool holds values.
       const values = u.values.filter((v) => v !== null);
       let pool: ClaimValue[] | undefined;
       if (values.length === 0 && u.columns.length > 0) {
-        pool = targets.length && (families.size <= 1 && !families.has("unknown")) ? columnPool(targets, family, fresh) : undefined;
+        pool = targets.length && families.size <= 1 && !families.has("unknown") ? columnPool(targets, lead, fresh) : undefined;
         if (!pool) {
           const why = skipped.length ? `: ${skipped.join("; ")}` : targets.length ? ", and audit has no values of their type" : "";
           notSet.set(u.key, `it is compared only with ${u.columns.length === 1 ? "column" : "columns"} ${u.columns.join(", ")}, and no generated row can hold its values${why}`);
@@ -172,6 +211,12 @@ export function assignClaims(plan: ClaimsPlan, fresh: () => string, model: Table
       }
       const placed: string[] = [];
       for (const x of targets) {
+        // Only values the column takes: its type, its length, its CHECK or enum list.
+        const fits = pool.filter((v) => fitsType(v, x.type) && (!x.values || x.values.includes(String(v))));
+        if (!fits.length) {
+          skipped.push(`${x.table}.${x.column} (${x.values ? "its CHECK or enum list allows" : `${x.type} takes`} none of the values)`);
+          continue;
+        }
         if (x.key) {
           // One pool of keys per table: a second claim keyed on the same table is not placed.
           const taken = keyPools.get(x.table);
@@ -179,14 +224,8 @@ export function assignClaims(plan: ClaimsPlan, fresh: () => string, model: Table
             skipped.push(`${x.table}.${x.column} (the table's first rows already take another claim's keys)`);
             continue;
           }
-          keyPools.set(x.table, { column: x.column, values: [...new Set([...(taken?.values ?? []), ...pool])] });
+          keyPools.set(x.table, { column: x.column, values: [...new Set([...(taken?.values ?? []), ...fits])] });
         } else {
-          // A column with a CHECK list takes only values the list allows: the rest would be refused.
-          const fits = x.values ? pool.filter((v) => x.values?.includes(String(v))) : pool;
-          if (!fits.length) {
-            skipped.push(`${x.table}.${x.column} (its CHECK list allows none of the values)`);
-            continue;
-          }
           const columns = claimValues.get(x.table) ?? new Map<string, unknown[]>();
           claimValues.set(x.table, columns);
           columns.set(x.column, [...new Set([...(columns.get(x.column) ?? []), ...fits])]);

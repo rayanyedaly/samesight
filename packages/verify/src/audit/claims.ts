@@ -172,11 +172,13 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
         for (const v of c.values) if (!use.values.some((x) => valueKey(x) === valueKey(v))) use.values.push(v);
       } else if (c.kind === "column") {
         if (!use.columns.includes(c.column)) use.columns.push(c.column);
-        // A column in a subquery is another table's: only the rule's own table is known.
-        if (rule.table !== undefined && !read.inSubquery) {
+        // A column in a subquery is another table's: only the rule's own table is known, or
+        // the table a qualifier names (a join's; an alias names no table, so it matches none).
+        const table = c.qualifier ?? rule.table;
+        if (table !== undefined && !read.inSubquery) {
           const tables = use.columnTables[c.column] ?? [];
           use.columnTables[c.column] = tables;
-          if (!tables.includes(rule.table)) tables.push(rule.table);
+          if (!tables.includes(table)) tables.push(table);
         }
         // By bare name, as the generator applies them (a membership table's user_id in a
         // subquery included); it never gives user ids to a primary or foreign key.
