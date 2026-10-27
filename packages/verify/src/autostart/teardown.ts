@@ -1,6 +1,6 @@
 /**
  * The one way an auto-started run is taken down, whatever ends it: the audit finishing,
- * an error, Ctrl+C or SIGTERM. Steps are added before the thing they remove is created,
+ * an error, Ctrl+C, SIGTERM or the terminal closing (SIGHUP). Steps are added before the thing they remove is created,
  * so a run that fails half way removes exactly what it made; they run in reverse order,
  * once, and one step failing does not stop the others.
  *
@@ -30,7 +30,7 @@ export class Teardown {
           await step.fn();
         } catch (e) {
           failed.push(step.what);
-          this.log(`could not remove ${step.what}: ${(e as Error).message}; the next run removes it`);
+          this.log(`could not remove ${step.what}: ${(e as Error).message}; the next audit that starts PowerSync removes it`);
         }
       }
       return failed;
@@ -40,28 +40,32 @@ export class Teardown {
 }
 
 /** What onSignals needs of `process`. */
+type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
+
 export interface Signals {
-  once(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
-  off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  once(event: Signal, listener: () => void): unknown;
+  off(event: Signal, listener: () => void): unknown;
   exit(code: number): never;
 }
 
 /**
- * Runs the teardown on Ctrl+C or SIGTERM, then exits as a killed process would (130,
- * 143). A second Ctrl+C during it exits at once. Returns a function that stops listening.
+ * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP, then exits as a killed process would
+ * (130, 143, 129). A second Ctrl+C during it exits at once. Returns a function that
+ * stops listening.
  */
 export function onSignals(teardown: Teardown, log: (line: string) => void, proc: Signals = process): () => void {
-  const handle = (signal: "SIGINT" | "SIGTERM", code: number) => () => {
+  const handle = (signal: Signal, code: number) => () => {
     log(`${signal}: removing what this run started (Ctrl+C again to leave it for the next run to remove)`);
     proc.once("SIGINT", () => proc.exit(code));
     void teardown.run().then(() => proc.exit(code));
   };
-  const int = handle("SIGINT", 130);
-  const term = handle("SIGTERM", 143);
-  proc.once("SIGINT", int);
-  proc.once("SIGTERM", term);
+  const handlers = [
+    ["SIGINT", handle("SIGINT", 130)],
+    ["SIGTERM", handle("SIGTERM", 143)],
+    ["SIGHUP", handle("SIGHUP", 129)],
+  ] as const;
+  for (const [signal, fn] of handlers) proc.once(signal, fn);
   return () => {
-    proc.off("SIGINT", int);
-    proc.off("SIGTERM", term);
+    for (const [signal, fn] of handlers) proc.off(signal, fn);
   };
 }
