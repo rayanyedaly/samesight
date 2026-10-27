@@ -62,7 +62,7 @@ const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.
 const ARGV = process.argv.slice(2);
 const began = Date.now();
 /** With --json, stdout carries the report document alone: everything the run prints goes to stderr. */
-const JSON_OUT = ARGV.includes("--json");
+const JSON_OUT = ARGV.some((a) => a === "--json" || a.startsWith("--json="));
 const textOut = JSON_OUT ? process.stderr : process.stdout;
 /** Colour and symbols in a terminal; plain when piped, in CI, or under NO_COLOR. Decided once, for every section, on the stream the text goes to. */
 const COLOR = useColor(textOut, process.env);
@@ -453,7 +453,8 @@ function report(findings: Finding[], started: number): number {
 function reportPath(argv: string[]): string | undefined {
   let path: string | undefined;
   for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
-    if (argv[i] === "--report" && i + 1 < argv.length) path = argv[++i];
+    // A flag after --report is not its file (parseArgs refuses the line): no file named --json.
+    if (argv[i] === "--report" && i + 1 < argv.length && !argv[i + 1]?.startsWith("-")) path = argv[++i];
     else if (argv[i]?.startsWith("--report=")) path = argv[i]?.slice("--report=".length);
   }
   return path;

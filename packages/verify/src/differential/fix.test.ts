@@ -1,5 +1,8 @@
+import type pg from "pg";
+import { parseStreams } from "samesight/compiler";
 import { describe, expect, it } from "vitest";
-import { ownerColumn, suggestFix } from "./fix.ts";
+import type { RowReport } from "../report.ts";
+import { likelyFixes, ownerColumn, suggestFix } from "./fix.ts";
 
 describe("ownerColumn", () => {
   it.each([
@@ -54,5 +57,34 @@ describe("suggestFix", () => {
 
   it("suggests nothing when the policy is more than the owner filter", () => {
     expect(suggestFix(q("SELECT * FROM lists"), none, { name: "p", qual: "((owner_id = auth.uid()) OR is_public)" }, "lists")).toBeUndefined();
+  });
+});
+
+describe("likelyFixes", () => {
+  it("suggests nothing when another stream has the same query, which shares its bucket and sends the row too", async () => {
+    const streams = parseStreams(`
+streams:
+  mine:
+    auto_subscribe: true
+    query: SELECT * FROM lists
+  also:
+    auto_subscribe: true
+    query: select *  from lists
+`);
+    const run: string[] = [];
+    const client = { query: async (text: string) => (run.push(text), { rows: [] }) } as unknown as pg.Client;
+    const leak: RowReport = {
+      kind: "leak",
+      summary: "",
+      user: { label: "u1", id: "id-1" },
+      table: "lists",
+      id: "5a3e5a3e-1",
+      row: "lists 5a3e5a3e-1",
+      sentBy: [{ stream: "mine", query: "query", sql: "SELECT * FROM lists" }],
+      policies: [{ name: "owned lists", permissive: true, verdict: "refuses" }],
+    };
+    await likelyFixes(client, { kind: "streams", streams }, [leak], () => ({ sub: "id-1" }));
+    expect(leak.fix).toBeUndefined();
+    expect(run).toEqual([]);
   });
 });

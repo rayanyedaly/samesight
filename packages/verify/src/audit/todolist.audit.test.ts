@@ -14,6 +14,8 @@ import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal, rolledBack } from "../db.ts";
 import { compareAll, differential, PREFIX, type Run, setUpUsers, tearDown, withWorld } from "../differential/run.ts";
+import { sendingQueries } from "../differential/attribute.ts";
+import { likelyFixes } from "../differential/fix.ts";
 import { policyVerdicts } from "../differential/policies.ts";
 import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
 import { formatRow, type RowReport } from "../report.ts";
@@ -503,10 +505,10 @@ describe("policy verdicts on the demo", () => {
 
   it("evaluates none with an event trigger on DROP POLICY, and says why", async () => {
     const [a, b] = s.fixed.users.map((u) => u.id) as [string, string];
-    await client.query("create or replace function public.samesight_test_ddl() returns event_trigger language plpgsql as $$ begin end $$");
-    await client.query("drop event trigger if exists samesight_test_ddl");
-    await client.query("create event trigger samesight_test_ddl on ddl_command_end execute function public.samesight_test_ddl()");
     try {
+      await client.query("create or replace function public.samesight_test_ddl() returns event_trigger language plpgsql as $$ begin end $$");
+      await client.query("drop event trigger if exists samesight_test_ddl");
+      await client.query("create event trigger samesight_test_ddl on ddl_command_end execute function public.samesight_test_ddl()");
       await withList("plain", a, async (id) => {
         const leak = report("leak", b, id);
         await policyVerdicts(client, [leak], claimsOf);
@@ -516,6 +518,47 @@ describe("policy verdicts on the demo", () => {
     } finally {
       await client.query("drop event trigger if exists samesight_test_ddl");
       await client.query("drop function if exists public.samesight_test_ddl()");
+    }
+  });
+});
+
+describe("the sending query and the likely fix on the demo", () => {
+  const config = (yaml: string) => {
+    const c = parseSyncConfig(yaml);
+    return { kind: c.kind, streams: c.streams };
+  };
+  const published = readFileSync(`${DEMO}sync-config.yaml`, "utf8");
+  const planted = published.replace("- SELECT * FROM lists WHERE owner_id = auth.user_id()", "- SELECT * FROM lists");
+  const claimsOf = (id: string) => s.sessions.get(id)?.claims;
+
+  it("names the planted query that sent another user's list, and the owner filter it lacks, checked against the row", async () => {
+    expect(planted).not.toBe(published);
+    const [a, b] = s.fixed.users.map((u) => u.id) as [string, string];
+    const id = prefixedUuid(PREFIX);
+    await client.query("insert into public.lists (id, name, owner_id) values ($1, 'plain', $2)", [id, a]);
+    try {
+      const fresh = (): RowReport => ({ kind: "leak", summary: "", user: { label: "u1", id: b }, table: "lists", id, row: `lists ${id}`, sentBy: [{ stream: "user_data" }] });
+      const leak = fresh();
+      const sync = config(planted);
+      await sendingQueries(client, sync.streams, [leak], claimsOf);
+      expect(leak.sentBy).toEqual([{ stream: "user_data", query: "queries[0]", sql: "SELECT * FROM lists" }]);
+      await policyVerdicts(client, [leak], claimsOf);
+      await likelyFixes(client, sync, [leak], claimsOf);
+      expect(leak.fix).toEqual({ query: "queries[0]", add: "WHERE owner_id = auth.user_id()", why: 'queries[0] has no owner_id filter, which policy "owned lists" has' });
+
+      // A query that already filters on the owner gets none, and nor does a sync rules config.
+      const filtered = fresh();
+      await sendingQueries(client, config(published).streams, [filtered], claimsOf);
+      await policyVerdicts(client, [filtered], claimsOf);
+      await likelyFixes(client, config(published), [filtered], claimsOf);
+      expect(filtered.fix).toBeUndefined();
+      const rules = fresh();
+      await sendingQueries(client, sync.streams, [rules], claimsOf);
+      await policyVerdicts(client, [rules], claimsOf);
+      await likelyFixes(client, { kind: "bucket definitions", streams: sync.streams }, [rules], claimsOf);
+      expect(rules.fix).toBeUndefined();
+    } finally {
+      await client.query("delete from public.lists where id = $1", [id]);
     }
   });
 });
