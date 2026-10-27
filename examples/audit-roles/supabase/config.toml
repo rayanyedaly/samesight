@@ -1,0 +1,60 @@
+# A local Supabase project for the audit-roles example: Postgres, Auth, REST and the
+# gateway only. Ports 573xx keep it apart from the other examples (543xx to 563xx).
+project_id = "samesight-audit-roles"
+
+[api]
+enabled = true
+port = 57321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 57322
+shadow_port = 57320
+major_version = 17
+
+[db.pooler]
+enabled = false
+port = 57329
+
+[db.seed]
+enabled = false
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = false
+port = 57323
+
+[inbucket]
+enabled = false
+port = 57324
+
+[storage]
+enabled = false
+
+[analytics]
+enabled = false
+port = 57327
+
+[edge_runtime]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+# ES256 key made by scripts/stack-up.sh (gitignored): PowerSync checks tokens against the JWKS.
+signing_keys_path = "./signing_keys.json"
+jwt_expiry = 3600
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+
+# Each audit signs every run user in once, and the live tests run several audits in a row:
+# more than the CLI's default allowance of sign-ins per five minutes from one address.
+[auth.rate_limit]
+sign_in_sign_ups = 1000

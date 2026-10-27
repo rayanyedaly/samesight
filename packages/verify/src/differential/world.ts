@@ -57,6 +57,12 @@ function fkColumns(t: TableModel): Set<string> {
 }
 
 function scalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
+  const base = baseScalar(c);
+  // Values run users hold in a claim the rules compare this column with: drawn as often as the rest.
+  return base && c.claimValues?.length ? fc.oneof(fc.constantFrom(...c.claimValues), base) : base;
+}
+
+function baseScalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
   const t = c.type;
   if (c.values?.length) return fc.constantFrom(...new Set([...c.values, ...c.hints]));
   if (c.pattern !== undefined) return fc.stringMatching(new RegExp(c.pattern));
@@ -185,6 +191,7 @@ export async function insertWorld(client: pg.Client, tables: TableModel[], world
     const fks = t.foreignKeys
       .map((fk, i) => ({ fk, i }))
       .sort((a, b) => self(a.fk) - self(b.fk) || anchored(a.fk) - anchored(b.fk) || b.fk.columns.length - a.fk.columns.length);
+    let keyed = 0;
     for (const gene of world[t.name] ?? []) {
       const row: Record<string, unknown> = { ...gene.values };
       if (tenant !== undefined) row[tenant] = fixed.tenants[gene.tenant % fixed.tenants.length];
@@ -201,7 +208,10 @@ export async function insertWorld(client: pg.Client, tables: TableModel[], world
         const col = t.columns.find((c) => c.name === pk);
         if (col?.type === "uuid") row[pk] = prefixedUuid(fixed.prefix);
       }
+      // The first rows take the keys run users hold in a claim (an org id), so rules comparing
+      // them match; each key is tried once, so a refused one leaves the rest of the table alone.
       if (!fks.every(({ fk, i }) => resolve(fk, gene.picks[i] ?? 0, row, t, fixed, done))) continue;
+      if (t.keyPool && keyed < t.keyPool.values.length) row[t.keyPool.column] = t.keyPool.values[keyed++];
       if (await insert(client, t.name, row)) done.push({ table: t.name, row, tenant: tenant === undefined ? undefined : row[tenant] });
     }
   }

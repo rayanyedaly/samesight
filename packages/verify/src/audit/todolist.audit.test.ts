@@ -7,6 +7,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { parseSyncConfig } from "samesight/compiler";
 import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import type pg from "pg";
@@ -17,6 +18,8 @@ import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
 import { type AutoStarted, autoStart } from "../autostart/run.ts";
 import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
+import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
+import { coverageScope, stateOf } from "./coverage.ts";
 import { auditTables } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
 
@@ -84,6 +87,42 @@ describe("the audit catalog on the demo", () => {
     expect(findings).toContainEqual(expect.objectContaining({ status: "fail", check: "row level security", detail: expect.stringMatching(/off on todos/) }));
     expect(findings).toContainEqual(expect.objectContaining({ status: "fail", check: "publication", detail: expect.stringMatching(/does not publish todos/) }));
     expect(findings).toContainEqual(expect.objectContaining({ status: "warn", check: "anon", detail: expect.stringMatching(/"anyone" on lists/) }));
+  });
+});
+
+describe("claim discovery on the demo's catalog", () => {
+  const discover = async () => planClaims(await policyRules(client), await policyFunctions(client));
+
+  it("finds only the user id as published, compared with owner_id", async () => {
+    const plan = await discover();
+    expect(plan.uses.map((u) => u.key)).toEqual(["sub"]);
+    expect(plan.identityColumns).toEqual(["owner_id"]);
+    expect(claimFindings(plan, undefined)).toEqual([{ status: "ok", check: "claims", detail: "no rule reads a token claim other than the user id" }]);
+  });
+
+  it("reads through a SQL wrapper, reports a plpgsql one, and takes the user id in any spelling", async () => {
+    const plan = await rolledBack(client, async () => {
+      await client.query("create function public.samesight_test_role() returns text language sql stable as $$ select auth.jwt() -> 'app_metadata' ->> 'role' $$");
+      await client.query(
+        "create function public.samesight_test_check() returns boolean language plpgsql stable as $$ begin return auth.jwt() ->> 'tier' = 'gold'; end $$",
+      );
+      await client.query("create policy samesight_role on public.lists for select to authenticated using ((select public.samesight_test_role()) = 'admin')");
+      await client.query("create policy samesight_check on public.lists for select to authenticated using (public.samesight_test_check())");
+      await client.query("create policy samesight_sub on public.todos for select to authenticated using ((auth.jwt() ->> 'sub')::uuid = created_by)");
+      // Two levels: the policy's function reads the token through another one.
+      await client.query("create function public.samesight_test_tier() returns text language sql stable as $$ select auth.jwt() ->> 'tier' $$");
+      await client.query("create function public.samesight_test_gold() returns boolean language sql stable return public.samesight_test_tier() = 'gold'");
+      await client.query("create policy samesight_gold on public.todos for select to authenticated using (public.samesight_test_gold())");
+      // A helper in the extensions schema is read like any other.
+      await client.query("create function extensions.samesight_test_tier2() returns boolean language plpgsql stable as $$ begin return auth.jwt() ->> 'tier' = 'x'; end $$");
+      await client.query("create policy samesight_ext on public.todos for select to authenticated using (extensions.samesight_test_tier2())");
+      return discover();
+    });
+    expect(plan.uses.find((u) => u.key === "app_metadata.role")).toMatchObject({ values: ["admin"], rules: ['policy "samesight_role" on lists (USING)'] });
+    expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_check" on lists (USING)', reason: expect.stringMatching(/calls public\.samesight_test_check, which reads the token/) }));
+    expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_ext" on todos (USING)', reason: expect.stringMatching(/calls extensions\.samesight_test_tier2/) }));
+    expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_gold" on todos (USING)', reason: expect.stringMatching(/calls public\.samesight_test_gold, which reads the token/) }));
+    expect(plan.identityColumns).toEqual(["created_by", "owner_id"]);
   });
 });
 
@@ -199,5 +238,46 @@ describe("the write path on the demo", () => {
     });
     // The new row must pass the SELECT policy too, since the WHERE reads the table.
     expect(refused).toBe("42501");
+  });
+});
+
+describe("coverage on the demo", () => {
+  const scope = async () => {
+    const config = parseSyncConfig(readFileSync(`${DEMO}sync-config.yaml`, "utf8"));
+    return coverageScope(client, SYNCED, config.streams, await policyFunctions(client), config.kind, new Set());
+  };
+
+  it("sees both policies and the user_data stream's two tables allowing and refusing, and a hook-only policy only refusing", async () => {
+    // Committed for the run, since coverage reads in its own transaction: it lets no run user
+    // read more (no token carries app_role), so the differential still passes.
+    await client.query("drop policy if exists samesight_hook_only on public.lists");
+    await client.query("create policy samesight_hook_only on public.lists for select to authenticated using ((auth.jwt() ->> 'app_role') = 'auditor')");
+    try {
+      const cov = await scope();
+      const r = await differential(s, { runs: 2, seed: 3, timeLimitMs: 120_000, coverage: cov });
+      expect(r.findings.filter((f) => f.status === "fail")).toEqual([]);
+      expect(cov.policies.map((p) => [p.table, p.name, stateOf(p.tally), p.reachable])).toEqual([
+        ["lists", "owned lists", "exercised", true],
+        ["lists", "samesight_hook_only", "only refused", false],
+        ["todos", "todos in owned lists", "exercised", true],
+      ]);
+      expect(cov.units.map((u) => [u.streams, u.table, stateOf(u.tally)])).toEqual([
+        [["user_data"], "lists", "exercised"],
+        [["user_data"], "todos", "exercised"],
+      ]);
+      expect(cov.datasets).toBeGreaterThanOrEqual(2);
+    } finally {
+      await client.query("drop policy if exists samesight_hook_only on public.lists");
+    }
+  }, 300_000);
+
+  it("names an event trigger that would run on DROP POLICY, and then measures no policy", async () => {
+    const cov = await rolledBack(client, async () => {
+      await client.query("create function public.samesight_test_ddl() returns event_trigger language plpgsql as $$ begin end $$");
+      await client.query("create event trigger samesight_test_ddl on ddl_command_end execute function public.samesight_test_ddl()");
+      return scope();
+    });
+    expect(cov.triggers).toEqual(["samesight_test_ddl (public.samesight_test_ddl)"]);
+    expect(cov.notes).toContainEqual(expect.objectContaining({ status: "warn", detail: expect.stringMatching(/^policies not measured: .*event triggers would run on that \(samesight_test_ddl/) }));
   });
 });

@@ -128,10 +128,13 @@ jobs:
       # Planted catalog, RLS and insert-policy breakages (rolled back), and auto-start's
       # clean-up on Ctrl+C, SIGTERM and SIGKILL.
       - run: pnpm --filter @samesight/verify test:audit
-      # The Phase 5 gate: the demo as published passes, and a planted sync config divergence is caught.
+      # The Phase 5 gate: the demo as published passes, with both policies and both stream
+      # tables seen allowing and refusing, and a planted sync config divergence is caught.
       - name: samesight-verify audit
-        working-directory: examples/audit-todolist
-        run: timeout 300 pnpm run verify --runs 4
+        run: >-
+          timeout 300 bash scripts/ci/verify-coverage.sh examples/audit-todolist
+          "2 of 2 RLS read policies on synced tables were seen both allowing and refusing a run user a row\. 2 of 2 stream/table pairs both sent and withheld a row\."
+          --project upstream --sync-config upstream/sync-config.yaml --runs 4 --seed 7
       - name: samesight-verify audit on a planted sync config
         working-directory: examples/audit-todolist
         run: timeout 420 pnpm run verify:planted
@@ -139,21 +142,47 @@ jobs:
       - name: samesight-verify audit on sync rules
         working-directory: examples/audit-todolist
         run: timeout 600 pnpm run verify:rules
-      # Every auto-started container, role and slot must be gone after the runs above, and
-      # the demo's own publication untouched.
+      # Every auto-started container, role and slot, every run user and every run row must be
+      # gone after the runs above, and the demo's own publication untouched.
       - name: nothing left behind
         if: ${{ !cancelled() }}
-        run: |
-          sql() { docker exec supabase_db_react-supabase-todolist psql -tA -U postgres -d postgres -c "$1"; }
-          left=$(docker ps --all --quiet --filter label=dev.samesight.audit.run)
-          roles=$(sql "select count(*) from pg_roles where starts_with(rolname, 'samesight_audit_')")
-          slots=$(sql "select count(*) from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')")
-          pub=$(sql "select count(*) from pg_publication where pubname = 'powersync' and puballtables")
-          if [ -n "$left" ] || [ "$roles" != 0 ] || [ "$slots" != 0 ] || [ "$pub" != 1 ]; then
-            echo "left behind: containers [$left], $roles roles, $slots slots; demo publication present: $pub"
-            exit 1
-          fi
+        run: bash scripts/ci/left-behind.sh supabase_db_react-supabase-todolist powersync all
       - if: failure()
         run: docker logs supabase_db_react-supabase-todolist --tail 100 || true
       - if: always()
         run: pnpm --filter audit-todolist stack:down
+
+  roles:
+    name: audit mode on the roles app
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Supabase only; each audit below starts its own PowerSync (auto-start) and removes it.
+      - run: pnpm --filter audit-roles stack:up
+      # Claim discovery and the catalog on an app whose rules read app_metadata.
+      - run: pnpm --filter @samesight/verify test:roles
+      # Every policy and stream, the role and org ones included, is seen both ways (a fixed
+      # seed, so a changed summary replays its datasets).
+      - name: samesight-verify audit
+        run: >-
+          timeout 300 bash scripts/ci/verify-coverage.sh examples/audit-roles
+          "8 of 8 RLS read policies on synced tables were seen both allowing and refusing a run user a row\. 7 of 7 stream/table pairs both sent and withheld a row\."
+          --sync-config sync-config.yaml --runs 4 --seed 7
+      # Run users hold the roles the rules compare: a leak only editors see must be caught.
+      - name: samesight-verify audit on a planted editor leak
+        working-directory: examples/audit-roles
+        run: timeout 420 pnpm run verify:planted
+      - name: nothing left behind
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/left-behind.sh supabase_db_samesight-audit-roles powersync
+      - if: failure()
+        run: docker logs supabase_db_samesight-audit-roles --tail 100 || true
+      - if: always()
+        run: pnpm --filter audit-roles stack:down

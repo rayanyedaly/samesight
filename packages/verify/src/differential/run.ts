@@ -11,6 +11,9 @@ import { type IR, ident } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
+import { show } from "../audit/assign.ts";
+import { claimKey } from "../audit/claims.ts";
+import { type Coverage, measure, pending } from "../audit/coverage.ts";
 import { compare, type Problem } from "./compare.ts";
 import { syncOnce } from "./device.ts";
 import { insertOrder, policyTables, readModel, type ScopeTable, type TableModel } from "./model.ts";
@@ -99,22 +102,31 @@ export async function setUp(client: pg.Client, stack: Stack, ir: IR): Promise<Se
 /** Users a run without a policy signs up. */
 export const AUDIT_USERS = 4;
 
+/** The metadata audit gives each run user, and the claim paths to label users by. */
+export interface UserClaims {
+  /** Per user, by index; the number of users. */
+  metadata: Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>[];
+  paths: string[][];
+}
+
 /**
- * A run without a policy (audit mode): plain signed-up users, no tenants, roles or token
- * hook. Rows belong to users through their foreign keys to auth.users, and what a device
- * may hold is whatever RLS lets its user read.
+ * A run without a policy (audit mode): signed-up users with no tenants, holding the
+ * metadata `claims` gives them, if any. Rows belong to users through their foreign keys to
+ * auth.users, and what a device may hold is whatever RLS lets its user read. A user is
+ * labelled by the values its token carries at the claim paths: u2 (app_metadata.role=editor).
  */
-export async function setUpUsers(client: pg.Client, stack: Stack, scope: { tables: ScopeTable[]; synced: string[] }, count = AUDIT_USERS): Promise<Run> {
+export async function setUpUsers(client: pg.Client, stack: Stack, scope: { tables: ScopeTable[]; synced: string[] }, claims?: UserClaims): Promise<Run> {
+  const count = claims?.metadata.length || AUDIT_USERS;
   return exclusive(client, stack, scope.tables, async () => {
     const model = insertOrder(await readModel(client, scope.tables));
     // Without tenants, the run finds its rows again only by the prefix it gives uuid keys.
     const refused = auditRefusals(model, scope.synced);
     if (refused.length) throw new Error(`audit mode cannot run on these tables: ${refused.join("; ")}`);
     await cleanup(client, stack, model);
-    const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36));
-    const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: `u${i}` }));
+    const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36), claims?.metadata);
     const sessions = new Map<string, Session>();
-    for (const u of members) sessions.set(u.id, await signIn(stack, u.email, password));
+    for (const u of users) sessions.set(u.id, await signIn(stack, u.email, password));
+    const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: claimLabel(`u${i}`, sessions.get(u.id)?.claims ?? {}, claims?.paths ?? []) }));
     return {
       client,
       stack,
@@ -128,6 +140,16 @@ export async function setUpUsers(client: pg.Client, stack: Stack, scope: { table
       gaps: "warn",
     };
   });
+}
+
+/** u2 (app_metadata.role=editor), from what the token carries at each path; bare when it carries none. */
+export function claimLabel(name: string, claims: Record<string, unknown>, paths: string[][]): string {
+  const held = paths.flatMap((path) => {
+    let v: unknown = claims;
+    for (const k of path) v = v !== null && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined;
+    return v === undefined || v === null ? [] : [`${claimKey(path)}=${show(v)}`];
+  });
+  return held.length ? `${name} (${held.join(", ")})` : name;
 }
 
 /**
@@ -378,6 +400,8 @@ export interface DifferentialResult {
   runs: number;
   /** The shrunk failing world's problems, in plain words. */
   counterexample?: string[];
+  /** The time limit ended the run before every dataset. */
+  stopped?: boolean;
 }
 
 /** Problems a run fails on, and those it only warns about: in an audit, sync may be meant to send less than RLS allows. */
@@ -441,7 +465,15 @@ export async function explore<W>(
   return out;
 }
 
-export async function differential(s: Run, options: { runs: number; seed?: number; timeLimitMs: number }): Promise<DifferentialResult> {
+export interface DifferentialOptions {
+  runs: number;
+  seed?: number;
+  timeLimitMs: number;
+  /** Audit only: counts which rules each passing dataset exercised, until the first failure. */
+  coverage?: Coverage;
+}
+
+export async function differential(s: Run, options: DifferentialOptions): Promise<DifferentialResult> {
   const check = "differential";
   lastInsertError.clear();
   // What the run actually compared: a dataset whose rows all fail to insert, that nobody may
@@ -474,15 +506,22 @@ export async function differential(s: Run, options: { runs: number; seed?: numbe
   };
   const fail = (detail: string, runs: number) => ({ runs, findings: withGaps([{ status: "fail" as const, check, detail }]) });
 
+  // Coverage counts datasets up to the first failure: shrinking replays variations of that one.
+  let failedOnce = false;
   const evaluate = async (world: World) => {
-    const failures = await withWorld(s, world, (rowsIn) => {
+    const ok = await withWorld(s, world, async (rowsIn) => {
       for (const r of rowsIn) inserted.set(r.table, (inserted.get(r.table) ?? 0) + 1);
-      return compareAll(s, { tally: visible, received });
+      const devices = await syncAll(s);
+      const passed = failing(await compareAll(s, { devices, tally: visible, received })).length === 0;
+      if (passed && !failedOnce && options.coverage) await measure(s, options.coverage, rowsIn, devices);
+      return passed;
     });
-    return failing(failures).length === 0;
+    failedOnce ||= !ok;
+    return ok;
   };
   const untestedTables = () =>
-    s.tables.filter((t) => s.synced.includes(t.name) && !(inserted.get(t.name) && visible.get(t.name) && received.get(t.name))).length > 0;
+    s.tables.filter((t) => s.synced.includes(t.name) && !(inserted.get(t.name) && visible.get(t.name) && received.get(t.name))).length > 0 ||
+    (options.coverage !== undefined && pending(options.coverage));
   // Small random datasets can leave a table deep in the foreign keys with no row a user
   // reads (its rows all landed in the tenant nobody in the run belongs to). More datasets
   // are tried, within the time limit, until every synced table was compared.
@@ -513,7 +552,7 @@ export async function differential(s: Run, options: { runs: number; seed?: numbe
       ]),
     };
   }
-  if (x.crash !== undefined) return fail(`the run failed: ${String(x.crash)}`, x.datasets);
+  if (x.crash !== undefined) return { ...fail(`the run failed: ${String(x.crash)}`, x.datasets), stopped: x.stopped };
   if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit" }] };
   const untested = s.tables
     .filter((t) => s.synced.includes(t.name))
@@ -538,6 +577,7 @@ export async function differential(s: Run, options: { runs: number; seed?: numbe
   const sum = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0);
   return {
     runs: x.datasets,
+    stopped: x.stopped,
     findings: withGaps([
       {
         status: "ok",

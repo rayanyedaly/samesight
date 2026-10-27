@@ -1,0 +1,345 @@
+/**
+ * Which app_metadata and user_metadata values each run user holds. Every path the rules
+ * compare with literals gets a pool: those literals, as the rules type them, plus one value
+ * none of them match. Users take every combination of the pools when there are at most six,
+ * else as many as six users can show, holding every value when each pool fits; then one user
+ * holds the same claims as the first (rows of someone else with the same role), and one holds
+ * none. A path compared only with columns gets two values of the claim's cast or the first
+ * column's type (fresh run uuids, two numbers, true and false, two short strings, or a
+ * CHECK or enum list's first two), and generated rows take a path's values in the columns
+ * it is compared with, where their type, length and list take them: a uuid key column's
+ * first rows take the run's own uuids among them as keys (a foreign key's referenced table,
+ * for a foreign key), any other column draws them often. Columns are matched by bare name
+ * in the tables of the rules that compare them. Pure: the run signs
+ * the users up, and generates rows, with what this gives.
+ */
+
+import type { ClaimValue } from "samesight/compiler";
+import type { TableModel } from "../differential/model.ts";
+import type { Finding } from "../report.ts";
+import type { ClaimsPlan } from "./claims.ts";
+
+/** Users before the copy and the user with no claims. */
+const SPREAD = 6;
+const MIN_USERS = 4;
+
+export interface SetPath {
+  path: string[];
+  key: string;
+  /** The values users take: the rules' literals, then the one none of them match, if any. */
+  pool: ClaimValue[];
+  /** Columns generated rows put these values in, as table.column. */
+  columns: string[];
+  /** Columns compared with it that get none, and why. */
+  skipped: string[];
+}
+
+export type Metadata = Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>;
+
+export interface Assignment {
+  paths: SetPath[];
+  /** Per run user, by index: the value of each set path, by key. Absent: the user holds none. */
+  users: Map<string, ClaimValue>[];
+  /** Why each path the rules read in metadata is not set, by key. */
+  notSet: Map<string, string>;
+  /** Values and combinations no user holds, when they do not fit. */
+  findings: Finding[];
+  /** Some combination of values of two or more paths is held by no user. */
+  partial: boolean;
+  /** Per table and column, values generated rows draw often. */
+  claimValues: Map<string, Map<string, unknown[]>>;
+  /** Per table, a key column whose first generated rows take these values. */
+  keyPools: Map<string, { column: string; values: unknown[] }>;
+}
+
+/** Values of a column's type that two users can tell apart. */
+const COLUMN_POOL = 2;
+
+interface Target {
+  table: string;
+  column: string;
+  /** Rows take the values as keys (the first rows), or draw them. */
+  key: boolean;
+  /** The column's own CHECK or enum values. */
+  values?: string[];
+  type: string;
+}
+
+/** Where generated rows put a path's values, and the columns compared with it that cannot take them. */
+function targetsOf(columns: string[], columnTables: Record<string, string[]>, family: string | undefined, model: TableModel[]): { targets: Target[]; skipped: string[] } {
+  const targets: Target[] = [];
+  const skipped: string[] = [];
+  for (const name of columns) {
+    // Rules whose table is unknown (a subquery, a CTE) leave every table with the name: then
+    // a primary key is never keyed, since \`id\` would match every table's.
+    const known = Boolean(columnTables[name]?.length);
+    const tables = known ? model.filter((t) => columnTables[name]?.includes(t.name)) : model;
+    if (!tables.some((t) => t.columns.some((c) => c.name === name))) skipped.push(`${name} (no generated table has it)`);
+    for (const t of tables) {
+      const col = t.columns.find((c) => c.name === name);
+      if (!col) continue;
+      const kind = castFamily(col.type);
+      if (family !== undefined && kind !== family) {
+        skipped.push(`${t.name}.${name} (${col.type}, which the rules do not cast the claim to)`);
+        continue;
+      }
+      if (kind === "unknown" && !col.values?.length) {
+        skipped.push(`${t.name}.${name} (${col.type}, which audit generates no claim values for)`);
+        continue;
+      }
+      if (t.foreignKeys.some((k) => k.columns.length > 1 && k.columns.includes(name))) {
+        skipped.push(`${t.name}.${name} (part of a composite foreign key, which generated rows fill from parent rows)`);
+        continue;
+      }
+      const fk = t.foreignKeys.find((k) => k.columns.length === 1 && k.columns[0] === name);
+      if (fk?.schema === "auth") {
+        skipped.push(`${t.name}.${name} (a key to auth.users: not given run user ids yet)`);
+      } else if (fk) {
+        const parent = model.find((m) => m.name === fk.table);
+        const ref = fk.references[0] as string;
+        if (parent && parent.primaryKey.length === 1 && parent.primaryKey[0] === ref) targets.push({ table: parent.name, column: ref, key: true, type: col.type });
+        else skipped.push(`${t.name}.${name} (a key to ${fk.table}.${ref}, which the run does not generate keys for)`);
+      } else if (t.primaryKey.length === 1 && t.primaryKey[0] === name) {
+        if (known) targets.push({ table: t.name, column: name, key: true, type: col.type });
+        else skipped.push(`${t.name}.${name} (a primary key, and no rule comparing it names its table)`);
+      } else targets.push({ table: t.name, column: name, key: false, type: col.type, ...(col.values?.length ? { values: col.values } : {}) });
+    }
+  }
+  const seen = new Set<string>();
+  return { targets: targets.filter((x) => !seen.has(`${x.table}.${x.column}`) && seen.add(`${x.table}.${x.column}`)), skipped };
+}
+
+/** Whether a column of this type takes the value: generated rows never hold one the database refuses. */
+export function fitsType(v: ClaimValue, type: string): boolean {
+  switch (castFamily(type)) {
+    case "uuid":
+      return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+    case "number": {
+      const whole = /^(smallint|integer|int|int2|int4|int8|bigint)$/.test(type);
+      const n = typeof v === "number" ? v : typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : undefined;
+      return n !== undefined && (!whole || Number.isInteger(n));
+    }
+    case "boolean":
+      return typeof v === "boolean";
+    case "text": {
+      // A json column takes only JSON text, which no pool value is meant to be.
+      if (typeof v === "object" || /^jsonb?$/.test(type)) return false;
+      const n = /\((\d+)\)$/.exec(type);
+      return !n || String(v).length <= Number(n[1]);
+    }
+    default:
+      // An enum or another type: only its own listed values, checked by the caller.
+      return typeof v === "string";
+  }
+}
+
+/** Two values of the targets' type for a path compared only with columns; undefined when audit has none. */
+function columnPool(targets: Target[], family: string | undefined, fresh: () => string): ClaimValue[] | undefined {
+  const listed = targets.find((x) => x.values?.length)?.values;
+  if (listed && !targets.some((x) => x.key)) return listed.slice(0, COLUMN_POOL);
+  switch (family ?? castFamily(targets[0]?.type ?? "")) {
+    case "uuid":
+      return Array.from({ length: COLUMN_POOL }, fresh);
+    case "number":
+      return [101, 102];
+    case "boolean":
+      return [true, false];
+    case "text":
+      return targets.some((x) => x.key) ? undefined : ["ss-a", "ss-b"];
+    default:
+      return undefined;
+  }
+}
+
+/** The value none of the literals match, of the type every cast on the path accepts; undefined when there is none. */
+export function otherValue(values: ClaimValue[], casts: string[], fresh: () => string): ClaimValue | undefined {
+  const families = new Set(casts.map(castFamily));
+  // A date, a timestamp, an array, or casts that disagree: no value every cast surely takes.
+  if (families.has("unknown") || families.size > 1) return undefined;
+  const family = [...families][0] ?? (values.some((v) => typeof v === "number") ? "number" : values.length > 0 && values.every((v) => typeof v === "boolean") ? "boolean" : "text");
+  if (family === "uuid") return fresh();
+  if (family === "number") {
+    const numbers = values.filter((v): v is number => typeof v === "number");
+    return numbers.length ? Math.floor(Math.max(...numbers)) + 1 : 1;
+  }
+  if (family === "boolean") return [true, false].find((b) => !values.includes(b));
+  return "samesight-other";
+}
+
+export function castFamily(cast: string): "uuid" | "number" | "boolean" | "text" | "unknown" {
+  if (cast === "uuid") return "uuid";
+  if (/^(smallint|integer|int|int2|int4|int8|bigint|numeric|decimal|real|double precision|float4|float8)(\(.*\))?$/.test(cast)) return "number";
+  if (/^(boolean|bool)$/.test(cast)) return "boolean";
+  if (/^(text|varchar|character varying|json|jsonb)(\(.*\))?$/.test(cast)) return "text";
+  return "unknown";
+}
+
+const isPrefix = (a: string[], b: string[]) => a.length < b.length && a.every((k, i) => b[i] === k);
+
+export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: TableModel[] = []): Assignment {
+  // Only values minted here (the run's prefixed uuids) become keys: cleanup finds the run's
+  // rows by that prefix, so a row keyed by a rule's own literal would outlive the run.
+  const minted = new Set<string>();
+  const fresh = () => {
+    const v = mintKey();
+    minted.add(v);
+    return v;
+  };
+  const notSet = new Map<string, string>();
+  const claimValues = new Map<string, Map<string, unknown[]>>();
+  const keyPools = new Map<string, { column: string; values: unknown[] }>();
+  const candidates = plan.uses.filter((u) => u.cls === "app_metadata" || u.cls === "user_metadata");
+  const paths: SetPath[] = [];
+  for (const u of candidates) {
+    const prefixOf = candidates.find((o) => o !== u && (isPrefix(o.path, u.path) || isPrefix(u.path, o.path)));
+    if (u.other.length) notSet.set(u.key, `a rule uses it as ${u.other.join("; ")}, so audit cannot tell what value it needs`);
+    else if (prefixOf) notSet.set(u.key, `rules also read ${prefixOf.key}, so audit cannot give users a value at both`);
+    else {
+      const families = new Set(u.casts.map(castFamily));
+      const family = families.size === 1 && !families.has("unknown") ? [...families][0] : undefined;
+      const found = targetsOf(u.columns, u.columnTables, family, model);
+      const skipped = found.skipped;
+      // Without a cast, the pool follows the first column's type; columns of another type get none.
+      const lead = family ?? (found.targets[0] ? castFamily(found.targets[0].type) : undefined);
+      const targets = found.targets.filter((x) => {
+        if (family !== undefined || castFamily(x.type) === lead || x.values?.length) return true;
+        skipped.push(`${x.table}.${x.column} (${x.type}, unlike ${found.targets[0]?.table}.${found.targets[0]?.column})`);
+        return false;
+      });
+      // A user with no claims shows null (IS NULL): the pool holds values.
+      const values = u.values.filter((v) => v !== null);
+      let pool: ClaimValue[] | undefined;
+      if (values.length === 0 && u.columns.length > 0) {
+        pool = targets.length && families.size <= 1 && !families.has("unknown") ? columnPool(targets, lead, fresh) : undefined;
+        if (!pool) {
+          const why = skipped.length ? `: ${skipped.join("; ")}` : targets.length ? ", and audit has no values of their type" : "";
+          notSet.set(u.key, `it is compared only with ${u.columns.length === 1 ? "column" : "columns"} ${u.columns.join(", ")}, and no generated row can hold its values${why}`);
+          continue;
+        }
+      } else {
+        const other = otherValue(values, u.casts, fresh);
+        pool = other === undefined ? values : [...values, other];
+      }
+      if (!pool.length) {
+        notSet.set(u.key, "audit found no value of the type its casts need");
+        continue;
+      }
+      const placed: string[] = [];
+      for (const x of targets) {
+        // Only values the column takes: its type, its length, its CHECK or enum list.
+        const fits = pool.filter((v) => fitsType(v, x.type) && (!x.values || x.values.includes(String(v))));
+        if (!fits.length) {
+          skipped.push(`${x.table}.${x.column} (${x.values ? "its CHECK or enum list allows" : `${x.type} takes`} none of the values)`);
+          continue;
+        }
+        if (x.key) {
+          const keys = fits.filter((v) => typeof v === "string" && minted.has(v));
+          const left = fits.filter((v) => !keys.includes(v));
+          // A key takes only fresh run uuids, so cleanup finds its rows: a rule's own literal is held by a user, by no row.
+          if (left.length) skipped.push(`${x.table}.${x.column} for ${left.map(show).join(", ")} (a key takes only fresh run uuids, so cleanup finds its rows)`);
+          if (!keys.length) continue;
+          // One pool of keys per table: a second claim keyed on the same table is not placed.
+          const taken = keyPools.get(x.table);
+          if (taken && taken.column !== x.column) {
+            skipped.push(`${x.table}.${x.column} (the table's first rows already take another claim's keys)`);
+            continue;
+          }
+          keyPools.set(x.table, { column: x.column, values: [...new Set([...(taken?.values ?? []), ...keys])] });
+        } else {
+          const columns = claimValues.get(x.table) ?? new Map<string, unknown[]>();
+          claimValues.set(x.table, columns);
+          columns.set(x.column, [...new Set([...(columns.get(x.column) ?? []), ...fits])]);
+        }
+        placed.push(`${x.table}.${x.column}`);
+      }
+      paths.push({ path: u.path, key: u.key, pool, columns: placed, skipped });
+    }
+  }
+
+  const sizes = paths.map((p) => p.pool.length);
+  const combos = sizes.reduce((a, b) => a * b, 1);
+  const count = paths.length === 0 ? MIN_USERS : Math.min(Math.max(combos + 2, MIN_USERS), SPREAD + 2);
+  const spread = count - 2;
+  const picked = pickCombinations(sizes, spread);
+  const users: Map<string, ClaimValue>[] = [];
+  if (paths.length > 0) {
+    for (let i = 0; i < spread; i++) users.push(new Map((picked[i % picked.length] ?? []).map((d, p) => [paths[p]?.key as string, paths[p]?.pool[d] as ClaimValue])));
+    users.push(new Map(users[0]));
+  }
+  while (users.length < count) users.push(new Map());
+
+  const findings: Finding[] = [];
+  const unheld = paths.flatMap((p) => p.pool.filter((v) => !users.some((u) => u.has(p.key) && JSON.stringify(u.get(p.key)) === JSON.stringify(v))).map((v) => `${p.key}=${show(v)}`));
+  if (unheld.length) findings.push({ status: "warn", check: "claims", detail: `${count} users cannot hold every value: no user holds ${unheld.join(", ")}` });
+  const partial = paths.length > 1 && combos > spread;
+  if (partial) {
+    const held = new Set(users.filter((u) => u.size).map((u) => JSON.stringify([...u])));
+    findings.push({ status: "warn", check: "claims", detail: `${combos} combinations of claim values, and ${count} users hold ${held.size} of them; rules that need values together may not be tested` });
+  }
+  return { paths, users, notSet, findings, partial, claimValues, keyPools };
+}
+
+/** Beyond this many combinations, users take value i of each pool, which still holds each value while pools fit. */
+const ENUMERATED = 4096;
+
+/**
+ * Up to `n` combinations of pool indices: every one, in mixed-radix order, when there are at
+ * most `n`; else picked one at a time for the most values no user holds yet, then the most
+ * pairs of values none holds together.
+ */
+export function pickCombinations(sizes: number[], n: number): number[][] {
+  const total = sizes.reduce((a, b) => a * b, 1);
+  const decode = (i: number) => {
+    let rest = i;
+    return sizes.map((k) => {
+      const d = rest % k;
+      rest = Math.floor(rest / k);
+      return d;
+    });
+  };
+  if (total <= n) return Array.from({ length: total }, (_, i) => decode(i));
+  if (total > ENUMERATED) return Array.from({ length: n }, (_, i) => sizes.map((k) => i % k));
+  const all = Array.from({ length: total }, (_, i) => decode(i));
+  const values = new Set<string>();
+  const pairs = new Set<string>();
+  const out: number[][] = [];
+  const valueKeys = (c: number[]) => c.map((d, p) => `${p}:${d}`);
+  const pairKeys = (c: number[]) => c.flatMap((d, p) => c.slice(p + 1).map((e, q) => `${p}:${d}/${p + q + 1}:${e}`));
+  while (out.length < n) {
+    let best = all[0] as number[];
+    let score = -1;
+    for (const c of all) {
+      if (out.includes(c)) continue;
+      const s = 1000 * valueKeys(c).filter((k) => !values.has(k)).length + pairKeys(c).filter((k) => !pairs.has(k)).length;
+      if (s > score) {
+        best = c;
+        score = s;
+      }
+    }
+    out.push(best);
+    for (const k of valueKeys(best)) values.add(k);
+    for (const k of pairKeys(best)) pairs.add(k);
+  }
+  return out;
+}
+
+/** The create-user body's metadata for one user's values. */
+export function metadataOf(paths: Pick<SetPath, "path" | "key">[], values: Map<string, ClaimValue>): Metadata {
+  const out: Metadata = {};
+  for (const p of paths) {
+    if (!values.has(p.key)) continue;
+    const [top, ...rest] = p.path as ["app_metadata" | "user_metadata", ...string[]];
+    // Objects without a prototype: a key named __proto__ is then only a key.
+    out[top] ??= Object.create(null) as Record<string, unknown>;
+    let at = out[top];
+    for (const k of rest.slice(0, -1)) {
+      at[k] ??= Object.create(null) as Record<string, unknown>;
+      at = at[k] as Record<string, unknown>;
+    }
+    at[rest.at(-1) as string] = values.get(p.key);
+  }
+  return out;
+}
+
+/** A value as labels show it: a string bare (editor), unless it reads as another type ("3"). */
+export const show = (v: unknown) => (typeof v === "string" && !/^(-?\d+(\.\d+)?|true|false|null)$/.test(v) ? v : JSON.stringify(v ?? null));
