@@ -228,9 +228,9 @@ async function keptRun(
   if (!rows[0]?.ok) return null;
   const url = await serviceUrl(docker, name).catch(() => null);
   if (!url || !(await isReady(url))) return null;
-  // Without its passwords, what it prints could not be masked: started afresh instead.
+  // Without both its passwords (replication, storage), what it prints could not be masked: started afresh instead.
   const secrets = keptSecrets(info?.Config.Env ?? []);
-  return secrets.length ? { run, url, secrets } : null;
+  return secrets.length >= 2 ? { run, url, secrets } : null;
 }
 
 /** A kept service's passwords, from the config it was given, to keep out of what this run prints. */

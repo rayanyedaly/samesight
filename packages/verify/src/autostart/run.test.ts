@@ -266,10 +266,17 @@ describe("autoStart", () => {
   });
 
   it("does not reuse a kept service whose passwords it cannot read, so it could not mask them", async () => {
-    const d = docker({ kept: "0a0b0c0d", keptFingerprint: await fingerprint(), keptConfig: "replication: {}\n" });
-    const started = await autoStart(options(d.docker, db({ keptAlive: true }), proc()));
-    expect(started.reused).toBe(false);
-    await started.stop();
+    for (const keptConfig of [
+      "replication: {}\n",
+      "replication:\n  connections:\n    - uri: not a url\nstorage:\n  uri: postgresql://s:storage-password-0123456789@s/x\n",
+      "replication:\n  connections: { uri: x }\n",
+      "storage:\n  uri: postgresql://s:storage-password-0123456789@s/x\n",
+    ]) {
+      const d = docker({ kept: "0a0b0c0d", keptFingerprint: await fingerprint(), keptConfig });
+      const started = await autoStart(options(d.docker, db({ keptAlive: true }), proc()));
+      expect(started.reused, keptConfig).toBe(false);
+      await started.stop();
+    }
   });
 
   it("masks the run's secrets in its own log lines", async () => {
