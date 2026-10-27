@@ -44,6 +44,8 @@ export interface AutoStarted {
   /** The service on this machine. */
   url: string;
   version: string;
+  /** The start of this run's replication slot names. */
+  slotPrefix: string;
   /** Removes everything this run started; resolves with what could not be removed. */
   stop: () => Promise<string[]>;
 }
@@ -87,7 +89,7 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
     });
     const powersync = await startPowerSync(docker, { run, project: supabase.project, network: supabase.network, config });
     o.log(`PowerSync is ready at ${powersync.url} (tokens checked ${"jwksUri" in auth ? "against the project's JWKS" : "with its shared secret"})`);
-    return { url: powersync.url, version: POWERSYNC_VERSION, stop };
+    return { url: powersync.url, version: POWERSYNC_VERSION, slotPrefix: replication.slotPrefix, stop };
   } catch (e) {
     await stop();
     throw e;
