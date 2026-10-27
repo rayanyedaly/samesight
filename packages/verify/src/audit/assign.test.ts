@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { claimLabel } from "../differential/run.ts";
 import { createUsers, signIn } from "../differential/users.ts";
 import type { Stack } from "../stack.ts";
-import { assignClaims, metadataOf, otherValue } from "./assign.ts";
+import { assignClaims, metadataOf, otherValue, pickCombinations, show } from "./assign.ts";
 import { claimFindings, planClaims, type RuleSql } from "./claims.ts";
 
 const policy = (where: string, sql: string): RuleSql => ({ where, sql, dialect: "postgres" });
@@ -52,7 +52,8 @@ describe("assignClaims", () => {
   it("names the values no user holds when a pool is wider than the users", () => {
     const values = ["a", "b", "c", "d", "e", "f", "g"].map((v) => `'${v}'::text`).join(", ");
     const a = assignClaims(planClaims([policy("p", claim("tier", `= ANY (ARRAY[${values}])`))]), fresh);
-    expect(a.findings[0]).toMatchObject({ status: "warn", detail: "8 users cannot hold every value: no user holds app_metadata.tier=g, app_metadata.tier=samesight-other" });
+    // One claim: no combination to miss, only values.
+    expect(a.findings).toEqual([{ status: "warn", check: "claims", detail: "8 users cannot hold every value: no user holds app_metadata.tier=g, app_metadata.tier=samesight-other" }]);
   });
 
   it("gives the other value a type every cast takes, or none", () => {
@@ -62,6 +63,9 @@ describe("assignClaims", () => {
     expect(otherValue([true, false], ["boolean"], fresh)).toBeUndefined();
     expect(otherValue(["2026-01-01"], ["timestamp with time zone"], fresh)).toBeUndefined();
     expect(otherValue(["x"], ["text"], fresh)).toBe("samesight-other");
+    // The cast decides, not a literal of another type a stream compares; casts that disagree give none.
+    expect(otherValue([1, true], ["boolean"], fresh)).toBe(false);
+    expect(otherValue([1], ["boolean", "integer"], fresh)).toBeUndefined();
     const a = assignClaims(planClaims([policy("org", "((((auth.jwt() -> 'app_metadata'::text) ->> 'org_id'::text))::uuid = '5a3e5a3e-0000-4000-8000-00000000000a'::uuid)")]), () => "fresh-uuid");
     expect(a.paths[0]?.pool).toEqual(["5a3e5a3e-0000-4000-8000-00000000000a", "fresh-uuid"]);
   });
@@ -84,6 +88,26 @@ describe("assignClaims", () => {
       "app_metadata.plan.tier": "rules also read app_metadata.plan, so audit cannot give users a value at both",
     });
     expect(keys(a.users)).toEqual([{}, {}, {}, {}]);
+  });
+
+  it("holds as many combinations and pairs as the users can when they cannot hold all", () => {
+    const flags = pickCombinations([2, 2, 2], 6);
+    expect(new Set(flags.map((c) => c.join())).size).toBe(6);
+    for (const [p, q] of [
+      [0, 1],
+      [0, 2],
+      [1, 2],
+    ] as const) {
+      expect(new Set(flags.map((c) => `${c[p]}${c[q]}`)), `paths ${p} and ${q}`).toEqual(new Set(["00", "01", "10", "11"]));
+    }
+    expect(pickCombinations([2, 3], 6)).toHaveLength(6);
+    expect(new Set(pickCombinations([3, 3, 3], 6).flatMap((c) => c.map((d, p) => `${p}:${d}`))).size).toBe(9);
+  });
+
+  it("does not take a null literal for a value when the other comparisons are with a column", () => {
+    const a = assignClaims(planClaims([policy("n", claim("org", "IS NULL")), policy("c", "(org_id = (((auth.jwt() -> 'app_metadata'::text) ->> 'org'::text))::uuid)")]), fresh);
+    expect(a.paths).toEqual([]);
+    expect(a.notSet.get("app_metadata.org")).toMatch(/^it is compared only with column org_id/);
   });
 
   it("keeps null out of the pool: the user with no claims shows it", () => {
@@ -122,6 +146,10 @@ describe("claimLabel", () => {
     expect(claimLabel("u2", { app_metadata: { role: 3, org_id: "x" } }, paths)).toBe("u2 (app_metadata.org_id=x, app_metadata.role=3)");
     expect(claimLabel("u3", { app_metadata: {} }, paths)).toBe("u3");
     expect(claimLabel("u0", {}, [])).toBe("u0");
+    // 3 and '3' are both tried, and told apart.
+    expect(claimLabel("u4", { app_metadata: { role: "3" } }, paths)).toBe('u4 (app_metadata.role="3")');
+    expect(claimLabel("u5", { "app_metadata.role": "x" }, [["app_metadata.role"]])).toBe('u5 ("app_metadata.role"=x)');
+    expect([show("editor"), show("3"), show(3), show("true"), show(null)]).toEqual(["editor", '"3"', "3", '"true"', "null"]);
   });
 });
 
@@ -158,6 +186,12 @@ describe("the Claims section with users holding values", () => {
     ]);
   });
 
+  it("warns that a comparison with a column is not steered when the path also has literals", () => {
+    const mixed = planClaims([role("a", "admin"), policy("c", "(team = ((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text))")]);
+    const [line] = claimFindings(mixed, undefined, undefined, assignClaims(mixed, fresh));
+    expect(line).toMatchObject({ status: "warn", detail: expect.stringMatching(/\(not run: --static\); the comparison with column team gets no values of its own yet$/) });
+  });
+
   it("says what a full run would give under --static", () => {
     expect(claimFindings(plan, undefined, undefined, a)[0]?.detail).toMatch(/; a full run gives users 'admin', 'editor', 'samesight-other', and one user none of them \(not run: --static\)$/);
   });
@@ -169,10 +203,10 @@ describe("Auth's rate limit", () => {
   });
   const stack = { api: "http://127.0.0.1:1", publishableKey: "p", secretKey: "s" } as Stack;
 
-  it("names the config.toml setting to raise, at sign-up and at sign-in", async () => {
+  it("names the config.toml setting to raise at sign-in, and keeps Auth's own words elsewhere", async () => {
     vi.stubGlobal("fetch", async () => new Response('{"msg":"rate limited"}', { status: 429 }));
-    await expect(signIn(stack, "u@x", "pw")).rejects.toThrow(/429, Supabase Auth's rate limit.*raise \[auth\.rate_limit\] sign_in_sign_ups in supabase\/config\.toml/);
-    await expect(createUsers(stack, 1, "r")).rejects.toThrow(/sign_in_sign_ups/);
+    await expect(signIn(stack, "u@x", "pw")).rejects.toThrow(/429 \{"msg":"rate limited"\}\. That is Supabase Auth's sign-in rate limit.*raise \[auth\.rate_limit\] sign_in_sign_ups in supabase\/config\.toml/);
+    await expect(createUsers(stack, 1, "r")).rejects.toThrow(/^Auth POST \/admin\/users: 429 \{"msg":"rate limited"\}$/);
   });
 
   it("sends each user's metadata in the create body", async () => {

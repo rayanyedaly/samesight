@@ -47,6 +47,17 @@ describe("planClaims", () => {
     expect(plan.unreadable).toEqual([{ where: 'policy "path" on docs (USING)', text: expect.stringContaining("#>>"), reason: "reads a #>> path" }]);
   });
 
+  it("keeps a top-level key with a dot apart from the nested path it spells", () => {
+    const split = planClaims([
+      stream("s.queries[0]", "SELECT * FROM docs WHERE auth.parameter('app_metadata.role') = 'admin'"),
+      policy('policy "p" on docs (USING)', "(((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text) = 'admin'::text)"),
+    ]);
+    expect(split.uses.map((u) => [u.key, u.cls, u.rules])).toEqual([
+      ['"app_metadata.role"', "hook", ["s.queries[0]"]],
+      ["app_metadata.role", "app_metadata", ['policy "p" on docs (USING)']],
+    ]);
+  });
+
   it("reads through a policy's SQL wrapper function", () => {
     const wrapped = planClaims([policy('policy "w" on docs (USING)', "(app_role() = 'ADMIN'::text)")], new Map([["app_role", "select nullif(auth.jwt() ->> 'app_role', '')"]]));
     expect(wrapped.uses.map((u) => u.key)).toEqual(["app_role"]);

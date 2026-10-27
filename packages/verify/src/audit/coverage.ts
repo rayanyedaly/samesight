@@ -19,7 +19,7 @@ import type { DeviceRow } from "../differential/device.ts";
 import type { Run } from "../differential/run.ts";
 import type { Inserted } from "../differential/world.ts";
 import type { Finding } from "../report.ts";
-import { qualified } from "./claims.ts";
+import { claimKey, qualified } from "./claims.ts";
 
 export interface Tally {
   allowed: number;
@@ -143,7 +143,7 @@ export async function coverageScope(
 
 /** The claim keys reads tell users apart by: neither the user id nor one every user shares. */
 function userClaims(reads: { path: string[] }[]): string[] {
-  return [...new Set(reads.filter((r) => !["identity", "shared"].includes(classify(r.path))).map((r) => r.path.join(".")))].sort();
+  return [...new Set(reads.filter((r) => !["identity", "shared"].includes(classify(r.path))).map((r) => claimKey(r.path)))].sort();
 }
 
 /**
