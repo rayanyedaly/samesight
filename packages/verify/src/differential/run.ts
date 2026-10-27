@@ -56,6 +56,8 @@ export interface Run {
   synced: string[];
   /** Device table names a query's alias gives, with the synced table each holds rows of. */
   deviceTables?: Record<string, string>;
+  /** Tables beyond the run's that cleanup also looks in (audit's cleanup scope). */
+  outside?: string[];
   /** Per table, the columns this user's devices must not hold. */
   hidden: (user: Member) => Map<string, string[]>;
   /**
@@ -122,7 +124,7 @@ export async function cleanup(client: pg.Client, stack: Stack, model: TableModel
   const failed: string[] = [];
   for (const id of users) await deleteUser(stack, id).catch((e: Error) => failed.push(`${id}: ${e.message}`));
   if (rowsDeleted !== undefined) throw rowsDeleted;
-  if (failed.length) throw new Error(`could not delete ${failed.length} earlier run users (a row outside the audited tables may still reference them): ${failed.join("; ")}`);
+  if (failed.length) throw new Error(`could not delete ${failed.length} run users (a row outside the audited tables may still reference them): ${failed.join("; ")}`);
 }
 
 /** The tables of `names` deleteRows can clean; none when they cannot be read. */
@@ -336,6 +338,7 @@ export async function setUpUsers(
       synced: scope.synced,
       ...(scope.deviceTables ? { deviceTables: scope.deviceTables } : {}),
       ...(scope.fixed ? { existing: fixedRows, fixedRows, fixedRefused } : {}),
+      ...(scope.cleanup?.length ? { outside: scope.cleanup } : {}),
       hidden: () => new Map(),
       gaps: "warn",
     };
@@ -839,7 +842,7 @@ export function describeFailures(s: Run, failures: UserProblems[]): string[] {
 
 export async function tearDown(s: Run): Promise<void> {
   try {
-    await cleanup(s.client, s.stack, s.model);
+    await cleanup(s.client, s.stack, s.model, await outsideModel(s.client, s.outside ?? []));
   } finally {
     await unlock(s.client);
   }

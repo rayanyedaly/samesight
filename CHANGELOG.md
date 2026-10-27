@@ -45,7 +45,7 @@ The first published release.
 - A 429 from Supabase Auth at sign-in names the `[auth.rate_limit] sign_in_sign_ups` setting to raise.
 - Audit compares a claim's values as numbers where every rule reads it as one, and puts a claim read as text into number columns only as Postgres prints it back.
 - Columns compared with a claim an access token hook adds take the values the hook can add in generated rows. Audit warns when `anon` or `authenticated` can execute the hook, and on functions it calls three or more calls deep; a helper's `select *` counts as reading every column of its tables. With a hook enabled, `client_id`, `jti` and `nbf` count as the hook's claims.
-- Cleanup also removes an earlier run's rows from tables beyond this run's (an access token hook's, from a run made while it was on), as the project's own deletes would, and leaves rows only an optional column ties to a run user.
+- Cleanup also removes an earlier run's rows from tables beyond this run's (an access token hook's, from a run made while it was on), as the project's own deletes would. There, and in tables without a single key, a row only an optional column ties to a run user stays.
 - Policy mode removes its users and rows on Ctrl+C, SIGTERM, SIGHUP or a closed output, as audit does, and with `--mutate` puts the sync config back and restarts PowerSync as part of that; Ctrl+Break (SIGBREAK) counts on Windows. A stop that cannot finish says what is left and which run removes it.
 - The offline checks are exported for use in tests.
 

@@ -251,10 +251,11 @@ export function cleanable(t: TableModel): boolean {
  * A table without a single key (user_roles keyed by user and role) is matched by its
  * required owner columns only: a row there whose only link to a run user is an optional
  * column (invited_by) is someone else's, and is kept, though it may then block deleting that
- * user. So are the tables in `ownedOnly`, which are not the run's own (cleanup reaches them).
- * A row with several required owners goes when any is a run user: a message a real user sent
- * one, say, which would otherwise block deleting that user. With `replica` false, the
- * project's foreign keys, cascades and triggers apply.
+ * user. So are the tables in `ownedOnly`, which are not the run's own (cleanup reaches them),
+ * where a row with several required owners goes only when every one is a run user. In the
+ * run's own tables it goes when any is: a message a real user sent one, say, which would
+ * otherwise block deleting that user. With `replica` false, the project's foreign keys,
+ * cascades and triggers apply.
  */
 export async function deleteRows(
   client: pg.Client,
@@ -275,11 +276,13 @@ export async function deleteRows(
       const keyed = t.primaryKey.length === 1 && key !== undefined;
       if (!cleanable(t)) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column, no single-column primary key and no required column pointing at auth.users`);
       const { all, required } = ownersOf(t);
-      const owners = keyed && !options.ownedOnly?.has(t.name) ? all : required;
+      const outside = options.ownedOnly?.has(t.name) === true;
+      const owners = keyed && !outside ? all : required;
       const params: unknown[] = [];
+      // Beyond the run's tables, a row goes only when every owner it must have is a run user.
       const conds = [
         ...(keyed ? [`${ident(key)}::text like $${params.push(`${prefix}%`)}`] : []),
-        ...(owners.length ? [owners.map((c) => `${ident(c)} = any($${params.length + 1}::uuid[])`).join(" or ")] : []),
+        ...(owners.length ? [owners.map((c) => `${ident(c)} = any($${params.length + 1}::uuid[])`).join(outside ? " and " : " or ")] : []),
       ];
       if (owners.length) params.push(users);
       await client.query(`delete from public.${ident(t.name)} where ${conds.join(" or ")}`, params);

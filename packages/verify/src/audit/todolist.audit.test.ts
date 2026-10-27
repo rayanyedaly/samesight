@@ -259,7 +259,7 @@ describe("an access token hook on the demo's catalog", () => {
     const p = await plan(deeper, false);
     expect(p.findings.map((f) => f.detail)).toEqual([
       "the access token hook pg-functions://postgres/public/samesight_test_hook calls public.samesight_test_deepest three or more calls deep, which audit does not read: it may read tables audit gives no rows",
-      "anon, authenticated can execute the access token hook pg-functions://postgres/public/samesight_test_hook (new functions are executable by them by default): when its schema is exposed through the API, they can run it for any user id and read the claims it adds",
+      "anon, authenticated can execute the access token hook pg-functions://postgres/public/samesight_test_hook (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds; revoke it with revoke execute on function public.samesight_test_hook(jsonb) from public, anon, authenticated",
       expect.stringMatching(/^supabase_auth_admin cannot read lists/),
     ]);
   });

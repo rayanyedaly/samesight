@@ -165,6 +165,12 @@ export function unfollowed(scans: DeepScan[], functions: ReadonlyMap<string, str
 /** A select of every column: select *, select t.*; not exists (select * ...), which reads none. */
 export const SELECTS_ALL = /(?<![A-Za-z0-9_$])(?<!exists\s*\(\s*)select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i;
 
+/** The tables a body selects every column of: those right after select * from, as schema.name. */
+export function starredTables(body: string): string[] {
+  const from = new RegExp(String.raw`${SELECTS_ALL.source}\s+from\s+(?:only\s+)?${NAME}(?:\s*\.\s*${NAME})?`, "gi");
+  return [...new Set([...codeOnly(body).matchAll(from)].map((m) => (m[2] === undefined ? `public.${unquote(m[1] as string)}` : `${unquote(m[1] as string)}.${unquote(m[2])}`)))];
+}
+
 export interface HookPlan {
   uri: string;
   /**
@@ -225,7 +231,7 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
   if (callers.length) {
     findings.push(
       warn(
-        `${callers.map((r) => r.name).join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they can run it for any user id and read the claims it adds`,
+        `${callers.map((r) => r.name).join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds; revoke it with revoke execute on function ${qualified} from public, anon, authenticated`,
       ),
     );
   }
@@ -266,8 +272,8 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
   const definer = (call: string) => definers.some((d) => (call.includes(".") ? d.name === call : d.bare === call));
   const asHook = new Set([...(depends?.tables ?? []), ...scans.filter((x) => !x.via.some(definer)).flatMap((x) => x.reads)]);
   findings.push(...(await hookAccess(client, role, tables.filter((t) => asHook.has(`public.${t}`)), shown)));
-  // The hook's own select * reads every column of every table it reads (hookDims); a helper's, those of its own tables.
-  const starred = [...new Set(scans.filter((x) => x.via.length > 0 && SELECTS_ALL.test(codeOnly(x.body))).flatMap((x) => x.reads))].filter((t) => t.startsWith("public.")).map((t) => t.slice("public.".length));
+  // The hook's own select * reads every column of every table it reads (hookDims); a helper's, those of the table it selects from.
+  const starred = [...new Set(scans.filter((x) => x.via.length > 0).flatMap((x) => starredTables(x.body)))].filter((t) => t.startsWith("public.")).map((t) => t.slice("public.".length));
   const plan: HookPlan = { uri, fn: { schema: parsed.schema, name: parsed.fn, body: fn.body, read: scans.map((x) => x.body).join(BODY_JOIN), starred }, role, tables, findings };
   if (!tables.length) plan.cannot = views.length ? `it reads no public table, only ${views.join(", ")}` : "its body reads no public table";
   return plan;

@@ -52,6 +52,13 @@ export class Teardown {
     return p;
   }
 
+  /** The steps that have not ended yet, with what to do about each: what a stop cut short leaves. */
+  unended(): { what: string; remedy?: string }[] {
+    return this.steps.filter((x) => !this.ended.has(x));
+  }
+
+  private readonly ended = new Set<object>();
+
   /** Runs every step, last added first; resolves with what could not be removed. */
   run(): Promise<string[]> {
     this.done ??= (async () => {
@@ -64,6 +71,7 @@ export class Teardown {
           failed.push(step.what);
           this.log(`could not remove ${step.what}: ${(e as Error).message}${step.remedy ? `; ${step.remedy}` : ""}`);
         }
+        this.ended.add(step);
       }
       this.finished = true;
       return failed;
@@ -127,8 +135,11 @@ export function onSignals(
   const unfinished = () => {
     if (teardown.finished) return;
     try {
-      const service = teardown.service ? "the next audit that starts PowerSync removes what is left of the service it started, and " : "";
-      log(`stopped before the clean-up finished: ${service}${leftForNext(teardown.mode)}`);
+      // Each step not ended that says what to do about it (the sync config's mutants), then the service and the users.
+      const unended = teardown.unended();
+      const own = [...new Set(unended.filter((x) => x.remedy && x.remedy !== SERVICE_REMEDY).map((x) => `${x.what}: ${x.remedy}`))];
+      const service = teardown.service && unended.some((x) => x.remedy === SERVICE_REMEDY) ? "the next audit that starts PowerSync removes what is left of the service it started, and " : "";
+      log(`stopped before the clean-up finished: ${own.map((x) => `${x}; `).join("")}${service}${leftForNext(teardown.mode)}`);
     } catch {}
   };
   const end = (why: string, exitCode: number) => {
@@ -146,7 +157,7 @@ export function onSignals(
     }
     code = exitCode;
     try {
-      log(`${why}: removing what this run made (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next audit)`);
+      log(`${why}: removing what this run made (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next ${teardown.mode === "audit" ? "audit" : "verify run"})`);
     } catch {}
     setTimeout(() => {
       unfinished();

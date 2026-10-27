@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { LEFT_FOR_NEXT, leftForNext, onSignals, type Signals, Teardown } from "./teardown.ts";
+import { LEFT_FOR_NEXT, leftForNext, onSignals, SERVICE_REMEDY, type Signals, Teardown } from "./teardown.ts";
 
 describe("Teardown", () => {
   it("runs steps last first, once, and goes on past a failing one", async () => {
@@ -190,7 +190,7 @@ describe("onSignals", () => {
       const p = proc();
       const t = new Teardown(() => {}, mode);
       t.service = service;
-      t.add("hung", () => new Promise(() => {}));
+      t.add("hung", () => new Promise(() => {}), service ? SERVICE_REMEDY : undefined);
       const said2: string[] = [];
       onSignals(t, (l) => said2.push(l), p.p, 20);
       p.p.emit("SIGINT");
@@ -198,6 +198,20 @@ describe("onSignals", () => {
       expect(said2.at(-1)).toBe(`stopped before the clean-up finished: ${said}`);
     }
     expect(leftForNext("policy")).toMatch(/^the next verify run removes the run's users and rows .*with no verify run running/);
+
+    // A step still running says what to do about what it was removing; one that ended, nothing.
+    const cut = proc();
+    const restoring = new Teardown(() => {}, "policy");
+    restoring.add("users", async () => {}, undefined);
+    restoring.add("the mutant streams PowerSync serves", () => new Promise(() => {}), "restart PowerSync (docker compose restart powersync)");
+    const told: string[] = [];
+    onSignals(restoring, (l) => told.push(l), cut.p, 20);
+    cut.p.emit("SIGINT");
+    expect(await cut.exited).toBe(130);
+    expect(told).toEqual([
+      "SIGINT: removing what this run made (Ctrl+C again to leave it for the next verify run)",
+      `stopped before the clean-up finished: the mutant streams PowerSync serves: restart PowerSync (docker compose restart powersync); ${leftForNext("policy")}`,
+    ]);
 
     // Begun by the run itself (its end): the grace starts with the signal.
     const own = proc();
