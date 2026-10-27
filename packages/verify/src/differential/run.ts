@@ -8,7 +8,7 @@
 import fc from "fast-check";
 import type pg from "pg";
 import { type IR, ident } from "samesight/compiler";
-import { rows } from "../db.ts";
+import { connectLocal, rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { show } from "../audit/assign.ts";
@@ -96,6 +96,70 @@ const letter = (i: number) => String.fromCharCode(65 + i);
 
 /** Held for the run: runs share one prefix and one email domain, so a second would delete the first's data. */
 const LOCK = Number.parseInt(PREFIX, 16);
+
+/** Whether this process holds LOCK: set once taken, cleared once let go. */
+let lockHeld = false;
+
+const unlock = async (client: pg.Client) => {
+  lockHeld = false;
+  await client.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
+};
+
+/**
+ * For a run a signal may stop half way (Ctrl+C, SIGTERM, SIGHUP): `step` removes its users
+ * and rows. It ends the run's own database connection (`client`, whose backend id is read
+ * now), which rolls back what that had open and lets go of the lock; then, on a connection
+ * of its own that takes the lock, it cleans up as tearDown would. It does nothing while the
+ * run does not hold the lock (one refused it never cleans another's data), and once the run
+ * has begun its own tearDown, which it waits for instead. Use the `tearDown` it returns in
+ * place of the plain one, which does nothing once `step` has begun.
+ */
+export async function stoppable(
+  client: pg.Client,
+  stack: Stack,
+  tables: ScopeTable[],
+  log: (line: string) => void,
+): Promise<{ step: () => Promise<void>; tearDown: (s: Run) => Promise<void> }> {
+  const [{ pid } = { pid: 0 }] = await rows<{ pid: number }>(client, "select pg_backend_pid() as pid");
+  let ending: Promise<void> | undefined;
+  let stopping = false;
+  return {
+    tearDown: (s) => {
+      if (stopping) return Promise.resolve();
+      ending ??= tearDown(s);
+      return ending;
+    },
+    step: async () => {
+      if (ending) return ending.catch(() => {});
+      if (!lockHeld) return;
+      stopping = true;
+      const later = "the next run removes them";
+      let fresh: pg.Client | undefined;
+      try {
+        fresh = await connectLocal(stack.db);
+        // Unheard, the run's client's error on its ended connection would crash the process.
+        client.on("error", () => {});
+        await fresh.query("select pg_terminate_backend($1, 5000)", [pid]);
+        for (let i = 0; i < 50 && (await rows(fresh, "select 1 from pg_stat_activity where pid = $1", [pid])).length; i++) await new Promise((r) => setTimeout(r, 100));
+        lockHeld = false;
+        const [{ locked } = { locked: false }] = await rows<{ locked: boolean }>(fresh, "select pg_try_advisory_lock($1) as locked", [LOCK]);
+        if (!locked) {
+          log(`could not take the run's lock to remove its users and rows; ${later}`);
+          return;
+        }
+        try {
+          await cleanup(fresh, stack, insertOrder(await readModel(fresh, tables)));
+        } finally {
+          await fresh.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
+        }
+      } catch (e) {
+        log(`could not remove the run's users and rows: ${(e as Error).message}; ${later}`);
+      } finally {
+        await fresh?.end().catch(() => {});
+      }
+    },
+  };
+}
 
 export async function setUp(client: pg.Client, stack: Stack, ir: IR): Promise<Setup> {
   return exclusive(client, stack, policyTables(ir), () => prepareRun(client, stack, ir));
@@ -193,13 +257,14 @@ export function auditRefusals(model: TableModel[], synced: string[]): string[] {
 async function exclusive<T extends Run>(client: pg.Client, stack: Stack, tables: ScopeTable[], prepare: () => Promise<T>): Promise<T> {
   const [{ locked } = { locked: false }] = await rows<{ locked: boolean }>(client, "select pg_try_advisory_lock($1) as locked", [LOCK]);
   if (!locked) throw new Error("another samesight verify run is using this database; wait for it to finish");
+  lockHeld = true;
   try {
     return await prepare();
   } catch (e) {
     // Users, tenants and memberships made before the failure: removed now, not by the next run.
     const model = insertOrder(await readModel(client, tables).catch(() => []));
     await cleanup(client, stack, model).catch(() => {});
-    await client.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
+    await unlock(client);
     throw e;
   }
 }
@@ -647,6 +712,6 @@ export async function tearDown(s: Run): Promise<void> {
   try {
     await cleanup(s.client, s.stack, s.model);
   } finally {
-    await s.client.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
+    await unlock(s.client);
   }
 }

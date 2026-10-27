@@ -58,7 +58,13 @@ export interface AutoStartOptions {
   /** Leave the service up when the run ends, for the next run to reuse. */
   keep?: boolean;
   docker?: Docker;
-  /** For tests: where signals come from. */
+  /**
+   * The run's teardown, which the caller runs on a signal (onSignals) and at its end:
+   * auto-start adds its steps to it and listens for no signal itself. Without it, it makes
+   * one of its own and listens on `proc`.
+   */
+  teardown?: Teardown;
+  /** For tests, without `teardown`: where signals come from. */
   proc?: Signals;
 }
 
@@ -105,10 +111,27 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
   const secrets = o.jwtSecret ? [o.jwtSecret] : [];
   const redact = (text: string) => secrets.reduce((t, s) => t.replaceAll(s, "***"), text);
   const log = (line: string) => o.log(redact(line));
-  const teardown = new Teardown(log);
+  const teardown = o.teardown ?? new Teardown(log);
   // Closing the connection releases it too, so this step never fails.
   teardown.add("the audit's lock on the database", () => unlock().catch(() => {}));
-  const stopListening = onSignals(teardown, log, o.proc);
+  const stopListening = o.teardown ? () => {} : onSignals(teardown, log, o.proc);
+  // Once a kept service is up, the steps that would remove it do nothing.
+  let kept = false;
+  const add = (what: string, fn: () => Promise<void>) =>
+    teardown.add(what, async () => {
+      if (kept) return;
+      try {
+        await fn();
+      } catch (e) {
+        if (e instanceof Error) e.message = redact(e.message);
+        throw e;
+      }
+    });
+  const keepFromHere = () => {
+    kept = true;
+    // Ctrl+C no longer removes it; a shared teardown still runs the caller's steps.
+    stopListening();
+  };
   const logsOf = async (container: string, logs?: (text: string) => void) => {
     if (logs) logs(redact(await docker.logs(container, 50).catch((e: Error) => `(no logs: ${e.message})`)));
   };
@@ -117,15 +140,13 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
     (container: string, keep: boolean, url: string): AutoStarted["stop"] =>
     async ({ logs } = {}) => {
       await logsOf(container, logs);
-      if (!keep) {
-        const failed = await teardown.run();
-        stopListening();
-        return failed;
-      }
+      // Kept, the steps that would remove the service do nothing: the lock is let go.
+      const failed = await teardown.run();
       stopListening();
-      await unlock().catch(() => {});
-      log(`kept the PowerSync service at ${url}; the next audit of this project that starts PowerSync reuses it if nothing changed and otherwise replaces it, and removes it at its end unless given --keep-powersync`);
-      return [];
+      if (keep) {
+        log(`kept the PowerSync service at ${url}; the next audit of this project that starts PowerSync reuses it if nothing changed and otherwise replaces it, and removes it at its end unless given --keep-powersync`);
+      }
+      return failed;
     };
 
   try {
@@ -134,10 +155,10 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
       log(`reusing the PowerSync service an earlier run kept (${kept.run}) at ${kept.url}`);
       secrets.push(...kept.secrets);
       const role = `${PREFIX}${kept.run}`;
-      teardown.add(`role ${role} and its replication slots`, () => tearDownReplication(o.client, { role, slotPrefix: `${role}_` }));
+      add(`role ${role} and its replication slots`, () => tearDownReplication(o.client, { role, slotPrefix: `${role}_` }));
       const containers = [containerName(kept.run, "storage"), containerName(kept.run, "powersync")];
-      teardown.add(`containers ${containers.join(", ")}`, () => removeContainers(docker, containers));
-      if (o.keep) stopListening();
+      add(`containers ${containers.join(", ")}`, () => removeContainers(docker, containers));
+      if (o.keep) keepFromHere();
       const stop = stopper(containerName(kept.run, "powersync"), o.keep === true, kept.url);
       return { url: kept.url, version: POWERSYNC_VERSION, slotPrefix: `${role}_`, reused: true, stop };
     }
@@ -153,9 +174,9 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
     const run = runName();
     // Each step is added before what it removes is made: a run failing half way removes what it made.
     const role = `${PREFIX}${run}`;
-    teardown.add(`role ${role} and its replication slots`, () => tearDownReplication(o.client, { role, slotPrefix: `${role}_` }));
+    add(`role ${role} and its replication slots`, () => tearDownReplication(o.client, { role, slotPrefix: `${role}_` }));
     const containers = [containerName(run, "storage"), containerName(run, "powersync")];
-    teardown.add(`containers ${containers.join(", ")}`, () => removeContainers(docker, containers));
+    add(`containers ${containers.join(", ")}`, () => removeContainers(docker, containers));
     log(`starting PowerSync ${POWERSYNC_VERSION} for this run (${run}) on ${supabase.network}`);
     const replication = await teardown.step(() => setUpReplication(o.client, run, o.tables));
     secrets.push(replication.password);
@@ -181,7 +202,7 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
     );
     log(`PowerSync is ready at ${powersync.url} (tokens checked ${"jwksUri" in auth ? "against the project's JWKS" : "with its shared secret"})`);
     // Kept from here on: Ctrl+C no longer removes it.
-    if (o.keep) stopListening();
+    if (o.keep) keepFromHere();
     return { url: powersync.url, version: POWERSYNC_VERSION, slotPrefix: replication.slotPrefix, reused: false, stop: stopper(powersync.container, o.keep === true, powersync.url) };
   } catch (e) {
     await teardown.run();
