@@ -73,6 +73,7 @@ Audit options (a project with hand-written RLS and sync config, no policy file):
   --publication <name>  the publication to check; PowerSync replicates "powersync" unless its config says otherwise
   --powersync <url>     audit a PowerSync service you run yourself; without it, audit starts one
                         for this run (needs Docker) and removes it, and all it made, at the end
+  --keep-powersync      leave the service audit started up, for the next audit of the project to reuse
   --compose <file>      with --powersync: the compose file that runs it, to check its version floor
   --static, --runs, --seed, --time-limit   as above
 
@@ -247,6 +248,7 @@ async function auditMain(argv: string[]): Promise<number> {
       project: { type: "string" },
       publication: { type: "string" },
       powersync: { type: "string" },
+      "keep-powersync": { type: "boolean" },
       compose: { type: "string" },
       static: { type: "boolean" },
       runs: { type: "string" },
@@ -259,6 +261,7 @@ async function auditMain(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
+  if (values["keep-powersync"] && values.powersync !== undefined) throw new Error("--keep-powersync keeps the service audit starts; it cannot be combined with --powersync");
   const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
   const runs = int("runs", values.runs, 8);
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
@@ -298,6 +301,7 @@ async function auditMain(argv: string[]): Promise<number> {
         syncConfig: syncText,
         tables,
         log,
+        keep: values["keep-powersync"] === true,
       });
       stack = { ...stack, powersync: started.url, slotPrefix: started.slotPrefix };
       section("PowerSync", [{ status: "ok", check: "powersync version", detail: `${started.version}, started by audit for this run (pinned; at least the 1.20.1 security floor)` }]);
