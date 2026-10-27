@@ -63,7 +63,7 @@ type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
 /** What onSignals needs of `process`. */
 export interface Signals {
-  once(event: Signal, listener: () => void): unknown;
+  on(event: Signal, listener: () => void): unknown;
   off(event: Signal, listener: () => void): unknown;
   exit(code: number): never;
   stdout: Pick<NodeJS.EventEmitter, "on" | "off">;
@@ -72,31 +72,37 @@ export interface Signals {
 
 /**
  * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP, then exits as a killed process would
- * (130, 143, 129); and when the output has gone (a closed terminal, or a reader that left:
- * | head, | tee), whose writes now fail, exits 141 as on SIGPIPE (129 when SIGHUP comes first). A second Ctrl+C during
- * it exits at once. Returns a function that stops listening.
+ * (130, 143, 129); and when the output fails (a closed terminal, or a reader that left:
+ * | head, | tee), exits 141 as on SIGPIPE (129 when SIGHUP comes first), or 1 for any
+ * other output error. While it runs, more signals do not cut it short, except Ctrl+C
+ * twice. Returns a function that stops listening.
  */
 export function onSignals(teardown: Teardown, log: (line: string) => void, proc: Signals = process): () => void {
-  let ending = false;
-  const end = (why: string, code: number) => {
-    if (ending) return;
-    ending = true;
+  let code: number | undefined;
+  let interrupts = 0;
+  const end = (why: string, exitCode: number) => {
+    if (code !== undefined) return;
+    code = exitCode;
     try {
-      log(`${why}: removing what this run started (Ctrl+C again to leave it for the next audit that starts PowerSync)`);
+      log(`${why}: removing what this run started (Ctrl+C ${why === "SIGINT" ? "again" : "twice"} to leave it for the next audit that starts PowerSync)`);
     } catch {}
-    proc.once("SIGINT", () => proc.exit(code));
-    void teardown.run().then(() => proc.exit(code));
+    void teardown.run().then(() => proc.exit(exitCode));
   };
   const handlers = [
-    ["SIGINT", () => end("SIGINT", 130)],
+    [
+      "SIGINT",
+      () => {
+        interrupts++;
+        if (code === undefined) end("SIGINT", 130);
+        else if (interrupts >= 2) proc.exit(code);
+      },
+    ],
     ["SIGTERM", () => end("SIGTERM", 143)],
     ["SIGHUP", () => end("SIGHUP", 129)],
   ] as const;
   // Unhandled, a failed write would end the process at once, before any teardown.
-  const broken = (e: NodeJS.ErrnoException) => {
-    if (e.code === "EPIPE" || e.code === "EIO") end("output closed", 141);
-  };
-  for (const [signal, fn] of handlers) proc.once(signal, fn);
+  const broken = (e: NodeJS.ErrnoException) => end("output closed", e.code === "EPIPE" || e.code === "EIO" ? 141 : 1);
+  for (const [signal, fn] of handlers) proc.on(signal, fn);
   proc.stdout.on("error", broken);
   proc.stderr.on("error", broken);
   return () => {

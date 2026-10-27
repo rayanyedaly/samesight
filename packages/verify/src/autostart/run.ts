@@ -24,6 +24,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { parse } from "yaml";
 import type pg from "pg";
 import { chooseAuth, fetchJwks, serviceConfig } from "./config.ts";
 import { Docker } from "./docker.ts";
@@ -224,8 +225,20 @@ async function keptRun(
   if (!rows[0]?.ok) return null;
   const url = await serviceUrl(docker, name).catch(() => null);
   if (!url || !(await isReady(url))) return null;
-  // Its passwords, from the config it was given, to keep out of what this run prints.
-  const config = Buffer.from(info?.Config.Env?.find((e) => e.startsWith("POWERSYNC_CONFIG_B64="))?.slice(21) ?? "", "base64").toString();
-  const secrets = [...config.matchAll(/postgresql:\/\/[^:/@\s]+:([^@\s]{16,})@/g)].flatMap((m) => (m[1] ? [m[1]] : []));
-  return { run, url, secrets };
+  return { run, url, secrets: keptSecrets(info?.Config.Env ?? []) };
+}
+
+/** A kept service's passwords, from the config it was given, to keep out of what this run prints. */
+function keptSecrets(env: string[]): string[] {
+  const b64 = env.find((e) => e.startsWith("POWERSYNC_CONFIG_B64="))?.slice("POWERSYNC_CONFIG_B64=".length) ?? "";
+  try {
+    const config = parse(Buffer.from(b64, "base64").toString()) as { replication?: { connections?: { uri?: string }[] }; storage?: { uri?: string } } | null;
+    const uris = [...(config?.replication?.connections ?? []).map((c) => c.uri), config?.storage?.uri];
+    return uris.flatMap((u) => {
+      const password = u ? decodeURIComponent(new URL(u).password) : "";
+      return password ? [password] : [];
+    });
+  } catch {
+    return [];
+  }
 }

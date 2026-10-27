@@ -95,24 +95,44 @@ describe("onSignals", () => {
     }
   });
 
-  it("tears down and exits 141 when its output has gone (EPIPE), and ignores other stream errors", async () => {
+  it("tears down and exits 141 when its output has gone (EPIPE), or 1 on another output error", async () => {
+    for (const [errno, code] of [
+      ["EPIPE", 141],
+      ["ENOSPC", 1],
+    ] as const) {
+      const events: string[] = [];
+      const { p, exited } = proc(events);
+      const t = new Teardown(() => {});
+      t.add("x", async () => {
+        events.push("removed x");
+      });
+      onSignals(t, () => {}, p);
+      p.stderr.emit("error", Object.assign(new Error(`write ${errno}`), { code: errno }));
+      p.stdout.emit("error", Object.assign(new Error(`write ${errno}`), { code: errno }));
+      await exited;
+      expect(events, errno).toEqual(["removed x", `exit ${code}`]);
+    }
+  });
+
+  it("lets one Ctrl+C or another signal during a teardown not cut it short", async () => {
     const events: string[] = [];
     const { p, exited } = proc(events);
     const t = new Teardown(() => {});
-    t.add("x", async () => {
-      events.push("removed x");
-    });
+    let finish: () => void = () => {};
+    t.add("slow", () => new Promise<void>((r) => (finish = r)));
     onSignals(t, () => {}, p);
-    p.stdout.emit("error", Object.assign(new Error("write EBADF"), { code: "EBADF" }));
+    p.stdout.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+    p.emit("SIGINT");
+    p.emit("SIGTERM");
+    p.emit("SIGHUP");
     await new Promise((r) => setTimeout(r, 5));
     expect(events).toEqual([]);
-    p.stderr.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
-    p.stdout.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+    finish();
     await exited;
-    expect(events).toEqual(["removed x", "exit 141"]);
+    expect(events).toEqual(["exit 141"]);
   });
 
-  it("exits at once on a second Ctrl+C, and stops listening when told", async () => {
+  it("exits at once on a second Ctrl+C, whatever began the teardown, and stops listening when told", async () => {
     const { p, exits } = proc();
     const t = new Teardown(() => {});
     t.add("slow", () => new Promise(() => {}));
@@ -120,6 +140,16 @@ describe("onSignals", () => {
     p.emit("SIGINT");
     p.emit("SIGINT");
     expect(exits).toEqual([130]);
+
+    const after = proc();
+    const slow = new Teardown(() => {});
+    slow.add("slow", () => new Promise(() => {}));
+    onSignals(slow, () => {}, after.p);
+    after.p.emit("SIGTERM");
+    after.p.emit("SIGINT");
+    expect(after.exits).toEqual([]);
+    after.p.emit("SIGINT");
+    expect(after.exits).toEqual([143]);
 
     const second = proc();
     const stop = onSignals(new Teardown(() => {}), () => {}, second.p);

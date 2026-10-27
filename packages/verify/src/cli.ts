@@ -354,7 +354,16 @@ function report(findings: Finding[], started: number): number {
 
 // PowerSync's worker threads can keep the process alive, so it exits explicitly, once the
 // report has been written out.
-const exit = (code: number) => process.stdout.write("", () => process.exit(code));
+// Output that has gone (| head, a closed terminal) is no reason to crash; while audit's
+// PowerSync is up, the teardown handles it (autostart/teardown.ts), and otherwise the run
+// ends as it would, exiting 141 as on SIGPIPE.
+let outputGone = false;
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", () => {
+    outputGone = true;
+  });
+}
+const exit = (code: number) => process.stdout.write("", () => process.exit(outputGone ? 141 : code));
 main(process.argv.slice(2)).then(exit, (e) => {
   process.stderr.write(`samesight-verify: ${(e as Error).message}\n`);
   exit(1);
