@@ -68,7 +68,7 @@ Pass `--restart` if PowerSync is not restarted with `docker compose restart powe
 | `--mutate-datasets <n>` | 8 | Datasets to try on each mutant before calling it missed. |
 | `--restart <command>` | `docker compose restart powersync` | How to restart PowerSync. |
 
-The exit code is 0 when nothing failed, 1 otherwise, and 141 when its output closed before the end (`| head`); a run whose output has gone still runs to its end (an audit whose own PowerSync is up stops there instead, and cleans up), then exits 141. Warnings do not fail a run.
+The exit code is 0 when nothing failed, 1 when a check found something, and 2 when the run could not do its job: a flag it cannot read, a file it cannot find, a database or service it cannot reach, or a differential whose service broke down before it finished (a run that both found something and broke down exits 1). It is 141 when its output closed before the end (`| head`); a run whose output has gone still runs to its end (an audit whose own PowerSync is up stops there instead, and cleans up), then exits 141. Warnings do not fail a run. The summary line says `PASSED`, `FAILED: n failing`, or `INCOMPLETE: n could not run`.
 
 ## Audit mode
 

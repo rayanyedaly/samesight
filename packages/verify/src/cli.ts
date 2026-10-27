@@ -42,7 +42,7 @@ import { brokeDown, differential, setUp, stoppable } from "./differential/run.ts
 import { policyTables } from "./differential/model.ts";
 import { worldArbitrary } from "./differential/world.ts";
 import { mutationTest } from "./mutate/run.ts";
-import { failed, type Finding, formatFindings } from "./report.ts";
+import { exitCode, failed, type Finding, formatFindings } from "./report.ts";
 import { readStack } from "./stack.ts";
 import { checkCatalogParity } from "./static/catalog-parity.ts";
 import { checkCatalog } from "./static/catalog.ts";
@@ -149,7 +149,7 @@ async function main(argv: string[]): Promise<number> {
   const manifestText = file(out.manifest);
   if (!snapshot || !manifestText) {
     process.stderr.write(`No ${snapshot ? out.manifest : out.schemaSnapshot} next to ${policyPath}; run samesight generate first.\n`);
-    return 1;
+    return 2;
   }
   const schema = JSON.parse(snapshot) as SchemaInfo;
   const ir = buildIR(policy, schema);
@@ -301,7 +301,7 @@ async function auditMain(argv: string[]): Promise<number> {
   const syncPath = resolve(values["sync-config"] ?? "sync-config.yaml");
   if (!existsSync(syncPath)) {
     process.stderr.write(`No sync config at ${syncPath}; pass --sync-config.\n`);
-    return 1;
+    return 2;
   }
   const project = resolve(values.project ?? ".");
   const findings: Finding[] = [];
@@ -407,12 +407,16 @@ function signalTeardown(log: (line: string) => void, mode: Mode) {
 /** Stopped by a signal: onSignals exits with its code (130, 143, 129, 141) once the teardown is done. */
 const untilExit = () => new Promise<number>(() => setInterval(() => {}, 60_000));
 
+/** The summary line; exits 0 on a pass, 1 when a check found something, 2 when one only could not run. */
 function report(findings: Finding[], started: number): number {
-  const fails = findings.filter((f) => f.status === "fail").length;
+  const fails = findings.filter((f) => f.status === "fail" && !f.incomplete).length;
+  const incomplete = findings.filter((f) => f.status === "fail" && f.incomplete).length;
   const warns = findings.filter((f) => f.status === "warn").length;
   const time = `${((Date.now() - started) / 1000).toFixed(0)}s`;
-  process.stdout.write(`\n${fails ? `FAILED: ${fails} failing` : "PASSED"}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
-  return fails ? 1 : 0;
+  const notRun = incomplete ? `${incomplete} could not run` : "";
+  const head = fails ? `FAILED: ${fails} failing${notRun ? `, ${notRun}` : ""}` : notRun ? `INCOMPLETE: ${notRun}` : "PASSED";
+  process.stdout.write(`\n${head}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
+  return exitCode(findings);
 }
 
 // PowerSync's worker threads can keep the process alive, so it exits explicitly, once the
@@ -423,20 +427,21 @@ function report(findings: Finding[], started: number): number {
 let outputGone: number | undefined;
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (e: NodeJS.ErrnoException) => {
-    outputGone ??= e.code === "EPIPE" || e.code === "EIO" ? 141 : 1;
+    outputGone ??= e.code === "EPIPE" || e.code === "EIO" ? 141 : 2;
   });
 }
 // A failed write calls back before it emits 'error': the callbacks' own errors count too.
 const exit = (code: number) => {
   let left = 2;
   const done = (e?: Error | null) => {
-    if (e) outputGone ??= ["EPIPE", "EIO"].includes((e as NodeJS.ErrnoException).code ?? "") ? 141 : 1;
+    if (e) outputGone ??= ["EPIPE", "EIO"].includes((e as NodeJS.ErrnoException).code ?? "") ? 141 : 2;
     if (--left === 0) process.exit(outputGone ?? code);
   };
   process.stdout.write("", done);
   process.stderr.write("", done);
 };
+// An error (bad flags, a database or service it cannot reach) means it could not run: 2.
 main(process.argv.slice(2)).then(exit, (e) => {
   process.stderr.write(`samesight-verify: ${(e as Error).message}\n`);
-  exit(1);
+  exit(2);
 });

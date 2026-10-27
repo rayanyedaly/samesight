@@ -116,11 +116,11 @@ describe("onSignals", () => {
     expect(linux.p.listenerCount("SIGBREAK")).toBe(0);
   });
 
-  it("tears down and exits 141 when its output has gone (EPIPE), or 1 on another output error", async () => {
+  it("tears down and exits 141 when its output has gone (EPIPE), or 2 on another output error", async () => {
     for (const [errno, code] of [
       ["EPIPE", 141],
       ["EIO", 141],
-      ["ENOSPC", 1],
+      ["ENOSPC", 2],
     ] as const) {
       const events: string[] = [];
       const { p, exited } = proc(events);

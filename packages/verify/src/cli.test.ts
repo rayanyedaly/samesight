@@ -22,16 +22,23 @@ describe("samesight-verify audit flags", () => {
     "refuses %j before touching anything",
     async (args, message) => {
       const { code, stderr } = await cli(["audit", ...args]);
-      expect(code).toBe(1);
+      // Could not run: 2, not the 1 of a finding.
+      expect(code).toBe(2);
       expect(stderr).toMatch(message);
     },
     20_000,
   );
 
   it("takes --compose with --static", { timeout: 20_000 }, async () => {
-    const { stderr } = await cli(["audit", "--static", "--compose", "docker-compose.yml", "--sync-config", "nowhere.yaml"]);
+    const { code, stderr } = await cli(["audit", "--static", "--compose", "docker-compose.yml", "--sync-config", "nowhere.yaml"]);
     expect(stderr).not.toMatch(/--compose checks/);
     expect(stderr).toMatch(/No sync config at/);
+    expect(code).toBe(2);
+  });
+
+  it("exits 2 on a flag it cannot read, and on a policy it cannot find", { timeout: 20_000 }, async () => {
+    expect((await cli(["audit", "--runs", "many"])).code).toBe(2);
+    expect((await cli(["--policy", "nowhere.policy.ts"])).code).toBe(2);
   });
 
   it.each([["stdout"], ["stderr"], ["stdout", "stderr"]])(
