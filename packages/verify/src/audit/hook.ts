@@ -160,6 +160,8 @@ export interface HookPlan {
   /** Why audit cannot give run users rows the hook reads, when it cannot. */
   cannot?: string;
   findings: Finding[];
+  /** When audit gives the hook rows (planRun): the tables with a row per run user, and the run's plan, said once. */
+  steer?: { perUser: string[]; summary: string };
 }
 
 const warn = (detail: string): Finding => ({ status: "warn", check: "access token hook", detail });

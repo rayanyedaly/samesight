@@ -65,6 +65,10 @@ export interface Run {
   asFound?: string[];
   /** Their rows, for generated rows to point at. */
   existing?: Inserted[];
+  /** Rows given before sign-in and kept for the run (the access token hook's): a subset of `existing`. */
+  fixedRows?: Inserted[];
+  /** Fixed rows the database refused, as table, user and its message. */
+  fixedRefused?: string[];
 }
 
 /** A run under a Samesight policy: tenants, a user per role, the policy's hidden columns. */
@@ -168,6 +172,17 @@ export async function setUp(client: pg.Client, stack: Stack, ir: IR): Promise<Se
 /** Users a run without a policy signs up. */
 export const AUDIT_USERS = 4;
 
+/** Rows to insert before sign-in and keep for the run (audit/fixed.ts), and the tables they fill. */
+export interface FixedSetUp {
+  /** Fixed tables: generated rows never go there. */
+  tables: string[];
+  rows: { table: string; row: Record<string, unknown>; user?: number }[];
+  /** The hook's URI, for messages. */
+  hook?: string;
+  /** Fixed rows' keys as labels show them (teams row 1). */
+  names?: Map<string, string>;
+}
+
 /** The metadata audit gives each run user, and the claim paths to label users by. */
 export interface UserClaims {
   /** Per user, by index; the number of users. */
@@ -192,30 +207,73 @@ export function runUserIds(count: number): string[] {
  * auth.users, and what a device may hold is whatever RLS lets its user read. A user is
  * labelled by the values its token carries at the claim paths: u2 (app_metadata.role=editor).
  */
-export async function setUpUsers(client: pg.Client, stack: Stack, scope: { tables: ScopeTable[]; synced: string[]; deviceTables?: Record<string, string> }, claims?: UserClaims): Promise<Run> {
+export async function setUpUsers(
+  client: pg.Client,
+  stack: Stack,
+  scope: { tables: ScopeTable[]; synced: string[]; deviceTables?: Record<string, string>; fixed?: FixedSetUp },
+  claims?: UserClaims,
+): Promise<Run> {
   const count = claims?.metadata.length || AUDIT_USERS;
   return exclusive(client, stack, scope.tables, async () => {
     const model = insertOrder(await readModel(client, scope.tables));
-    // Without tenants, the run finds its rows again only by the prefix it gives uuid keys.
-    const refused = auditRefusals(model, scope.synced);
+    const fixedTables = scope.fixed?.tables ?? [];
+    // Without tenants, the run finds its rows again only by the prefix it gives uuid keys
+    // (fixed tables were checked for a key or a user column when they were planned).
+    const refused = auditRefusals(model.filter((t) => !fixedTables.includes(t.name)), scope.synced);
     if (refused.length) throw new Error(`audit mode cannot run on these tables: ${refused.join("; ")}`);
     await cleanup(client, stack, model);
     const ids = claims?.ids?.slice(0, count) ?? runUserIds(count);
     const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36), claims?.metadata, ids);
+    // Rows the access token hook reads, before anyone signs in; each on its own, so one the
+    // database refuses leaves the others.
+    const fixedRows: Inserted[] = [];
+    const fixedRefused: string[] = [];
+    if (scope.fixed?.rows.length) {
+      await client.query("begin");
+      try {
+        for (const r of scope.fixed.rows) {
+          await client.query("savepoint fixed");
+          try {
+            await insertRow(client, r.table, r.row);
+            await client.query("release savepoint fixed");
+            fixedRows.push({ table: r.table, row: r.row, tenant: undefined });
+          } catch (e) {
+            await client.query("rollback to savepoint fixed");
+            fixedRefused.push(`${r.table} row${r.user === undefined ? "" : ` for u${r.user}`}: ${(e as Error).message}`);
+          }
+        }
+        await client.query("commit");
+      } catch (e) {
+        await client.query("rollback").catch(() => {});
+        throw e;
+      }
+    }
     const sessions = new Map<string, Session>();
-    for (const u of users) sessions.set(u.id, await signIn(stack, u.email, password));
-    const names = new Map(users.map((u, i) => [u.id, `u${i}`]));
+    for (const [i, u] of users.entries()) {
+      try {
+        sessions.set(u.id, await signIn(stack, u.email, password));
+      } catch (e) {
+        // The hook runs on every sign-in, with the rows this user was given.
+        if (scope.fixed?.hook) {
+          const given = scope.fixed.rows.filter((r) => r.user === i).map((r) => r.table);
+          throw new Error(`signing in u${i} failed: ${(e as Error).message}. The access token hook ${scope.fixed.hook} runs on every sign-in${given.length ? `, with the rows audit gave u${i} in ${[...new Set(given)].join(", ")}` : ""}`);
+        }
+        throw e;
+      }
+    }
+    const names = new Map([...users.map((u, i) => [u.id, `u${i}`] as const), ...(scope.fixed?.names ?? [])]);
     const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: claimLabel(`u${i}`, sessions.get(u.id)?.claims ?? {}, claims?.paths ?? [], names) }));
     return {
       client,
       stack,
       model,
-      tables: generatedTables(model, []),
+      tables: generatedTables(model, fixedTables),
       fixed: { prefix: PREFIX, tenants: [], users: members },
       sessions,
       password,
       synced: scope.synced,
       ...(scope.deviceTables ? { deviceTables: scope.deviceTables } : {}),
+      ...(scope.fixed ? { existing: fixedRows, fixedRows, fixedRefused } : {}),
       hidden: () => new Map(),
       gaps: "warn",
     };
@@ -597,7 +655,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       for (const r of rowsIn) inserted.set(r.table, (inserted.get(r.table) ?? 0) + 1);
       const devices = await syncAll(s);
       const passed = failing(await compareAll(s, { devices, tally: visible, received })).length === 0;
-      if (passed && !failedOnce && options.coverage) await measure(s, options.coverage, rowsIn, devices);
+      if (passed && !failedOnce && options.coverage) await measure(s, options.coverage, rowsIn, devices, (s.fixedRows ?? []).filter((r) => s.synced.includes(r.table)));
       return passed;
     });
     failedOnce ||= !ok;

@@ -1,0 +1,121 @@
+import { describe, expect, it } from "vitest";
+import type { ColumnModel, TableModel } from "../differential/model.ts";
+import { deleteRows } from "../differential/world.ts";
+import { assignClaims } from "./assign.ts";
+import { planClaims } from "./claims.ts";
+import { dimLabel, fixedPlan, fixedRows, hookDims } from "./fixed.ts";
+
+const col = (name: string, type: string, more: Partial<ColumnModel> = {}): ColumnModel => ({ name, type, nullable: false, hasDefault: false, computed: false, hints: [], ...more });
+const toUsers = (column: string) => ({ columns: [column], schema: "auth", table: "users", references: ["id"] });
+const to = (column: string, table: string) => ({ columns: [column], schema: "public", table, references: ["id"] });
+
+const teams: TableModel = { name: "teams", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("name", "text")], foreignKeys: [] };
+const memberships: TableModel = {
+  name: "memberships",
+  primaryKey: ["id"],
+  unique: ["id", "user_id"],
+  columns: [col("id", "uuid"), col("user_id", "uuid"), col("team_id", "uuid"), col("role", "text", { values: ["lead", "member"] }), col("note", "text", { nullable: true })],
+  foreignKeys: [toUsers("user_id"), to("team_id", "teams")],
+};
+const audits: TableModel = { name: "audits", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("at", "text")], foreignKeys: [] };
+const model = [teams, memberships, audits];
+const body = "select team_id, role into m from public.memberships where user_id = (event->>'user_id')::uuid";
+
+describe("fixedPlan", () => {
+  it("gives rows to the hook's tables with a user column and to the tables they point at, and notes the others", () => {
+    expect(fixedPlan(model, ["memberships", "audits"])).toEqual({
+      tables: ["teams", "memberships"],
+      perUser: ["memberships"],
+      notes: ["the access token hook reads audits, which has no column pointing at auth.users, so audit does not choose its rows"],
+    });
+  });
+
+  it("takes a table keyed by its user column (user_roles), and refuses what it could not find again or fill", () => {
+    const userRoles: TableModel = { name: "user_roles", primaryKey: ["user_id"], unique: ["user_id"], columns: [col("user_id", "uuid"), col("role", "text")], foreignKeys: [toUsers("user_id")] };
+    expect(fixedPlan([userRoles], ["user_roles"])).toMatchObject({ tables: ["user_roles"], perUser: ["user_roles"] });
+    const counted: TableModel = { ...teams, name: "codes", primaryKey: ["code"], columns: [col("code", "text")] };
+    const pointing: TableModel = { ...memberships, foreignKeys: [toUsers("user_id"), to("team_id", "codes")] };
+    expect(fixedPlan([counted, pointing], ["memberships"]).refusal).toBe("codes has no uuid key of its own, so audit could not find its rows again");
+    const elsewhere: TableModel = { ...memberships, foreignKeys: [toUsers("user_id"), { columns: ["team_id"], schema: "private", table: "teams", references: ["id"] }] };
+    expect(fixedPlan([elsewhere], ["memberships"]).refusal).toBe("memberships.team_id must point at private.teams, where audit gives no rows");
+    const odd: TableModel = { ...memberships, foreignKeys: [toUsers("user_id")], columns: [...memberships.columns, col("shape", "geometry")] };
+    expect(fixedPlan([teams, odd], ["memberships"]).refusal).toBe("memberships.shape (geometry) needs a value audit cannot make");
+  });
+});
+
+describe("hookDims and fixedRows", () => {
+  const plan = fixedPlan(model, ["memberships"]);
+
+  it("varies a per-user row over the rows its key points at and its CHECK list", () => {
+    const dims = hookDims(model, plan, body);
+    expect(dims).toEqual([
+      { table: "memberships", column: "team_id", options: [0, 1], parent: "teams" },
+      { table: "memberships", column: "role", options: ["lead", "member"] },
+    ]);
+    expect(dims.map((d) => dimLabel(d, d.options[1]))).toEqual(["memberships.team_id=teams row 2", "memberships.role='member'"]);
+  });
+
+  it("takes a column's literals only when the hook names it, and varies a table with nothing else by a row or none", () => {
+    const flags: TableModel = { name: "flags", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("user_id", "uuid"), col("tier", "text", { hints: ["gold"] })], foreignKeys: [toUsers("user_id")] };
+    const p = fixedPlan([flags], ["flags"]);
+    expect(hookDims([flags], p, "select tier from public.flags")).toEqual([{ table: "flags", column: "tier", options: ["gold"] }]);
+    expect(hookDims([flags], p, "select 1 from public.flags")).toEqual([{ table: "flags", column: null, options: [true, false] }]);
+  });
+
+  it("makes parent rows first, then a row per user with picks, pointing at them", () => {
+    const dims = hookDims(model, plan, body);
+    let n = 0;
+    const mint = () => `5a3e5a3e-0000-4000-8000-${String(++n).padStart(12, "0")}`;
+    const rows = fixedRows(model, plan, dims, [[1, 0], [0, 1], undefined], ["u0-id", "u1-id", "u2-id"], mint);
+    expect(rows.map((r) => [r.table, r.user])).toEqual([
+      ["teams", undefined],
+      ["teams", undefined],
+      ["memberships", 0],
+      ["memberships", 1],
+    ]);
+    const [a, b, m0, m1] = rows;
+    expect(m0?.row).toMatchObject({ user_id: "u0-id", team_id: b?.row.id, role: "lead" });
+    expect(m1?.row).toMatchObject({ user_id: "u1-id", team_id: a?.row.id, role: "member" });
+    // Required columns are filled; a nullable one is left alone.
+    expect(typeof a?.row.name).toBe("string");
+    expect(m0?.row).not.toHaveProperty("note");
+  });
+});
+
+describe("assignClaims with the hook's dims", () => {
+  const read = (key: string) => `(auth.jwt() -> 'app_metadata'::text) ->> '${key}'::text`;
+  const plan = planClaims([{ where: 'policy "p" on docs (USING)', sql: `(${read("role")}) = 'admin'::text`, dialect: "postgres", table: "docs" }]);
+  const dims = hookDims(model, fixedPlan(model, ["memberships"]), body);
+
+  it("picks metadata and hook rows together, with a copy of the first user and one with nothing", () => {
+    const a = assignClaims(plan, () => "fresh", [], [], dims);
+    // 2 roles x 2 teams x 2 roles in the hook: 8 combinations over 6 spread users.
+    expect(a.users).toHaveLength(8);
+    expect(a.hookPicks).toHaveLength(8);
+    expect(a.hookPicks[6]).toEqual(a.hookPicks[0]);
+    expect(a.hookPicks[7]).toBeUndefined();
+    expect(new Set(a.hookPicks.slice(0, 6).map((p) => p?.[0]))).toEqual(new Set([0, 1]));
+    expect(new Set(a.hookPicks.slice(0, 6).map((p) => p?.[1]))).toEqual(new Set([0, 1]));
+    expect(a.partial).toBe(true);
+    expect(a.findings).toContainEqual(expect.objectContaining({ detail: expect.stringMatching(/^8 combinations of claim values and access token hook rows, and 8 users hold 6 of them/) }));
+  });
+
+  it("names a hook row no user holds", () => {
+    const wide = [{ table: "memberships", column: "role", options: ["a", "b", "c", "d", "e", "f", "g", "h"] }];
+    const a = assignClaims(planClaims([]), () => "fresh", [], [], wide);
+    expect(a.findings).toContainEqual(expect.objectContaining({ detail: "8 users cannot hold every value: no user holds memberships.role='g' (an access token hook row), memberships.role='h' (an access token hook row)" }));
+  });
+});
+
+describe("deleteRows on a table found by its user column alone", () => {
+  it("deletes by owner when the table has no single key", async () => {
+    const sql: [string, unknown[]][] = [];
+    const client = { query: async (text: string, values: unknown[] = []) => sql.push([text, values]) } as never;
+    const roles: TableModel = { name: "user_roles", primaryKey: ["user_id", "role"], unique: [], columns: [col("user_id", "uuid"), col("role", "text")], foreignKeys: [toUsers("user_id")] };
+    await deleteRows(client, [roles, memberships], "5a3e5a3e", ["u0"]);
+    expect(sql.filter(([t]) => t.startsWith("delete"))).toEqual([
+      ['delete from public.memberships where id::text like $1 or user_id = any($2::uuid[])', ["5a3e5a3e%", ["u0"]]],
+      ['delete from public.user_roles where user_id = any($1::uuid[])', [["u0"]]],
+    ]);
+  });
+});

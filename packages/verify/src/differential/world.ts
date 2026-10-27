@@ -244,10 +244,17 @@ export async function deleteRows(client: pg.Client, tables: TableModel[], prefix
         continue;
       }
       const [key] = t.primaryKey;
-      if (t.primaryKey.length !== 1 || !key) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column and no single-column primary key`);
       const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
-      const byUser = owners.map((c) => ` or ${ident(c)} = any($2::uuid[])`).join("");
-      await client.query(`delete from public.${ident(t.name)} where ${ident(key)}::text like $1${byUser}`, owners.length ? [`${prefix}%`, users] : [`${prefix}%`]);
+      const keyed = t.primaryKey.length === 1 && key !== undefined;
+      // A table the run's rows are found in by owner alone (user_roles keyed by user and role) needs no single key.
+      if (!keyed && !owners.length) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column, no single-column primary key and no column pointing at auth.users`);
+      const params: unknown[] = [];
+      const conds = [
+        ...(keyed ? [`${ident(key)}::text like $${params.push(`${prefix}%`)}`] : []),
+        ...(owners.length ? [owners.map((c) => `${ident(c)} = any($${params.length + 1}::uuid[])`).join(" or ")] : []),
+      ];
+      if (owners.length) params.push(users);
+      await client.query(`delete from public.${ident(t.name)} where ${conds.join(" or ")}`, params);
     }
     await client.query("commit");
   } catch (e) {

@@ -276,11 +276,15 @@ function idsOf(inserted: Inserted[]): Map<string, string[]> {
   return out;
 }
 
-/** Adds one dataset's counts: run inside withWorld, after the comparison, before any failure. */
-export async function measure(s: Run, cov: Coverage, inserted: Inserted[], devices: Map<string, DeviceRow[]>): Promise<void> {
+/**
+ * Adds one dataset's counts: run inside withWorld, after the comparison, before any failure.
+ * `fixed`: the run's own rows kept for the whole run (the access token hook's), measured with
+ * every dataset but counted as inserted once.
+ */
+export async function measure(s: Run, cov: Coverage, inserted: Inserted[], devices: Map<string, DeviceRow[]>, fixed: Inserted[] = []): Promise<void> {
   cov.datasets++;
-  const ids = idsOf(inserted);
-  for (const [t, list] of ids) cov.inserted.set(t, (cov.inserted.get(t) ?? 0) + list.length);
+  const ids = idsOf([...inserted, ...fixed]);
+  for (const [t, list] of idsOf(cov.datasets === 1 ? [...inserted, ...fixed] : inserted)) cov.inserted.set(t, (cov.inserted.get(t) ?? 0) + list.length);
   const readers = s.fixed.users.map((u) => ({ id: u.id, claims: s.sessions.get(u.id)?.claims ?? {} }));
 
   for (const unit of cov.units) {
