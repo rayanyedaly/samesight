@@ -11,6 +11,22 @@ describe("report", () => {
   it("prints one marked line per finding", () => {
     expect(formatFindings([{ status: "fail", check: "anon", detail: "anon has SELECT on Tenant" }])).toBe("FAIL  anon: anon has SELECT on Tenant");
   });
+
+  it("prints a replay once, under the finding's row blocks, its command where their values start", () => {
+    const detail = "devices and RLS disagree (seed 9):\n    leak: u1 received lists 5a3e\n      sent by    stream user_data";
+    expect(
+      formatFindings([
+        { status: "fail", check: "differential", detail, replay: "samesight-verify audit --runs 3 --seed 9" },
+        { status: "warn", check: "differential", detail: "RLS lets users read rows no stream sends them" },
+      ]).split("\n"),
+    ).toEqual([
+      "FAIL  differential: devices and RLS disagree (seed 9):",
+      "    leak: u1 received lists 5a3e",
+      "      sent by    stream user_data",
+      "      replay     samesight-verify audit --runs 3 --seed 9",
+      "warn  differential: RLS lets users read rows no stream sends them",
+    ]);
+  });
 });
 
 describe("exitCode", () => {

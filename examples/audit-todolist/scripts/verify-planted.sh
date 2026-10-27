@@ -43,4 +43,9 @@ for line in "sent by +stream user_data, queries\[0\]$" "^ +SELECT \* FROM lists$
     exit 1
   fi
 done
+# And the command that replays it: this run's flags, with the seed that failed.
+if ! grep -qE "^ +replay +samesight-verify audit --project upstream --sync-config $planted --runs 3 --time-limit 60 --seed [0-9]+$" "$log"; then
+  echo "verify-planted.sh: the report lacks the replay line" >&2
+  exit 1
+fi
 echo "The audit caught the planted divergence."

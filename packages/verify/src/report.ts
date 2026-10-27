@@ -7,6 +7,8 @@ export interface Finding {
   incomplete?: boolean;
   /** The rows a differential finding is about, as bug reports. */
   rows?: RowReport[];
+  /** The command that replays the run, with its own flags and the failing seed. */
+  replay?: string;
 }
 
 /**
@@ -34,6 +36,9 @@ export interface RowReport {
   fix?: { query: string; add: string; why: string };
 }
 
+/** A row block's label, its value starting where the other labels' do. */
+const label = (name: string) => `  ${name.padEnd(11)}`;
+
 /** What a row report says happened, with the streams that sent it when `via` is given. */
 export function rowSentence(r: Pick<RowReport, "kind" | "user" | "row" | "columns">, via = ""): string {
   const cols = r.columns?.join(", ");
@@ -53,7 +58,6 @@ export function rowSentence(r: Pick<RowReport, "kind" | "user" | "row" | "column
 
 /** A row report's lines: what happened, then where it came from, each under a label. */
 export function formatRow(r: RowReport): string[] {
-  const label = (name: string) => `  ${name.padEnd(11)}`;
   const blank = " ".repeat(13);
   const sent = r.sentBy.flatMap((x, i) => [
     `${i === 0 ? label("sent by") : blank}stream ${x.stream}${x.query ? `, ${x.query}` : ""}`,
@@ -72,8 +76,9 @@ export function formatRow(r: RowReport): string[] {
 
 const MARK = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
 
+/** One line per finding (its detail may hold row blocks), then a replay line under the blocks of a finding with one. */
 export function formatFindings(findings: Finding[]): string {
-  return findings.map((f) => `${MARK[f.status]}  ${f.check}: ${f.detail}`).join("\n");
+  return findings.map((f) => `${MARK[f.status]}  ${f.check}: ${f.detail}${f.replay ? `\n    ${label("replay")}${f.replay}` : ""}`).join("\n");
 }
 
 export function failed(findings: Finding[]): boolean {

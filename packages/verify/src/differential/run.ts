@@ -710,6 +710,8 @@ export interface DifferentialOptions {
   coverage?: Coverage;
   /** The sync config's streams, to name the query that sent a row of the counterexample and suggest a fix. */
   sync?: { kind: "streams" | "bucket definitions"; streams: Stream[] };
+  /** The command that replays the run with a seed, set on a counterexample's finding. */
+  replay?: (seed: number) => string;
 }
 
 export async function differential(s: Run, options: DifferentialOptions): Promise<DifferentialResult> {
@@ -802,6 +804,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
           check,
           detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}):\n${counterexample.flatMap(formatRow).map((l) => `    ${l}`).join("\n")}`,
           rows: counterexample,
+          ...(options.replay ? { replay: options.replay(x.seed) } : {}),
         },
         ...crashed,
       ]),

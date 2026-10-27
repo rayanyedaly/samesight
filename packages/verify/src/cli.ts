@@ -43,6 +43,7 @@ import { policyTables } from "./differential/model.ts";
 import { worldArbitrary } from "./differential/world.ts";
 import { mutationTest } from "./mutate/run.ts";
 import { exitCode, failed, type Finding, formatFindings } from "./report.ts";
+import { replayCommand } from "./replay.ts";
 import { readStack } from "./stack.ts";
 import { checkCatalogParity } from "./static/catalog-parity.ts";
 import { checkCatalog } from "./static/catalog.ts";
@@ -229,6 +230,7 @@ async function main(argv: string[]): Promise<number> {
           runs,
           timeLimitMs,
           ...(seed !== undefined ? { seed } : {}),
+          replay: (x) => replayCommand("policy", argv, x),
         });
         section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, result.findings);
         log("forging upload batches");
@@ -361,6 +363,7 @@ async function auditMain(argv: string[]): Promise<number> {
       runs,
       timeLimitMs,
       ...(seed !== undefined ? { seed } : {}),
+      replay: (x) => replayCommand("audit", argv, x),
       section,
       log,
       projectDir: project,
