@@ -21,7 +21,7 @@ import { checkAuditCatalog } from "./catalog.ts";
 import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
 import { planHook } from "./hook.ts";
-import { auditTables } from "./run.ts";
+import { auditTables, cleanupScope } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
 
 const DEMO = fileURLToPath(new URL("../../../../examples/audit-todolist/upstream/", import.meta.url));
@@ -280,6 +280,20 @@ describe("an access token hook on the demo's catalog", () => {
     expect(missing.findings).toEqual([expect.objectContaining({ detail: expect.stringMatching(/names no function public\.samesight_test_hook\(jsonb\) in the database; its claims are not steered$/) })]);
     const none = await plan(["create function public.samesight_test_hook(event jsonb) returns jsonb language sql stable return event"]);
     expect(none).toMatchObject({ tables: [], cannot: "its body reads no public table" });
+  });
+});
+
+describe("the tables cleanup reaches beyond the run's", () => {
+  it("takes the tables pointing at auth.users and those they point at, leaving out the run's own", async () => {
+    const scope = await rolledBack(client, async () => {
+      await client.query("create table public.samesight_test_parent (id uuid primary key)");
+      await client.query("create table public.samesight_test_owned (id uuid primary key, user_id uuid not null references auth.users, parent_id uuid references public.samesight_test_parent)");
+      return cleanupScope(client, ["lists", "todos"]);
+    });
+    expect(scope).toContain("samesight_test_owned");
+    expect(scope).toContain("samesight_test_parent");
+    expect(scope).not.toContain("lists");
+    expect(scope).not.toContain("todos");
   });
 });
 
