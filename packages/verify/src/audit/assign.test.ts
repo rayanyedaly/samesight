@@ -445,9 +445,17 @@ describe("claims compared with columns", () => {
   });
 
   it("keeps decimals out of floats that cannot hold them, and out of negative-scale numerics", () => {
-    expect([fitsType(0.5, "real"), fitsType(0.1, "real"), fitsType(16777217, "real"), fitsType(0.1, "double precision"), fitsType("0.10", "double precision"), fitsType(101, "numeric(5,-2)")]).toEqual([true, false, false, true, true, false]);
-    // Any spelling of a number a float holds exactly; none it would round.
-    expect([fitsType("1e2", "double precision"), fitsType("0.50", "real"), fitsType("0.1", "real"), fitsType("1e400", "double precision"), fitsType("0x10", "double precision")]).toEqual([true, true, false, false, false]);
+    expect([fitsType(0.5, "real"), fitsType(0.1, "real"), fitsType(16777217, "real"), fitsType(0.1, "double precision"), fitsType(101, "numeric(5,-2)")]).toEqual([true, false, false, true, false]);
+    // Read as a number: any spelling of a number a float holds exactly; none it would round.
+    const asNumber = (v: string, type: string) => fitsType(v, type, true);
+    expect([asNumber("1e2", "double precision"), asNumber("0.10", "double precision"), asNumber("0.50", "real"), asNumber("0.1", "real"), asNumber("1e400", "double precision"), asNumber("0x10", "double precision")]).toEqual([true, true, true, false, false, false]);
+  });
+
+  it("puts a claim read as text only where the column prints it back the same", () => {
+    // A row holding 1e2 prints as 100, which a token carrying "1e2" never equals as text.
+    expect([fitsType("1e2", "double precision"), fitsType("0.10", "double precision"), fitsType("0.5", "real"), fitsType("100", "double precision")]).toEqual([false, false, true, true]);
+    expect([fitsType("0100", "integer"), fitsType("-0", "integer"), fitsType("100", "integer"), fitsType(100, "integer")]).toEqual([false, false, true, true]);
+    expect([fitsType("0100", "integer", true), fitsType("1e2", "double precision", true)]).toEqual([true, true]);
   });
 
   it("treats a pattern with Postgres-only syntax as one audit cannot read", () => {
@@ -471,7 +479,7 @@ describe("one number, one value, where the rules read numbers", () => {
   it("spells every number one way, from its digits, and nothing else as a number", () => {
     expect(["1", 1, "01", "1.0", "1e0", " 1 ", "+1", ".1e1"].map(canonicalNumber)).toEqual(Array(8).fill("0.1e1"));
     expect([0, "0.00", "-0", "-1.50", 1e21, "100", "9007199254740993"].map(canonicalNumber)).toEqual(["0", "0", "0", "-0.15e1", "0.1e22", "0.1e3", "0.9007199254740993e16"]);
-    expect(["", "0x10", "Infinity", "1e", "abc", true, null].map(canonicalNumber)).toEqual(Array(7).fill(undefined));
+    expect(["", "0x10", "Infinity", "1e", "abc", true, null, "1e9999999999999999", "1e999999999999999999999"].map(canonicalNumber)).toEqual(Array(9).fill(undefined));
   });
 
   it("tells values apart by number only when the claim is read as one", () => {

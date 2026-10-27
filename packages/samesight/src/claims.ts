@@ -433,9 +433,37 @@ function typeAt(t: Token[], i: number): { type: string; end: number } | undefine
   return { type: parts.join(""), end: j };
 }
 
+/**
+ * A number's canonical text, the same for every spelling of one value (1, 1.0, '01', 1e0),
+ * or undefined when the value is no number. Built from the digits, so a bigint past 2^53
+ * and text like '', '0x10' or 'Infinity' are never taken for one; nor is an exponent no
+ * database takes (more than 15 digits), which a double cannot count exactly.
+ */
+export function canonicalNumber(v: unknown): string | undefined {
+  const text = typeof v === "number" ? (Number.isFinite(v) ? String(v) : undefined) : typeof v === "string" ? v.trim() : undefined;
+  const m = text === undefined ? null : /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!m || (!m[2] && !m[3]) || (m[4]?.replace(/^[+-]/, "").length ?? 0) > 15) return undefined;
+  const whole = m[2] ?? "";
+  let digits = whole + (m[3] ?? "");
+  let point = whole.length + Number(m[4] ?? 0);
+  const lead = /^0*/.exec(digits)?.[0].length ?? 0;
+  digits = digits.slice(lead).replace(/0+$/, "");
+  point -= lead;
+  return digits ? `${m[1] === "-" ? "-" : ""}0.${digits}e${point}` : "0";
+}
+
+/** The number a literal spells, when a double holds that number exactly; else its text, which still compares as a number. */
+function exactNumber(text: string): ClaimValue {
+  const n = Number(text);
+  return Number.isFinite(n) && canonicalNumber(n) === canonicalNumber(text) ? n : text;
+}
+
 const NUMERIC_TYPE = /^(int[248]?|integer|bigint|smallint|numeric|real|double precision|float[48]?|decimal)$/;
+const INTEGER_TYPE = /^(int[248]?|integer|bigint|smallint)$/;
 /** Text Postgres reads as a number: optional sign, digits with an optional point, an optional exponent. */
 const NUMERIC_TEXT = /^\s*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/;
+/** Text Postgres reads as an integer: '1.5' and '1e2' are errors there, not numbers. */
+const INTEGER_TEXT = /^\s*[+-]?\d+\s*$/;
 
 /** The read's cast when it is numeric: an uncast literal compared with it is read as a number too, as Postgres does. */
 const numericCast = (casts: string[]): string[] => {
@@ -447,7 +475,7 @@ const numericCast = (casts: string[]): string[] => {
 function literalValue(tok: Token, casts: string[]): ClaimValue | undefined {
   let v: ClaimValue | undefined;
   if (tok.kind === "string") v = tok.text;
-  else if (tok.kind === "number") v = Number(tok.text);
+  else if (tok.kind === "number") v = exactNumber(tok.text);
   else if (word(tok, "true")) v = true;
   else if (word(tok, "false")) v = false;
   else if (word(tok, "null")) v = null;
@@ -462,7 +490,7 @@ function literalValue(tok: Token, casts: string[]): ClaimValue | undefined {
       return v;
     }
   }
-  if (typeof v === "string" && cast && NUMERIC_TYPE.test(cast) && NUMERIC_TEXT.test(v)) return Number(v);
+  if (typeof v === "string" && tok.kind === "string" && cast && NUMERIC_TYPE.test(cast) && (INTEGER_TYPE.test(cast) ? INTEGER_TEXT : NUMERIC_TEXT).test(v)) return exactNumber(v);
   if (typeof v === "string" && (cast === "boolean" || cast === "bool")) return v === "true" || v === "t" ? true : v === "false" || v === "f" ? false : v;
   return v;
 }

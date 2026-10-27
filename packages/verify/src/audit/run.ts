@@ -188,8 +188,8 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
   const scope = auditScope(config.streams, config.kind);
   const policies = await rows<{ qual: string | null; with_check: string | null }>(client, "select qual, with_check from pg_policies where schemaname = 'public'");
   const functions = await policyFunctions(client);
-  const claims = planClaims([...(await policyRules(client)), ...streamSql], functions);
   const hook = projectDir === undefined ? undefined : accessTokenHook(projectDir);
+  const claims = planClaims([...(await policyRules(client)), ...streamSql], functions, { hook: hook !== undefined });
   // Its function, the tables it reads, and what it does on each sign-in.
   const hookPlan = hook ? await planHook(client, hook.uri, functions) : undefined;
   const named = [...new Set([...scope.synced, ...scope.reads])];
