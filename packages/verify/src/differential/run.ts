@@ -524,6 +524,17 @@ export async function syncAll(s: Run): Promise<Map<string, Awaited<ReturnType<ty
   return out;
 }
 
+/**
+ * Whether a row a device or a user's read saw is the run's own, to count in coverage: one
+ * keyed by the run's prefix, or by a run user's id (a profile keyed by its user, whoever chose
+ * the id); a table whose key is no uuid counts every row.
+ */
+export function isRunRow(model: TableModel[], prefix: string, userIds: readonly string[], table: string, id: string): boolean {
+  const t = model.find((m) => m.name === table);
+  const key = t?.columns.find((c) => c.name === t.primaryKey[0]);
+  return key?.type !== "uuid" || id.startsWith(prefix) || userIds.includes(id);
+}
+
 /** Compares every user's device with what RLS returns them, for the data in the database now. */
 export async function compareAll(s: Run, options: IterationOptions = {}): Promise<UserProblems[]> {
   const devices = options.devices ?? (await syncAll(s));
@@ -531,12 +542,8 @@ export async function compareAll(s: Run, options: IterationOptions = {}): Promis
   const readers = s.fixed.users.map((u) => s.sessions.get(u.id)?.claims ?? {});
   const seen = await readAsUsers(s.client, readers, s.synced, options.prepare);
   // Only the run's own rows count as tested: rows already in the database say nothing about the generated ones.
-  const ours = (table: string, id: string) => {
-    const t = s.model.find((m) => m.name === table);
-    const key = t?.columns.find((c) => c.name === t.primaryKey[0]);
-    // A row keyed by its user's id (a profile) is the run's when the user is, whoever chose the id.
-    return key?.type !== "uuid" || id.startsWith(s.fixed.prefix) || s.fixed.users.some((u) => u.id === id);
-  };
+  const userIds = s.fixed.users.map((u) => u.id);
+  const ours = (table: string, id: string) => isRunRow(s.model, s.fixed.prefix, userIds, table, id);
   if (options.tally) {
     for (const rs of seen) for (const key of rs.keys()) {
       const cut = key.indexOf("\u0000");
