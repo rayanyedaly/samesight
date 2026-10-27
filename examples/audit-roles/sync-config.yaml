@@ -1,5 +1,6 @@
 # The same access as the RLS in supabase/migrations, as PowerSync sync streams. The role is
 # read in both spellings seen in the wild: a $. path, and ->> on the app_metadata object.
+# The own stream's alias (d) names the table on devices; audit maps it back to documents.
 config:
   edition: 3
 
@@ -8,7 +9,7 @@ streams:
     auto_subscribe: true
     queries:
       - SELECT * FROM orgs WHERE owner_id = auth.user_id()
-      - SELECT * FROM documents WHERE owner_id = auth.user_id()
+      - SELECT * FROM documents d WHERE d.owner_id = auth.user_id()
   editor:
     auto_subscribe: true
     queries:

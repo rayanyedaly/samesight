@@ -16,6 +16,15 @@ describe("unreadable-query", () => {
     ]);
   });
 
+  it("warns when one device table name would hold two tables' rows, in either order and across streams", () => {
+    expect(lint(stream("  a:\n    query: SELECT * FROM todos AS lists\n  b:\n    query: SELECT * FROM lists\n"))).toEqual([
+      ["warning", 7, "stream b, query cannot be checked by audit: it sends lists rows as lists, a name devices already hold todos rows under; rows of the two could not be told apart"],
+    ]);
+    expect(lint(stream("  a:\n    query: SELECT * FROM lists\n  b:\n    query: SELECT * FROM todos AS lists\n")).map((f) => f[2])).toEqual([
+      expect.stringMatching(/^stream b, query cannot be checked by audit: it sends todos rows as lists, a name devices already hold lists rows under/),
+    ]);
+  });
+
   it("warns about a CTE or parameter query the tokenizer cannot read", () => {
     expect(lint(stream("  s:\n    with:\n      c: SELECT id FROM lists WHERE name = E'x'\n    query: SELECT * FROM todos WHERE list_id IN c\n")).map((f) => f[2])).toEqual([
       expect.stringMatching(/^stream s, with.c cannot be checked by audit: it has a prefixed literal/),

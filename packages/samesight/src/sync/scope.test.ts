@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseSyncConfig } from "./config.ts";
 import { parseStreams } from "./streams.ts";
 import { auditScope, outputTable, tablesNamed } from "./scope.ts";
 
@@ -116,6 +117,19 @@ describe("auditScope", () => {
         detail: "a queries[1] sends lists rows as lists, a name devices already hold todos rows under; rows of the two could not be told apart: SELECT * FROM lists",
       }),
     ]);
+    // The other order, across streams.
+    const reverse = auditScope(
+      parseStreams(config(["  a:", "    auto_subscribe: true", "    query: SELECT * FROM lists", "  b:", "    auto_subscribe: true", "    query: SELECT * FROM todos AS lists"])),
+    );
+    expect(reverse.findings).toEqual([expect.objectContaining({ status: "fail", detail: expect.stringMatching(/^b query sends todos rows as lists, a name devices already hold lists rows under/) })]);
+  });
+
+  it("maps an aliased data query of bucket definitions back to its source", () => {
+    const s = auditScope(
+      parseSyncConfig("bucket_definitions:\n  b:\n    parameters: SELECT request.user_id() AS user_id\n    data:\n      - SELECT t.* FROM todos t WHERE t.owner_id = bucket.user_id\n").streams,
+      "bucket definitions",
+    );
+    expect([s.synced, s.deviceTables, s.findings.map((f) => f.status)]).toEqual([["todos"], { t: "todos" }, ["ok"]]);
   });
 
   it("adds the tables CTEs and subqueries read, so their branches get rows", () => {
