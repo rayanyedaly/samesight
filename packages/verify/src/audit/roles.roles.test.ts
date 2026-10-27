@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
-import { parseSyncConfig } from "samesight/compiler";
+import { auditScope, parseSyncConfig } from "samesight/compiler";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal } from "../db.ts";
 import { type AutoStarted, autoStart } from "../autostart/run.ts";
@@ -59,6 +59,8 @@ beforeAll(async () => {
         return { name, userColumns: new Set(plan.identityColumns), claimValues: assignment.claimValues.get(name) ?? new Map(), ...(pool ? { keyPool: pool } : {}) };
       }),
       synced: SYNCED,
+      // The own stream sends documents as d.
+      deviceTables: auditScope(parseSyncConfig(CONFIG).streams).deviceTables,
     },
     { metadata: assignment.users.map((v) => metadataOf(assignment.paths, v)), paths: assignment.paths.map((p) => p.path) },
   );

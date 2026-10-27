@@ -123,6 +123,18 @@ export function tablesNamed(sql: string): string[] {
   return [...out];
 }
 
+/**
+ * Records that devices hold `table` rows under `deviceTable` in `names` (device name to source
+ * table); throws when that name already holds another table's rows, which no one could tell apart.
+ */
+export function holdAs(names: Map<string, string>, o: { table: string; deviceTable: string }): void {
+  const known = names.get(o.deviceTable);
+  if (known !== undefined && known !== o.table) {
+    throw new Error(`sends ${o.table} rows as ${o.deviceTable}, a name devices already hold ${known} rows under; rows of the two could not be told apart`);
+  }
+  names.set(o.deviceTable, o.table);
+}
+
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 export interface AuditScope {
@@ -163,11 +175,7 @@ export function auditScope(streams: Stream[], kind: "streams" | "bucket definiti
     for (const q of s.queries) {
       try {
         const o = outputTable(q.sql);
-        const known = deviceTables.get(o.deviceTable);
-        if (known !== undefined && known !== o.table) {
-          throw new Error(`sends ${o.table} rows as ${o.deviceTable}, a name devices already hold ${known} rows under; rows of the two could not be told apart`);
-        }
-        deviceTables.set(o.deviceTable, o.table);
+        holdAs(deviceTables, o);
         synced.add(o.table);
         for (const r of [...o.reads, ...tablesNamed(q.sql)]) reads.add(r);
         queries++;
