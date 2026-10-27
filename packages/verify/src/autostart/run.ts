@@ -135,6 +135,8 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
   };
   const keepFromHere = () => {
     kept = true;
+    // Kept on purpose: a stop cut short leaves nothing of it to remove.
+    teardown.service = false;
     // Ctrl+C no longer removes it; a shared teardown still runs the caller's steps.
     stopListening();
   };

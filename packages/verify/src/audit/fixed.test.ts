@@ -204,6 +204,14 @@ describe("assignClaims with the hook's dims", () => {
     // Only 'red' fits three characters.
     expect(a.claimValues.get("teams")?.get("code")).toBeUndefined();
     expect(a.claimValues.get("documents")?.get("code")).toEqual(["red"]);
+    // A fixed table reached only through another (an org the teams point at) counts as one too.
+    const orgs = short({ name: "orgs", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid")], foreignKeys: [] });
+    const both = planClaims([
+      { where: "policy on orgs", sql: "(code = (auth.jwt() ->> 'team_code'::text))", dialect: "postgres", table: "orgs" },
+      { where: "policy on documents", sql: "((auth.jwt() ->> 'team_code'::text) = 'red'::text)", dialect: "postgres", table: "documents" },
+    ]);
+    expect(assignClaims(both, () => "fresh", [memberships, teams, orgs, audits], [], dims).claimValues.get("orgs")?.get("code")).toEqual(["red"]);
+    expect(assignClaims(both, () => "fresh", [memberships, teams, orgs, audits], [], dims, ["orgs", "teams", "memberships"]).claimValues.get("orgs")).toBeUndefined();
   });
 
   it("names a hook row no user holds", () => {

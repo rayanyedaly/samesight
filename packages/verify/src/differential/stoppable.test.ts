@@ -3,7 +3,7 @@ import type pg from "pg";
 import type { Stack } from "../stack.ts";
 import { LEFT_FOR_NEXT, leftForNext } from "../autostart/teardown.ts";
 import type { TableModel } from "./model.ts";
-import { cleanup, holdingLock, setUp, stoppable } from "./run.ts";
+import { cleanup, holdingLock, setUp, stoppable, tearDown } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
 const fresh = { sql: [] as string[], lock: true, ended: false };
@@ -18,7 +18,9 @@ const connect = vi.fn(async () => ({
   },
 }));
 vi.mock("../db.ts", async (original) => ({ ...(await original<typeof import("../db.ts")>()), connectLocal: () => connect() }));
-vi.mock("./model.ts", async (original) => ({ ...(await original<typeof import("./model.ts")>()), readModel: async () => [] }));
+/** What readModel finds, by the names asked for: none, unless a test says. */
+let modelOf: (names: string[]) => unknown[] = () => [];
+vi.mock("./model.ts", async (original) => ({ ...(await original<typeof import("./model.ts")>()), readModel: async (_: unknown, tables: { name: string }[]) => modelOf(tables.map((t) => t.name)) }));
 
 
 const stack = { db: "postgresql://postgres:postgres@127.0.0.1:54322/postgres" } as Stack;
@@ -169,5 +171,26 @@ describe("cleanup with tables beyond the run's", () => {
       "delete from public.documents where id::text like $1",
       "delete from public.teams where id::text like $1",
     ]);
+  });
+});
+
+describe("tearDown at a run's end", () => {
+  it("looks in the tables beyond the run's too, as every other cleanup does", async () => {
+    const sql: string[] = [];
+    const client = {
+      query: async (text: string) => {
+        sql.push(text);
+        return { rows: [] };
+      },
+    } as unknown as pg.Client;
+    const teams: TableModel = { name: "teams", primaryKey: ["id"], unique: ["id"], columns: [{ name: "id", type: "uuid", nullable: false, hasDefault: false, computed: false, hints: [] }], foreignKeys: [] };
+    modelOf = (names) => (names.includes("teams") ? [teams] : []);
+    try {
+      await tearDown({ client, stack, model: [], outside: ["teams"] } as never);
+    } finally {
+      modelOf = () => [];
+    }
+    expect(sql).toContain("delete from public.teams where id::text like $1");
+    expect(sql.at(-1)).toBe("select pg_advisory_unlock($1)");
   });
 });

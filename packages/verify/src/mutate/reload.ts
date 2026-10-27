@@ -119,7 +119,7 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
   let back = false;
   if (teardown) {
     teardown.add(
-      "the mutants in the sync config",
+      "the mutant streams PowerSync serves",
       async () => {
         if (back) return;
         back = true;
@@ -128,7 +128,7 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
         await restartAsync(ps, 60_000);
         rmSync(dir, { recursive: true, force: true });
       },
-      `the original is at ${backup}: copy it to ${ps.configPath} if it is not there, then restart PowerSync (${ps.restart.join(" ")}), which serves the mutant streams to every device until then`,
+      `PowerSync serves them to every device until it restarts on the original sync config: the original is at ${backup}; copy it to ${ps.configPath} if it is not there, then restart PowerSync (${ps.restart.join(" ")})`,
     );
   } else for (const s of signals) process.once(s, onSignal);
   // Any other exit (process.exit elsewhere, an uncaught error): the file at least.

@@ -235,7 +235,7 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
   const userIds = runUserIds(MAX_USERS);
   const mint = () => prefixedUuid(PREFIX);
   // A uuid none of the rules name is one of the run's own (its prefix), so cleanup finds it.
-  const assignment = assignClaims(claims, mint, model, userIds, dims);
+  const assignment = assignClaims(claims, mint, model, userIds, dims, fixed?.tables);
   const rowsGiven = fixed ? fixedRows(model, fixed, dims, assignment.hookPicks, userIds, mint, undefined, (t) => assignment.keyPools.get(t), (t) => assignment.claimValues.get(t)) : [];
   const names = new Map<string, string>();
   if (fixed) {

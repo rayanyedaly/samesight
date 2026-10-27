@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseHookUri, SELECTS_ALL, scanBody, scanDeep, showUri, unfollowed } from "./hook.ts";
+import { parseHookUri, SELECTS_ALL, scanBody, scanDeep, showUri, starredTables, unfollowed } from "./hook.ts";
 
 describe("parseHookUri", () => {
   it("reads a pg-functions URI, and tells an HTTP hook from one audit does not read", () => {
@@ -121,6 +121,12 @@ describe("scanDeep", () => {
     // Named bare, a body already scanned under its qualified name.
     const bare = new Map([...functions, ["team_of", "select team_id from public.memberships where user_id = u"], ["private.deep", "select team_of(u) from public.deepest"]]);
     expect(unfollowed(scanDeep("select private.deeper(uid), public.team_of(uid)", bare), bare)).toEqual([]);
+  });
+
+  it("names only the tables a body selects every column of", () => {
+    expect(starredTables("select * from settings; select team_id from public.memberships")).toEqual(["public.settings"]);
+    expect(starredTables(`select m.* from only "Teams" m join x using (id)`)).toEqual(["public.Teams"]);
+    expect(starredTables("select * from private.flags where exists (select * from public.memberships)")).toEqual(["private.flags"]);
   });
 
   it("takes select * as reading every column, but not exists (select * ...)", () => {

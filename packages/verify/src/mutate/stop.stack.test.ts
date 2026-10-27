@@ -4,40 +4,61 @@
  * next run can take the lock. Runs the CLI as a user would.
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal } from "../db.ts";
-import { PREFIX } from "../differential/run.ts";
+import { PREFIX, waitForReplication } from "../differential/run.ts";
 import { readStack } from "../stack.ts";
 import { MUTANT_HEADER } from "./mutants.ts";
 
 const APP = fileURLToPath(new URL("../../../../examples/fieldbook/", import.meta.url));
 const CLI = fileURLToPath(new URL("../cli.ts", import.meta.url));
 const CONFIG = `${APP}powersync/sync-config.yaml`;
-const POWERSYNC = "http://127.0.0.1:8080";
+const POWERSYNC = process.env.SAMESIGHT_POWERSYNC_URL ?? "http://127.0.0.1:8080";
 
 let client: pg.Client;
 let child: ChildProcess | undefined;
+let exited: Promise<unknown> = Promise.resolve();
+const original = readFileSync(CONFIG, "utf8");
 beforeAll(async () => {
   client = await connectLocal(readStack(APP, POWERSYNC).db);
 });
 afterAll(async () => {
-  if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  // A run the test gave up on still cleans up, as Ctrl+C would; killed only if that hangs.
+  if (child && child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGINT");
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 150_000))]);
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+  // Never leave mutants in the tracked file, nor PowerSync serving them.
+  if (readFileSync(CONFIG, "utf8") !== original) {
+    writeFileSync(CONFIG, original);
+    execFileSync("docker", ["compose", "restart", "powersync"], { cwd: APP, stdio: "ignore" });
+  }
   await client?.end();
-});
+}, 200_000);
+
+const slots = async () => (await client.query<{ name: string }>("select slot_name as name from pg_replication_slots where slot_name like 'powersync%'")).rows.map((r) => r.name);
+const ready = async () => {
+  try {
+    return (await fetch(`${POWERSYNC}/probes/readiness`)).ok;
+  } catch {
+    return false;
+  }
+};
 
 describe("a --mutate run stopped by Ctrl+C while PowerSync serves the mutants", () => {
   it("puts the sync config back, restarts PowerSync on it, and removes its users", async () => {
-    const original = readFileSync(CONFIG, "utf8");
-    child = spawn(process.execPath, [CLI, "--mutate", "--runs", "1"], { cwd: APP, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(process.execPath, [CLI, "--mutate", "--runs", "1", "--mutate-datasets", "1"], { cwd: APP, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     child.stderr?.on("data", (d: Buffer) => {
       out += d.toString();
     });
     const exit = new Promise<number | null>((r) => child?.on("exit", (code) => r(code)));
+    exited = exit;
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`no sync mutants loaded within 240s:\n${out}`)), 240_000);
       child?.stdout?.on("data", (d: Buffer) => {
@@ -53,6 +74,8 @@ describe("a --mutate run stopped by Ctrl+C while PowerSync serves the mutants", 
       });
     });
     expect(readFileSync(CONFIG, "utf8")).toContain(MUTANT_HEADER);
+    // The slot serving the mutants: the restart on the original must replace it.
+    const mutantSlots = new Set(await slots());
     child.kill("SIGINT");
     expect(await exit, out).toBe(130);
     expect(readFileSync(CONFIG, "utf8")).toBe(original);
@@ -62,17 +85,15 @@ describe("a --mutate run stopped by Ctrl+C while PowerSync serves the mutants", 
     const lock = Number.parseInt(PREFIX, 16);
     expect((await client.query<{ ok: boolean }>("select pg_try_advisory_lock($1) as ok", [lock])).rows).toEqual([{ ok: true }]);
     await client.query("select pg_advisory_unlock($1)", [lock]);
-    // The step restarts PowerSync without waiting for it: it comes back on the original, on one slot.
-    const ready = async () => {
-      try {
-        return (await fetch(`${POWERSYNC}/probes/readiness`)).ok;
-      } catch {
-        return false;
-      }
+    // The step restarts PowerSync without waiting for it: it comes back on the original, on a slot of its own.
+    const settled = async () => {
+      const now = await slots();
+      return now.length === 1 && !mutantSlots.has(now[0] as string) && (await ready());
     };
-    const slots = () => count("select count(*) as n from pg_replication_slots where slot_name like 'powersync%'");
     const until = Date.now() + 120_000;
-    while (Date.now() < until && !((await ready()) && (await slots()) === 1)) await new Promise((r) => setTimeout(r, 1000));
-    expect([await ready(), await slots()]).toEqual([true, 1]);
-  }, 400_000);
+    while (Date.now() < until && !(await settled())) await new Promise((r) => setTimeout(r, 1000));
+    expect(await settled(), `slots: ${(await slots()).join(", ")}`).toBe(true);
+    // Caught up, so whatever runs next syncs the original streams.
+    await waitForReplication(client, 120_000);
+  }, 420_000);
 });

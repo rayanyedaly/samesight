@@ -22,13 +22,14 @@ function project(content: string) {
 describe("withSyncConfig", () => {
   it("puts the original back when PowerSync cannot load the mutants", async () => {
     const ps = project("streams: {}\n");
+    const exits = process.listenerCount("exit");
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const fn = vi.fn();
     await expect(withSyncConfig(client, ps, `${MUTANT_HEADER}\nstreams: {}\n`, fn)).rejects.toThrow();
     stderr.mockRestore();
     expect(fn).not.toHaveBeenCalled();
     expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
-    expect(process.listenerCount("exit")).toBe(0);
+    expect(process.listenerCount("exit")).toBe(exits);
   });
 
   it("refuses to treat another run's mutants as the original", async () => {
@@ -62,6 +63,7 @@ describe("withSyncConfig under the run's teardown", () => {
     const { ps, slots, restarts } = live();
     const t = new Teardown(() => {}, "policy");
     const signals = process.listenerCount("SIGINT");
+    const exits = process.listenerCount("exit");
     await withSyncConfig(
       slots,
       ps,
@@ -77,7 +79,7 @@ describe("withSyncConfig under the run's teardown", () => {
     );
     // Loaded once, restarted once by the step; the put-back after it neither writes nor restarts.
     expect(restarts()).toBe(2);
-    expect(process.listenerCount("exit")).toBe(0);
+    expect(process.listenerCount("exit")).toBe(exits);
   });
 
   it("does nothing as a step once the run has put the original back", async () => {
@@ -95,10 +97,10 @@ describe("withSyncConfig under the run's teardown", () => {
     const lines: string[] = [];
     const t = new Teardown((l) => lines.push(l));
     await withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {
-      expect(await t.run()).toEqual(["the mutants in the sync config"]);
+      expect(await t.run()).toEqual(["the mutant streams PowerSync serves"]);
     }, t);
     expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
-    expect(lines).toEqual([expect.stringMatching(/^could not remove the mutants in the sync config: .*: exit code 1; the original is at .*sync-config\.yaml: copy it to .* if it is not there, then restart PowerSync \(.*\)/)]);
+    expect(lines).toEqual([expect.stringMatching(/^could not remove the mutant streams PowerSync serves: .*: exit code 1; PowerSync serves them to every device until it restarts on the original sync config: the original is at .*sync-config\.yaml; copy it to .* if it is not there, then restart PowerSync \(.*\)$/)]);
   });
 
   it("refuses to begin once the teardown has", async () => {

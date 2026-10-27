@@ -271,7 +271,7 @@ export function castFamily(cast: string): "uuid" | "number" | "boolean" | "text"
 
 const isPrefix = (a: string[], b: string[]) => a.length < b.length && a.every((k, i) => b[i] === k);
 
-export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: TableModel[] = [], userIds: string[] = [], dims: Dim[] = []): Assignment {
+export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: TableModel[] = [], userIds: string[] = [], dims: Dim[] = [], fixedTables: string[] = []): Assignment {
   // Only values minted here (the run's prefixed uuids) become keys: cleanup finds the run's
   // rows by that prefix, so a row keyed by a rule's own literal would outlive the run.
   const minted = new Set<string>();
@@ -390,8 +390,8 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
   // Keys, user columns and the hook's own per-user tables are left alone.
   const hookOptions = dims.flatMap((d) => (d.column !== null && !d.parent ? d.options : [])) as ClaimValue[];
   const perUser = new Set(dims.map((d) => d.table));
-  // The fixed tables per-user rows point at (teams): their few rows take the values in turn.
-  const parents = new Set(dims.flatMap((d) => (d.parent ? [d.parent] : [])));
+  // The fixed tables per-user rows reach (teams, and their orgs): their few rows take the values in turn.
+  const parents = new Set([...dims.flatMap((d) => (d.parent ? [d.parent] : [])), ...fixedTables.filter((t) => !perUser.has(t))]);
   for (const u of plan.uses.filter((x) => x.cls === "hook" && x.columns.length > 0 && x.other.length === 0)) {
     const families = new Set(u.casts.map(castFamily));
     const family = families.size === 1 && !families.has("unknown") ? [...families][0] : undefined;
