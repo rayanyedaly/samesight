@@ -58,6 +58,16 @@ export function rowSentence(r: Pick<RowReport, "kind" | "user" | "row" | "column
   }
 }
 
+/**
+ * The policies a row report names. A leak names what refused the row: the restrictive
+ * policies when a permissive one allows it, else every permissive one. A gap names what let
+ * the user read it.
+ */
+export function decidingPolicies(r: Pick<RowReport, "kind" | "policies">): NonNullable<RowReport["policies"]> {
+  const allows = r.policies?.some((p) => p.permissive && p.verdict === "allows");
+  return (r.policies ?? []).filter((p) => (r.kind === "gap" ? p.permissive && p.verdict === "allows" : p.verdict === "refuses" && p.permissive === !allows));
+}
+
 /** A row report's lines: what happened, then where it came from, each under a label. */
 export function formatRow(r: RowReport, color = false): string[] {
   const label = (name: string) => labelFor(name, color);
@@ -66,10 +76,7 @@ export function formatRow(r: RowReport, color = false): string[] {
     `${i === 0 ? label("sent by") : blank}stream ${x.stream}${x.query ? `, ${x.query}` : ""}`,
     ...(x.sql ? [`${blank}${x.sql.replace(/\s+/g, " ").trim()}`] : []),
   ]);
-  // A leak names what refused the row: the restrictive policies when a permissive one allows it, else every permissive one.
-  // A gap names what let the user read it.
-  const allows = r.policies?.some((p) => p.permissive && p.verdict === "allows");
-  const decided = (r.policies ?? []).filter((p) => (r.kind === "gap" ? p.permissive && p.verdict === "allows" : p.verdict === "refuses" && p.permissive === !allows));
+  const decided = decidingPolicies(r);
   const by = r.kind === "gap" ? "allowed by" : "refused by";
   const policies = decided.map((p, i) => `${i === 0 ? label(by) : blank}${p.permissive ? "" : "restrictive "}policy "${p.name}" on ${r.table}`);
   const note = r.policiesNote ? [`${label("policies")}${r.policiesNote}`] : [];

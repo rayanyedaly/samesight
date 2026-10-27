@@ -68,6 +68,9 @@ Pass `--restart` if PowerSync is not restarted with `docker compose restart powe
 | `--mutate-datasets <n>` | 8 | Datasets to try on each mutant before calling it missed. |
 | `--restart <command>` | `docker compose restart powersync` | How to restart PowerSync. |
 | `--json` | | Write one JSON report to stdout, and the text to stderr; see [JSON report](#json-report). |
+| `--report <file>` | | Also write the findings to this file as Markdown, relative to the current directory. |
+
+`--report` writes a file meant to be pasted into an issue: a title with the result and mode, each section's findings, and for each row a finding is about a heading with what happened, a table (the user, the row, the stream and query that sent it, the policies that refused or allowed it, the likely fix), the query's SQL in a `sql` block and the replay command. It is written on exits 0, 1 and 2 (with the error that stopped the run, a bad flag included), not when a signal stops the run; a report it cannot write turns a pass into exit 2.
 
 The exit code is 0 when nothing failed, 1 when a check found something, and 2 when the run could not do its job: a flag it cannot read, a file it cannot find, a database or service it cannot reach, or a differential whose service broke down before it finished (a run that both found something and broke down exits 1). It is 141 when its output closed before the end (`| head`); a run whose output has gone still runs to its end (an audit whose own PowerSync is up stops there instead, and cleans up), then exits 141. Warnings do not fail a run. The summary line says `PASSED`, `FAILED: n failing`, or `INCOMPLETE: n could not run`.
 
@@ -104,7 +107,7 @@ The mutation test needs a policy to mutate, so audit mode does not run it.
 | `--keep-powersync` | | Leave the service audit started up; see [keeping the service](#keeping-the-service). |
 | `--publication <name>` | `powersync` | With `--powersync` or `--static`: the publication to check. The service audit starts always replicates `powersync`. |
 | `--compose <file>` | | With `--powersync` or `--static`: checks the version floor of the PowerSync service that compose file runs. |
-| `--static`, `--runs`, `--seed`, `--time-limit`, `--json` | | As above. `--static` starts no PowerSync. |
+| `--static`, `--runs`, `--seed`, `--time-limit`, `--json`, `--report` | | As above. `--static` starts no PowerSync. |
 
 Audit mode reads both forms of sync config: Edition 3 sync streams (`streams:`) and the earlier sync rules (`bucket_definitions:`). A bucket definition's parameter queries are read like a stream's CTEs and its data queries like stream queries. A stream or definition that reads client parameters (`request.parameters()`, `subscription.parameter()`, `connection.parameter()`) gets a warning: those values come from the client, so a device can ask for anything, and the run does not try what it could ask for. Streams that are not `auto_subscribe` are skipped with a warning, since no device here subscribes to them.
 

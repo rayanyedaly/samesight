@@ -17,12 +17,13 @@ fi
 
 log=$(mktemp)
 json=$(mktemp)
-trap 'rm -f "$log" "$json"' EXIT
+report=$(mktemp)
+trap 'rm -f "$log" "$json" "$report"' EXIT
 # One dataset shows the leak; the time limit bounds how long it is shrunk. With --json the
 # text goes to stderr, which streams as it runs (tee), so a run killed by a timeout still
-# leaves its log; stdout holds the JSON report.
+# leaves its log; stdout holds the JSON report, and --report writes the Markdown one.
 set +e
-{ pnpm exec samesight-verify audit --project upstream --sync-config "$planted" --runs 3 --time-limit 60 --json >"$json"; } 2>&1 | tee "$log"
+{ pnpm exec samesight-verify audit --project upstream --sync-config "$planted" --runs 3 --time-limit 60 --json --report "$report" >"$json"; } 2>&1 | tee "$log"
 code=${PIPESTATUS[0]}
 set -e
 if [ "$code" -eq 0 ]; then
@@ -64,6 +65,15 @@ const leak = rows.find((r) => r.kind === "leak" && r.table === "lists");
 process.exit(d.exitCode === 1 && d.result === "failed" && d.mode === "audit" && leak?.fix?.add === "WHERE owner_id = auth.user_id()" ? 0 : 1);
 ' "$json"; then
   echo "verify-planted.sh: the --json report lacks the planted leak, or its exit code" >&2
+  exit 1
+fi
+# The same report as Markdown, for an issue: the leak's heading and its query's SQL.
+if ! grep -qE "^### leak: u[0-9]+ .*received lists .*; RLS returns no such row" "$report"; then
+  echo "verify-planted.sh: the --report file lacks the leak's heading" >&2
+  exit 1
+fi
+if ! grep -qx '```sql' "$report" || ! grep -qx 'SELECT \* FROM lists' "$report"; then
+  echo "verify-planted.sh: the --report file lacks the query's SQL in a sql block" >&2
   exit 1
 fi
 echo "The audit caught the planted divergence."

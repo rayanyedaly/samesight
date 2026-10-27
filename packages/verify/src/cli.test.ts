@@ -1,4 +1,7 @@
 import { execFile, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -58,6 +61,20 @@ describe("samesight-verify audit flags", () => {
     const help = await cli(["--help", "--json"]);
     expect(help.stderr).toMatch(/Usage: samesight-verify/);
     expect(JSON.parse(help.stdout)).toMatchObject({ result: "passed", exitCode: 0 });
+  });
+
+  it("writes --report on exit 2 too, with the error, and none for --help", { timeout: 20_000 }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "verify-report-"));
+    try {
+      expect((await cli(["audit", "--runs", "many", "--report", join(dir, "flag.md")])).code).toBe(2);
+      expect(readFileSync(join(dir, "flag.md"), "utf8")).toMatch(/^# samesight-verify: COULD NOT RUN \(audit\)\n\nExit code 2\.\n\n## Error\n\n```\n--runs must be a whole number/);
+      expect((await cli(["audit", `--report=${join(dir, "sync.md")}`, "--sync-config", "nowhere.yaml"])).code).toBe(2);
+      expect(readFileSync(join(dir, "sync.md"), "utf8")).toMatch(/no sync config at .*nowhere\.yaml/);
+      expect((await cli(["--help", "--report", join(dir, "help.md")])).code).toBe(0);
+      expect(existsSync(join(dir, "help.md"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.each([["stdout"], ["stderr"], ["stdout", "stderr"]])(
