@@ -103,6 +103,19 @@ describe("onSignals", () => {
     }
   });
 
+  it("takes Ctrl+Break (SIGBREAK) on Windows only", async () => {
+    const win = proc();
+    win.p.platform = "win32";
+    const t = new Teardown(() => {});
+    onSignals(t, () => {}, win.p);
+    win.p.emit("SIGBREAK");
+    expect(await win.exited).toBe(149);
+    const linux = proc();
+    linux.p.platform = "linux";
+    onSignals(new Teardown(() => {}), () => {}, linux.p);
+    expect(linux.p.listenerCount("SIGBREAK")).toBe(0);
+  });
+
   it("tears down and exits 141 when its output has gone (EPIPE), or 1 on another output error", async () => {
     for (const [errno, code] of [
       ["EPIPE", 141],

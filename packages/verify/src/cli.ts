@@ -36,9 +36,10 @@ import {
 } from "samesight/compiler";
 import { audit } from "./audit/run.ts";
 import { type AutoStarted, autoStart } from "./autostart/run.ts";
-import { onSignals, Teardown } from "./autostart/teardown.ts";
+import { type Mode, onSignals, Teardown } from "./autostart/teardown.ts";
 import { connectLocal } from "./db.ts";
-import { brokeDown, differential, setUp, tearDown } from "./differential/run.ts";
+import { brokeDown, differential, setUp, stoppable } from "./differential/run.ts";
+import { policyTables } from "./differential/model.ts";
 import { worldArbitrary } from "./differential/world.ts";
 import { mutationTest } from "./mutate/run.ts";
 import { failed, type Finding, formatFindings } from "./report.ts";
@@ -184,6 +185,7 @@ async function main(argv: string[]): Promise<number> {
   section("Static checks", statics);
 
   // 2. Catalog.
+  let signalled = false;
   const stack = readStack(root, powersync);
   const db = await connectLocal(stack.db);
   try {
@@ -209,40 +211,57 @@ async function main(argv: string[]): Promise<number> {
 
     // 3. Differential, and 4. mutation.
     const log = (line: string) => process.stdout.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
-    log("creating users and tenants");
-    const s = await setUp(db, stack, ir);
+    // One teardown for the run, from here on: on Ctrl+C, SIGTERM or SIGHUP it removes the run's
+    // users and rows (and with --mutate puts the sync config back).
+    const run = signalTeardown(log, "policy");
+    stopped = run.stopped;
     try {
-      log("generating datasets for the differential");
-      const result = await differential(s, {
-        runs,
-        timeLimitMs,
-        ...(seed !== undefined ? { seed } : {}),
-      });
-      section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, result.findings);
-      log("forging upload batches");
-      // Datasets are tried until every forgery has the rows it needs.
-      const worlds = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 20 }), { numRuns: 6, seed: seed ?? 7 });
-      section("Write path", (await checkWritePath(s, worlds)).findings);
-      if (values.mutate) {
-        if (failed(findings)) process.stdout.write("\nSkipping the mutation test: fix the failures above first.\n");
-        else {
-          const restart = (values.restart ?? "docker compose restart powersync").split(/\s+/).filter(Boolean);
-          const m = await mutationTest(
-            s,
-            { configPath: join(root, out.syncConfig), restart, cwd: root, url: stack.powersync },
-            syncYaml,
-            { maxWorlds: mutateDatasets, seed: seed ?? 7, log },
-          );
-          const equivalent = m.equivalent.map((e) => ({ status: "ok" as const, check: "equivalent mutant", detail: `${e.description} (${e.reason})` }));
-          section("Mutation", [...m.findings, ...equivalent]);
+      // Added before any user exists, so a run stopped at any point after removes what it made.
+      const stop = await stoppable(db, stack, policyTables(ir), log, [], "policy");
+      run.teardown.add("the run's users and rows", stop.step);
+      log("creating users and tenants");
+      // Users are made over HTTP, which ending the connection does not stop: a signal waits for this.
+      const s = await run.teardown.step(() => setUp(db, stack, ir));
+      try {
+        log("generating datasets for the differential");
+        const result = await differential(s, {
+          runs,
+          timeLimitMs,
+          ...(seed !== undefined ? { seed } : {}),
+        });
+        section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, result.findings);
+        log("forging upload batches");
+        // Datasets are tried until every forgery has the rows it needs.
+        const worlds = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 20 }), { numRuns: 6, seed: seed ?? 7 });
+        section("Write path", (await checkWritePath(s, worlds)).findings);
+        if (values.mutate) {
+          if (failed(findings)) process.stdout.write("\nSkipping the mutation test: fix the failures above first.\n");
+          else {
+            const restart = (values.restart ?? "docker compose restart powersync").split(/\s+/).filter(Boolean);
+            const m = await mutationTest(
+              s,
+              { configPath: join(root, out.syncConfig), restart, cwd: root, url: stack.powersync },
+              syncYaml,
+              { maxWorlds: mutateDatasets, seed: seed ?? 7, log, teardown: run.teardown },
+            );
+            const equivalent = m.equivalent.map((e) => ({ status: "ok" as const, check: "equivalent mutant", detail: `${e.description} (${e.reason})` }));
+            section("Mutation", [...m.findings, ...equivalent]);
+          }
         }
+      } finally {
+        await stop.tearDown(s);
       }
+    } catch (e) {
+      if (!run.stopped()) throw e;
     } finally {
-      await tearDown(s);
+      signalled = run.settle();
+      await run.teardown.run();
+      run.stopListening();
     }
   } finally {
-    await db.end();
+    await db.end().catch(() => {});
   }
+  if (signalled) return untilExit();
   return report(findings, started);
 }
 
@@ -307,10 +326,9 @@ async function auditMain(argv: string[]): Promise<number> {
   const db = await connectLocal(stack.db);
   // One teardown for the run, from here on: on Ctrl+C, SIGTERM or SIGHUP it removes the run's
   // users and rows, and the PowerSync service audit started.
-  const teardown = new Teardown(log);
-  const stopListening = onSignals(teardown, log);
-  let auditDone = false;
-  stopped = () => teardown.stoppedBy !== undefined && !auditDone;
+  const run = signalTeardown(log, "audit");
+  const { teardown } = run;
+  stopped = run.stopped;
   let signalled = false;
   // Without --powersync, a service of the run's own, on a connection of its own, once the checks before the differential pass.
   let client: pg.Client | undefined;
@@ -354,20 +372,40 @@ async function auditMain(argv: string[]): Promise<number> {
       throw e;
     }
   } finally {
-    signalled = stopped();
-    auditDone = true;
+    signalled = run.settle();
     // A run that broke down (an error, or datasets the run could not finish) shows the service's last words before they are removed.
     const broke = !signalled && (threw || brokeDown(findings));
     const left = (await started?.stop(broke ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? (await teardown.run());
-    stopListening();
+    run.stopListening();
     if (left.length && !signalled) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit that starts PowerSync removes it` })));
     await client?.end().catch(() => {});
     await db.end().catch(() => {});
   }
-  // Stopped by a signal: onSignals exits with its code (130, 143, 129, 141) once the teardown is done.
-  if (signalled) return new Promise<number>(() => setInterval(() => {}, 60_000));
+  if (signalled) return untilExit();
   return report(findings, startedAt);
 }
+
+/**
+ * A run's teardown, which onSignals runs on Ctrl+C, SIGTERM or SIGHUP (or a closed output).
+ * `stopped` says a signal began it while the run goes on: what the run says as its
+ * connections end under it is not news. `settle`, once the run is over, ends that and says
+ * whether a signal stopped it.
+ */
+function signalTeardown(log: (line: string) => void, mode: Mode) {
+  const teardown = new Teardown(log, mode);
+  const stopListening = onSignals(teardown, log);
+  let over = false;
+  const stopped = () => teardown.stoppedBy !== undefined && !over;
+  const settle = () => {
+    const was = stopped();
+    over = true;
+    return was;
+  };
+  return { teardown, stopListening, stopped, settle };
+}
+
+/** Stopped by a signal: onSignals exits with its code (130, 143, 129, 141) once the teardown is done. */
+const untilExit = () => new Promise<number>(() => setInterval(() => {}, 60_000));
 
 function report(findings: Finding[], started: number): number {
   const fails = findings.filter((f) => f.status === "fail").length;

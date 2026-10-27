@@ -5,14 +5,16 @@
  * rules replicate into a new slot, and the old slot is dropped once they take over.
  *
  * The original file is always put back: in `finally`, and on Ctrl-C, from a copy kept
- * outside the project.
+ * outside the project. With the run's teardown, Ctrl-C puts it back as a step of it, before
+ * the run's users and rows are removed.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type pg from "pg";
+import type { Teardown } from "../autostart/teardown.ts";
 import { rows } from "../db.ts";
 import { waitForReplication } from "../differential/run.ts";
 import { MUTANT_HEADER } from "./mutants.ts";
@@ -68,8 +70,27 @@ export async function reload(client: pg.Client, ps: PowerSyncControl, expectNew:
   await waitForReplication(client, timeoutMs);
 }
 
-/** Runs `fn` with `config` as the sync config, then restores the original and reloads again. */
-export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl, config: string, fn: () => Promise<T>): Promise<T> {
+/** Runs the restart command, without blocking: a teardown's later steps and its grace go on. */
+function restartAsync(ps: PowerSyncControl, timeoutMs: number): Promise<void> {
+  const [cmd, ...args] = ps.restart;
+  if (!cmd) return Promise.reject(new Error("no restart command"));
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { cwd: ps.cwd, timeout: timeoutMs }, (e, _out, err) => {
+      if (!e) return resolve();
+      const why = String(err).trim() || (e.killed ? `no end within ${timeoutMs / 1000}s` : `exit code ${e.code}`);
+      reject(new Error(`${ps.restart.join(" ")}: ${why}`));
+    });
+  });
+}
+
+/**
+ * Runs `fn` with `config` as the sync config, then restores the original and reloads again.
+ * With `teardown` (the run's, which onSignals runs), a stop puts the original back as a step
+ * of it and restarts PowerSync without waiting for it to replicate; otherwise this listens
+ * for signals itself.
+ */
+export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl, config: string, fn: () => Promise<T>, teardown?: Teardown): Promise<T> {
+  if (teardown?.started) throw new Error("stopped");
   const original = readFileSync(ps.configPath, "utf8");
   // Another run's mutants, or ones an earlier run could not take back: restoring "this"
   // original would put the mutants back for good.
@@ -91,15 +112,32 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
     } catch {
       process.stderr.write(`\nsamesight verify: restored ${ps.configPath}; restart PowerSync to load it (${ps.restart.join(" ")}).\n`);
     }
-    process.exit(signal === "SIGTERM" ? 143 : 130);
+    process.exit(({ SIGTERM: 143, SIGHUP: 129, SIGBREAK: 149 } as Record<string, number>)[signal] ?? 130);
   };
   const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP", ...(process.platform === "win32" ? (["SIGBREAK"] as const) : [])];
-  for (const s of signals) process.once(s, onSignal);
+  // Put back once, by whichever comes first: the run's own putBack, or the teardown's step.
+  let back = false;
+  if (teardown) {
+    teardown.add(
+      "the mutants in the sync config",
+      async () => {
+        if (back) return;
+        back = true;
+        restore();
+        process.off("exit", restore);
+        await restartAsync(ps, 60_000);
+        rmSync(dir, { recursive: true, force: true });
+      },
+      `the original is at ${backup}: copy it to ${ps.configPath} if it is not there, then restart PowerSync (${ps.restart.join(" ")}), which serves the mutant streams to every device until then`,
+    );
+  } else for (const s of signals) process.once(s, onSignal);
   // Any other exit (process.exit elsewhere, an uncaught error): the file at least.
   process.once("exit", restore);
   // Puts the original back. A failed reload fails the run, unless an earlier error is
   // already on its way out.
   const putBack = async (strict: boolean) => {
+    if (back) return;
+    back = true;
     restore();
     for (const s of signals) process.off(s, onSignal);
     process.off("exit", restore);
