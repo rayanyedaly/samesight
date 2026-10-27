@@ -131,6 +131,22 @@ describe("scanDeep", () => {
     expect(starredTables("select 1 from t where exists (select * from public.memberships)")).toEqual([]);
   });
 
+  it("judges each select by its own list, past guards and loop bodies", () => {
+    // A guard before the select reads no columns of its own table.
+    expect(starredTables("if exists (select 1 from flags) then select * into r from memberships where user_id = u; end if")).toEqual(["public.memberships"]);
+    expect(starredTables("if exists (select * from flags) then select team_id into t from memberships; end if")).toEqual([]);
+    // A loop's body is not the select's.
+    expect(starredTables("for r in select * from teams loop insert into log select role from memberships; end loop")).toEqual(["public.teams"]);
+    expect(starredTables("select m.role, t.* into r from memberships m join teams t using (team_id)")).toEqual(["public.memberships", "public.teams"]);
+    expect(starredTables("select distinct * from memberships")).toEqual(["public.memberships"]);
+    expect(starredTables("select distinct on (team_id) * from memberships")).toEqual(["public.memberships"]);
+    // A whole row of a table it reads, but not of a variable.
+    expect(starredTables("select to_jsonb(m) into j from memberships m where m.user_id = u")).toEqual(["public.memberships"]);
+    expect(starredTables("select row_to_json(memberships) from memberships")).toEqual(["public.memberships"]);
+    expect(starredTables("select to_jsonb(n) into j from memberships m")).toEqual([]);
+    expect(starredTables("select count(*) from memberships")).toEqual([]);
+  });
+
   it("takes select * as reading every column, but not exists (select * ...)", () => {
     expect(["select * from t", "select m.* from t m", "SELECT\n*", "exists (select * from t)", "EXISTS(SELECT * FROM t)"].map((x) => SELECTS_ALL.test(x))).toEqual([true, true, true, false, false]);
   });
