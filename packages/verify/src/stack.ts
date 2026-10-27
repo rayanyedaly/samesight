@@ -18,6 +18,10 @@ export interface Stack {
   /** For the Auth admin API (creating and deleting users). */
   secretKey: string;
   powersync: string;
+  /** Auth's shared HS256 secret, when `supabase status` prints one. */
+  jwtSecret?: string;
+  /** The start of the service's replication slot names, when not powersync (auto-start's own). */
+  slotPrefix?: string;
 }
 
 /** Parses `KEY="value"` lines as `supabase status -o env` prints them. */
@@ -41,6 +45,7 @@ export function stackFromStatus(status: Record<string, string>, powersync: strin
     publishableKey: pick("PUBLISHABLE_KEY", "ANON_KEY"),
     secretKey: pick("SECRET_KEY", "SERVICE_ROLE_KEY"),
     powersync,
+    ...(status.JWT_SECRET ? { jwtSecret: status.JWT_SECRET } : {}),
   };
   assertLocalTargets({ db: stack.db, http: { "Supabase API": stack.api, PowerSync: stack.powersync } }, env);
   return stack;

@@ -25,6 +25,10 @@ describe("stackFromStatus", () => {
     });
   });
 
+  it("keeps the JWT secret when status prints one", () => {
+    expect(stackFromStatus({ ...status, JWT_SECRET: "s3cret" }, "http://127.0.0.1:8080", { NODE_ENV: "test" }).jwtSecret).toBe("s3cret");
+  });
+
   it("falls back to the legacy key names", () => {
     const legacy = { ...status, PUBLISHABLE_KEY: "", SECRET_KEY: "", ANON_KEY: "anon", SERVICE_ROLE_KEY: "service" };
     expect(stackFromStatus(legacy, "http://localhost:8080", { NODE_ENV: "test" })).toMatchObject({ publishableKey: "anon", secretKey: "service" });
