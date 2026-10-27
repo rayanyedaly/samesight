@@ -26,7 +26,7 @@ The first published release.
 
 - `samesight-verify`: static checks, catalog checks with migration parity, the differential test on real users and headless PowerSync devices, forged upload batches, and the mutation test (`--mutate`).
 - `samesight-verify audit` for projects with hand-written RLS and a hand-written sync config, with no policy. It reads sync streams and legacy sync rules (`bucket_definitions`), and warns about bucket definitions that read client parameters.
-- Audit starts its own PowerSync service when `--powersync` is not given, so it needs only `supabase start` and Docker: a temporary replication role, the publication if the project has none, a throwaway storage container and the pinned PowerSync image on the Supabase network, all removed when the run ends (Ctrl+C included), and swept by the next run after a crash. `--keep-powersync` leaves it up for the next run to reuse.
+- Audit starts its own PowerSync service when `--powersync` is not given, once the sync config and catalog checks pass, so it needs only `supabase start` and Docker: a temporary replication role, a throwaway storage container and the pinned PowerSync image on the Supabase network, all removed when the run ends (Ctrl+C, SIGTERM and SIGHUP included), and swept by the next run after a crash. `--keep-powersync` leaves it up for the next run to reuse.
 - Finds the Supabase CLI in the nearest `node_modules/.bin` or on the PATH, with any package manager.
 - Generated data fills uuid columns that default to `auth.uid()` with the run's users, foreign key or not, and a table that gets no rows says what the database refused.
 - The write path forges, for each role, the inserts, updates and deletes in its own tenant that the policy gives it no rule for.

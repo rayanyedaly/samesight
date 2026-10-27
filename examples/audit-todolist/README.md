@@ -15,7 +15,9 @@ rules (`bucket_definitions`), the form most PowerSync apps used before sync stre
 
 Only Supabase is started by hand. Each audit starts its own PowerSync service for the run
 (it needs Docker), on whichever sync config it is given, and removes it afterwards; see
-[what audit creates and removes](../../docs/verify.md#what-audit-starts-and-removes).
+[what audit starts and removes](../../docs/verify.md#what-audit-starts-and-removes).
+If you ran this example when it still had a `docker-compose.yml`, remove that service once
+with `docker compose -p audit-todolist down -v` before `stack:down`.
 
 ```bash
 pnpm --filter audit-todolist stack:up        # fetch, then supabase start

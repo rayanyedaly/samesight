@@ -139,14 +139,17 @@ jobs:
       - name: samesight-verify audit on sync rules
         working-directory: examples/audit-todolist
         run: timeout 600 pnpm run verify:rules
-      # Every auto-started container and role must be gone after the runs above.
+      # Every auto-started container, role and slot must be gone after the runs above, and
+      # the demo's own publication untouched.
       - name: nothing left behind
         run: |
+          sql() { docker exec supabase_db_react-supabase-todolist psql -tA -U postgres -d postgres -c "$1"; }
           left=$(docker ps --all --quiet --filter label=dev.samesight.audit.run)
-          roles=$(docker exec supabase_db_react-supabase-todolist psql -tA -U postgres -d postgres -c "select count(*) from pg_roles where starts_with(rolname, 'samesight_audit_')")
-          slots=$(docker exec supabase_db_react-supabase-todolist psql -tA -U postgres -d postgres -c "select count(*) from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')")
-          if [ -n "$left" ] || [ "$roles" != 0 ] || [ "$slots" != 0 ]; then
-            echo "left behind: containers [$left], $roles roles, $slots slots"
+          roles=$(sql "select count(*) from pg_roles where starts_with(rolname, 'samesight_audit_')")
+          slots=$(sql "select count(*) from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')")
+          pub=$(sql "select count(*) from pg_publication where pubname = 'powersync' and puballtables")
+          if [ -n "$left" ] || [ "$roles" != 0 ] || [ "$slots" != 0 ] || [ "$pub" != 1 ]; then
+            echo "left behind: containers [$left], $roles roles, $slots slots; demo publication present: $pub"
             exit 1
           fi
       - if: failure()
