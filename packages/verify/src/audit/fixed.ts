@@ -8,7 +8,7 @@
  */
 
 import type { ClaimValue } from "samesight/compiler";
-import type { ColumnModel, TableModel } from "../differential/model.ts";
+import { type ColumnModel, insertOrder, type TableModel } from "../differential/model.ts";
 import { sampleValue } from "../differential/world.ts";
 import { fitsType } from "./assign.ts";
 
@@ -48,7 +48,8 @@ export function fixedPlan(model: TableModel[], hookTables: string[]): FixedPlan 
       }
     }
   }
-  const tables = model.map((t) => t.name).filter((n) => set.has(n));
+  // Parents first: a row's key to a fixed table takes one of that table's rows.
+  const tables = insertOrder(model.filter((t) => set.has(t.name))).map((t) => t.name);
   for (const name of tables) {
     const t = byName.get(name) as TableModel;
     const own = perUser.includes(name);

@@ -299,7 +299,7 @@ export function claimFindings(
         break;
       }
       case "hook": {
-        const steered = hook && hookPlan?.steer ? steeredDetail(read, u, hook, hookPlan.steer.perUser, tokens) : undefined;
+        const steered = hook && hookPlan?.steer ? steeredDetail(read, u, hook, hookPlan.steer, tokens) : undefined;
         if (steered) add(steered.status, steered.detail);
         else add("warn", hookDetail(read, u, hook, tokens, hookPlan));
         break;
@@ -359,14 +359,21 @@ function heldBy(tokens: Map<string, Record<string, unknown>>, path: string[]): s
 }
 
 /** A claim the hook adds from the rows audit gave run users: who holds what, and which compared value none does. */
-function steeredDetail(read: string, u: ClaimUse, hook: { uri: string }, perUser: string[], tokens?: Map<string, Record<string, unknown>>): { status: Finding["status"]; detail: string } {
+function steeredDetail(
+  read: string,
+  u: ClaimUse,
+  hook: { uri: string },
+  steer: NonNullable<HookPlan["steer"]>,
+  tokens?: Map<string, Record<string, unknown>>,
+): { status: Finding["status"]; detail: string } {
+  const { perUser } = steer;
   const shown = showUri(hook.uri);
   if (!tokens) return { status: "ok", detail: `${read}; added by the access token hook ${shown}, which reads ${perUser.join(", ")}; a full run gives run users rows there before they sign in (not run: --static)` };
   const carried = [...tokens.values()].map((t) => at(t, u.path) ?? null);
   const missing = u.values.filter((v) => !carried.some((c) => JSON.stringify(c) === JSON.stringify(v)));
   // A rule compared with a value goes both ways only if someone holds another value, or none.
   const other = carried.some((c) => !u.values.some((v) => JSON.stringify(v) === JSON.stringify(c)));
-  const detail = `${read}; added by the access token hook ${shown} from rows audit gives each run user in ${perUser.join(", ")} before signing in; held: ${holders(tokens, u.path)}${missing.length ? `; no token carries ${missing.map(show).join(", ")}` : ""}`;
+  const detail = `${read}; added by the access token hook ${shown} from rows audit gives each run user in ${perUser.join(", ")} before signing in; held: ${holders(tokens, u.path, steer.names)}${missing.length ? `; no token carries ${missing.map(show).join(", ")}` : ""}`;
   return { status: missing.length === 0 && other ? "ok" : "warn", detail };
 }
 
@@ -394,7 +401,7 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
 }
 
 /** lead u0 u3, member u1, none u2: the users whose tokens carry each value at `path`. */
-export function holders(tokens: Map<string, Record<string, unknown>>, path: string[]): string {
+export function holders(tokens: Map<string, Record<string, unknown>>, path: string[], names: ReadonlyMap<string, string> = new Map()): string {
   const by = new Map<string, string[]>();
   const none: string[] = [];
   for (const [label, claims] of tokens) {
@@ -402,7 +409,8 @@ export function holders(tokens: Map<string, Record<string, unknown>>, path: stri
     if (v === undefined || v === null) none.push(label);
     else by.set(JSON.stringify(v), [...(by.get(JSON.stringify(v)) ?? []), label]);
   }
-  return [...[...by].map(([v, labels]) => `${plain(JSON.parse(v))} ${labels.join(" ")}`), ...(none.length ? [`none ${none.join(" ")}`] : [])].join(", ");
+  const name = (v: unknown) => (typeof v === "string" && names.has(v) ? (names.get(v) as string) : plain(v));
+  return [...[...by].map(([v, labels]) => `${name(JSON.parse(v))} ${labels.join(" ")}`), ...(none.length ? [`none ${none.join(" ")}`] : [])].join(", ");
 }
 
 /** The value at a path in decoded token claims. */
