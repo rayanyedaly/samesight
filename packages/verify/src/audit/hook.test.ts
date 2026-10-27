@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseHookUri, SELECTS_ALL, scanBody, scanDeep, showUri, starredTables, unfollowed } from "./hook.ts";
+import { executeAdvice, parseHookUri, SELECTS_ALL, scanBody, scanDeep, showUri, starredTables, unfollowed } from "./hook.ts";
 
 describe("parseHookUri", () => {
   it("reads a pg-functions URI, and tells an HTTP hook from one audit does not read", () => {
@@ -149,5 +149,14 @@ describe("scanDeep", () => {
 
   it("takes select * as reading every column, but not exists (select * ...)", () => {
     expect(["select * from t", "select m.* from t m", "SELECT\n*", "exists (select * from t)", "EXISTS(SELECT * FROM t)"].map((x) => SELECTS_ALL.test(x))).toEqual([true, true, true, false, false]);
+  });
+});
+
+describe("executeAdvice", () => {
+  it("gives the grants and the revoke Supabase's guide runs, with names quoted as SQL needs them", () => {
+    const advice = executeAdvice(["anon", "authenticated"], "pg-functions://postgres/Auth/MyHook", "Auth", "MyHook");
+    expect(advice).toMatch(/^anon, authenticated can execute the access token hook pg-functions:\/\/postgres\/Auth\/MyHook /);
+    expect(advice).toContain('grant usage on schema "Auth" to supabase_auth_admin; grant execute on function "Auth"."MyHook"(jsonb) to supabase_auth_admin; revoke execute on function "Auth"."MyHook"(jsonb) from public, anon, authenticated');
+    expect(executeAdvice(["anon"], "x", "public", "custom_access_token_hook")).toContain("public.custom_access_token_hook(jsonb)");
   });
 });
