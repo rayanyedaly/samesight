@@ -159,7 +159,7 @@ describe("onSignals", () => {
     late.p.emit("SIGHUP");
     expect(await late.exited).toBe(129);
     // What is left may hold privileged run users: said, with how to remove them now.
-    expect(lines.at(-1)).toBe(`stopped before the clean-up finished: ${LEFT_FOR_NEXT}`);
+    expect(lines.at(-1)).toBe(`stopped before the clean-up finished: the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`);
 
     // Begun by the run itself (its end): the grace starts with the signal.
     const own = proc();
