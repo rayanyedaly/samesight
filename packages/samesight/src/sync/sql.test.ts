@@ -30,4 +30,14 @@ describe("tokenize", () => {
     expect(() => tokenize("a /* b */", { dialect: "postgres" })).toThrow(/has "\/\*"/);
     expect(() => tokenize("$$ select 1 $$", { dialect: "postgres" })).toThrow(/has "\$\$"/);
   });
+
+  it("splits operators where Postgres's lexer does", () => {
+    expect(texts("x=-1 and a<-1 and b>=-1 and c*-d and e !=-1", "postgres")).toEqual([
+      "x", "=", "-", "1", "and", "a", "<", "-", "1", "and", "b", ">=", "-", "1", "and", "c", "*", "-", "d", "and", "e", "!=-", "1",
+    ]);
+    expect(texts("a -- c\n= b", "postgres")).toEqual(["a", "=", "b"]);
+    expect(texts("x =-- c\n 1", "postgres")).toEqual(["x", "=", "1"]);
+    expect(() => tokenize("x=/* c */1", { dialect: "postgres" })).toThrow(/has "\/\*"/);
+    expect(texts("(x = (-1))", "postgres")).toEqual(["(", "x", "=", "(", "-", "1", ")", ")"]);
+  });
 });
