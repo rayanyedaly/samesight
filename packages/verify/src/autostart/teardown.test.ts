@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { LEFT_FOR_NEXT, onSignals, type Signals, Teardown } from "./teardown.ts";
+import { LEFT_FOR_NEXT, leftForNext, onSignals, type Signals, Teardown } from "./teardown.ts";
 
 describe("Teardown", () => {
   it("runs steps last first, once, and goes on past a failing one", async () => {
@@ -10,16 +10,24 @@ describe("Teardown", () => {
     t.add("role", async () => {
       order.push("role");
     });
-    t.add("storage container", async () => {
-      throw new Error("docker is gone");
+    t.add(
+      "storage container",
+      async () => {
+        throw new Error("docker is gone");
+      },
+      "the next audit that starts PowerSync removes it",
+    );
+    t.add("sync config", async () => {
+      throw new Error("read-only file system");
     });
     t.add("powersync container", async () => {
       order.push("powersync");
     });
-    expect(await t.run()).toEqual(["storage container"]);
-    expect(await t.run()).toEqual(["storage container"]);
+    expect(await t.run()).toEqual(["sync config", "storage container"]);
+    expect(await t.run()).toEqual(["sync config", "storage container"]);
     expect(order).toEqual(["powersync", "role"]);
-    expect(lines).toEqual(["could not remove storage container: docker is gone; the next audit that starts PowerSync removes it"]);
+    // Each failure says its own remedy, if it has one.
+    expect(lines).toEqual(["could not remove sync config: read-only file system", "could not remove storage container: docker is gone; the next audit that starts PowerSync removes it"]);
   });
 });
 
@@ -158,8 +166,25 @@ describe("onSignals", () => {
     onSignals(slow, (l) => lines.push(l), late.p, 20);
     late.p.emit("SIGHUP");
     expect(await late.exited).toBe(129);
-    // What is left may hold privileged run users: said, with how to remove them now.
-    expect(lines.at(-1)).toBe(`stopped before the clean-up finished: the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`);
+    // What is left may hold privileged run users: said, with how to remove them now; no service was started.
+    expect(lines.at(-1)).toBe(`stopped before the clean-up finished: ${LEFT_FOR_NEXT}`);
+
+    // With a service started, what is left of it too; in policy mode, the next verify run removes the users.
+    for (const [mode, service, said] of [
+      ["audit", true, `the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`],
+      ["policy", false, leftForNext("policy")],
+    ] as const) {
+      const p = proc();
+      const t = new Teardown(() => {}, mode);
+      t.service = service;
+      t.add("hung", () => new Promise(() => {}));
+      const said2: string[] = [];
+      onSignals(t, (l) => said2.push(l), p.p, 20);
+      p.p.emit("SIGINT");
+      expect(await p.exited).toBe(130);
+      expect(said2.at(-1)).toBe(`stopped before the clean-up finished: ${said}`);
+    }
+    expect(leftForNext("policy")).toMatch(/^the next verify run removes the run's users and rows .*with no verify run running/);
 
     // Begun by the run itself (its end): the grace starts with the signal.
     const own = proc();

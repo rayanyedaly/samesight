@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import type { Stack } from "../stack.ts";
-import { LEFT_FOR_NEXT } from "../autostart/teardown.ts";
+import { LEFT_FOR_NEXT, leftForNext } from "../autostart/teardown.ts";
 import { holdingLock, setUp, stoppable } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
@@ -78,6 +78,13 @@ describe("stoppable", () => {
     expect(holdingLock.has(client)).toBe(false);
     expect(fresh.sql.some((s) => /from auth\.users/.test(s))).toBe(false);
     expect(lines).toEqual([`could not take the run's lock to remove its users and rows; ${LEFT_FOR_NEXT}`]);
+    // In policy mode, the next verify run removes them.
+    const policy = runClient();
+    const said: string[] = [];
+    const stopPolicy = await stoppable(policy, stack, [], (l) => said.push(l), [], "policy");
+    holdingLock.add(policy);
+    await stopPolicy.step();
+    expect(said).toEqual([`could not take the run's lock to remove its users and rows; ${leftForNext("policy")}`]);
   });
 
   it("waits for the run's own tearDown when it has begun, instead of cleaning twice", async () => {
