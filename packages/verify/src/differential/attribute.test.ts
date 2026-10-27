@@ -68,6 +68,13 @@ describe("sendingQueries", () => {
     expect(run.map((x) => x.includes("owner_id"))).toEqual([true, false]);
   });
 
+  it("takes the queries of a named stream that is not auto-subscribed: the device received the row from it", async () => {
+    const { client } = database();
+    const r = leak([{ stream: "asked" }]);
+    await sendingQueries(client, streams, [r], () => ({ sub: "id-1" }));
+    expect(r.sentBy).toEqual([{ stream: "asked", query: "query", sql: "SELECT * FROM lists" }]);
+  });
+
   it("keeps a named stream by name when none of its queries can be run for the user", async () => {
     const { client, run } = database();
     const r = leak([{ stream: "everyone" }, { stream: "split" }]);

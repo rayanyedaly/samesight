@@ -47,7 +47,7 @@ import { reportDocument, type Section } from "./json.ts";
 import { toMarkdown } from "./markdown.ts";
 import { mutationTest } from "./mutate/run.ts";
 import { exitCode, failed, type Finding, formatFindings } from "./report.ts";
-import { replayCommand } from "./replay.ts";
+import { MAX_SEED, readSeed, replayCommand } from "./replay.ts";
 import { readStack } from "./stack.ts";
 import { checkCatalogParity } from "./static/catalog-parity.ts";
 import { checkCatalog } from "./static/catalog.ts";
@@ -113,6 +113,12 @@ Docs: https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme
 `;
 
 /** A whole-number flag, checked before anything runs: a zero count would pass while testing nothing. */
+function seedFlag(v: string): number {
+  const n = readSeed(v);
+  if (n === undefined) throw new Error(`--seed must be a whole number from 0 to ${MAX_SEED}, not "${v}"`);
+  return n;
+}
+
 function int(name: string, v: string | undefined, fallback: number, min = 1): number {
   if (v === undefined) return fallback;
   const n = Number(v);
@@ -148,7 +154,7 @@ async function main(argv: string[]): Promise<number> {
     textOut.write(USAGE);
     return 0;
   }
-  const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
+  const seed = values.seed === undefined ? undefined : seedFlag(values.seed);
   const runs = int("runs", values.runs, 8);
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
   const mutateDatasets = int("mutate-datasets", values["mutate-datasets"], 8);
@@ -323,7 +329,7 @@ async function auditMain(argv: string[]): Promise<number> {
   if (values.publication !== undefined && values.publication !== "powersync" && !ownService && !values.static) {
     throw new Error(`the PowerSync service audit starts replicates the "powersync" publication; --publication ${values.publication} needs --powersync or --static`);
   }
-  const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
+  const seed = values.seed === undefined ? undefined : seedFlag(values.seed);
   const runs = int("runs", values.runs, 8);
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
   const syncPath = resolve(values["sync-config"] ?? "sync-config.yaml");
@@ -454,7 +460,7 @@ function reportPath(argv: string[]): string | undefined {
   let path: string | undefined;
   for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
     // A flag after --report is not its file (parseArgs refuses the line): no file named --json.
-    if (argv[i] === "--report" && i + 1 < argv.length && !argv[i + 1]?.startsWith("-")) path = argv[++i];
+    if (argv[i] === "--report" && i + 1 < argv.length && !argv[i + 1]?.startsWith("--")) path = argv[++i];
     else if (argv[i]?.startsWith("--report=")) path = argv[i]?.slice("--report=".length);
   }
   return path;

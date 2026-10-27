@@ -11,6 +11,7 @@ import { type IR, ident, type Stream } from "samesight/compiler";
 import { leftForNext, type Mode } from "../autostart/teardown.ts";
 import { connectLocal, rows } from "../db.ts";
 import { type Finding, formatRows, type RowReport, rowSentence } from "../report.ts";
+import { MAX_SEED } from "../replay.ts";
 import type { Stack } from "../stack.ts";
 import { show } from "../audit/assign.ts";
 import { claimKey } from "../audit/claims.ts";
@@ -773,7 +774,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   // are tried, within the time limit, until every synced table was compared.
   const started = Date.now();
   // A seed of the run's own when none is given: fast-check's may be negative, which --seed does not take, so the replay line could not run.
-  const seed = options.seed ?? Math.floor(Math.random() * 2 ** 31);
+  const seed = options.seed ?? Math.floor(Math.random() * (MAX_SEED + 1));
   let x = await explore(worldArbitrary(s.tables), evaluate, { ...options, seed });
   let datasets = x.datasets;
   for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {

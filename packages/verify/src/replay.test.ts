@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { replayCommand, shellQuote } from "./replay.ts";
+import { MAX_SEED, readSeed, replayCommand, shellQuote } from "./replay.ts";
 
 describe("replayCommand", () => {
   it("keeps the run's own flags in audit mode, and puts the failing seed last", () => {
@@ -38,5 +38,12 @@ describe("shellQuote", () => {
     expect(shellQuote("*.yaml")).toBe("'*.yaml'");
     expect(shellQuote("a;b")).toBe("'a;b'");
     expect(shellQuote("it's")).toBe(`'it'\\''s'`);
+  });
+});
+
+describe("readSeed", () => {
+  it("takes a whole number from 0 to MAX_SEED, as Number reads it, and nothing else", () => {
+    expect(["0", "42", "1e3", "0x10", " 7 ", String(MAX_SEED)].map(readSeed)).toEqual([0, 42, 1000, 16, 7, MAX_SEED]);
+    expect(["", " ", "-1", "1.5", "x", String(MAX_SEED + 1), "1e300"].map(readSeed)).toEqual(Array(7).fill(undefined));
   });
 });
