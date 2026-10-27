@@ -195,11 +195,14 @@ describe("onSignals", () => {
     const { p, exits } = proc();
     const t = new Teardown(() => {});
     t.add("slow", () => new Promise(() => {}));
-    onSignals(t, () => {}, p, 120_000, clock);
+    const lines: string[] = [];
+    onSignals(t, (l) => lines.push(l), p, 120_000, clock);
     p.emit("SIGINT");
     time = 1000;
     p.emit("SIGINT");
     expect(exits).toEqual([130]);
+    // Cut short: what is left is said.
+    expect(lines.at(-1)).toMatch(/^stopped before the clean-up finished: /);
 
     const after = proc();
     const slow = new Teardown(() => {});
@@ -211,6 +214,18 @@ describe("onSignals", () => {
     time = 2500;
     after.p.emit("SIGINT");
     expect(after.exits).toEqual([143]);
+
+    // A teardown that has finished says nothing is left, however the exit comes.
+    const done = proc();
+    const quick = new Teardown(() => {});
+    const quiet: string[] = [];
+    onSignals(quick, (l) => quiet.push(l), done.p, 120_000, clock);
+    await quick.run();
+    time = 4000;
+    done.p.emit("SIGINT");
+    time = 5500;
+    done.p.emit("SIGINT");
+    expect(quiet.some((l) => l.startsWith("stopped before the clean-up finished"))).toBe(false);
 
     const second = proc();
     const stop = onSignals(new Teardown(() => {}), () => {}, second.p);
