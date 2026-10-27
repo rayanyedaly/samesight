@@ -34,6 +34,8 @@ export interface ClaimUse {
   /** Other comparisons, as written: audit cannot tell what value they need. */
   other: string[];
   casts: string[];
+  /** Some rule holds when the claim is not one of its values (<>, NOT IN, IS NOT TRUE). */
+  negated: boolean;
 }
 
 export interface ClaimsPlan {
@@ -51,11 +53,17 @@ export interface ClaimsPlan {
 async function qualified<T>(client: pg.Client, fn: () => Promise<T>): Promise<T> {
   const { rows: current } = await client.query<{ path: string }>("select pg_catalog.current_setting('search_path') as path");
   await client.query("select pg_catalog.set_config('search_path', '', false)");
+  const restore = () => client.query("select pg_catalog.set_config('search_path', $1, false)", [current[0]?.path ?? ""]);
+  let result: T;
   try {
-    return await fn();
-  } finally {
-    await client.query("select pg_catalog.set_config('search_path', $1, false)", [current[0]?.path ?? ""]);
+    result = await fn();
+  } catch (e) {
+    // The read's own error is the one to report, even when restoring fails after it.
+    await restore().catch(() => {});
+    throw e;
   }
+  await restore();
+  return result;
 }
 
 /** Each stream's CTEs and queries, or each bucket's parameter and data queries. */
@@ -82,25 +90,35 @@ export async function policyRules(client: pg.Client): Promise<RuleSql[]> {
 }
 
 /**
- * The bodies of the functions public policies call (outside the auth and system schemas),
- * keyed by how a policy calls them: schema.name (policies are read with an empty
- * search_path), and the bare name for public ones. Functions with arguments are listed
- * too, so a call that reads the token is reported even though it is not read through.
+ * The bodies of the functions public policies call, and of every function the project
+ * defines itself (outside the system and Supabase schemas and extensions), so a policy
+ * whose function reads the token through another one is reported too. Keyed by how a call
+ * names them: schema.name (policies are read with an empty search_path), and the bare name
+ * for public ones. Functions with arguments are listed, so a call that reads the token is
+ * reported even though it is not read through; of overloads, the one with no arguments
+ * (the only kind read through) wins the key.
  */
+/** Schemas Supabase itself manages: their functions are its own, not the project's. */
+const SUPABASE_SCHEMAS = ["storage", "realtime", "_realtime", "graphql", "graphql_public", "vault", "pgsodium", "pgsodium_masks", "supabase_functions", "net", "pgbouncer", "cron", "supabase_migrations", "_analytics"];
+
 export async function policyFunctions(client: pg.Client): Promise<Map<string, string>> {
   const fns = await qualified(client, () =>
-    rows<{ schema: string; name: string; body: string | null }>(
+    rows<{ schema: string; name: string; args: number; body: string | null }>(
       client,
-      `select distinct fn.nspname as schema, f.proname as name,
+      `select fn.nspname as schema, f.proname as name, f.pronargs as args,
             case when l.lanname = 'sql' then coalesce(pg_get_function_sqlbody(f.oid), f.prosrc) else f.prosrc end as body
-       from pg_policy pol
-       join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
-       join pg_depend d on d.classid = 'pg_policy'::regclass and d.objid = pol.oid and d.refclassid = 'pg_proc'::regclass
-       join pg_proc f on f.oid = d.refobjid join pg_namespace fn on fn.oid = f.pronamespace
-       join pg_language l on l.oid = f.prolang
-      where n.nspname = 'public'
+       from pg_proc f join pg_namespace fn on fn.oid = f.pronamespace join pg_language l on l.oid = f.prolang
+      where f.prokind = 'f'
         and fn.nspname not in ('pg_catalog', 'auth', 'extensions', 'information_schema')
-      order by 1, 2`,
+        and (f.oid in (select d.refobjid
+                         from pg_policy pol
+                         join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
+                         join pg_depend d on d.classid = 'pg_policy'::regclass and d.objid = pol.oid and d.refclassid = 'pg_proc'::regclass
+                        where n.nspname = 'public')
+             or (not starts_with(fn.nspname, 'pg_')
+                 and fn.nspname not in (${SUPABASE_SCHEMAS.map((x) => `'${x}'`).join(", ")})
+                 and not exists (select from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = f.oid and e.deptype = 'e')))
+      order by 1, 2, 3 desc`,
     ),
   );
   const out = new Map<string, string>();
@@ -124,17 +142,19 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
     for (const u of found.unreadable) unreadable.push({ where: rule.where, ...u });
     for (const read of found.reads) {
       const key = read.path.join(".");
-      const use = uses.get(key) ?? { path: read.path, key, cls: classify(read.path), rules: [], values: [], columns: [], other: [], casts: [] };
+      const use = uses.get(key) ?? { path: read.path, key, cls: classify(read.path), rules: [], values: [], columns: [], other: [], casts: [], negated: false };
       uses.set(key, use);
       if (!use.rules.includes(rule.where)) use.rules.push(rule.where);
       for (const c of read.casts) if (!use.casts.includes(c)) use.casts.push(c);
       const c = read.compared;
       if (c.kind === "literals") {
+        if (c.negated) use.negated = true;
         for (const v of c.values) if (!use.values.some((x) => valueKey(x) === valueKey(v))) use.values.push(v);
       } else if (c.kind === "column") {
         if (!use.columns.includes(c.column)) use.columns.push(c.column);
-        // Only a column of the rule's own table: one inside a subquery belongs to the subquery's.
-        if (use.cls === "identity" && !read.inSubquery) identityColumns.add(c.column);
+        // By bare name, as the generator applies them (a membership table's user_id in a
+        // subquery included); it never gives user ids to a primary or foreign key.
+        if (use.cls === "identity") identityColumns.add(c.column);
       } else if (!use.other.includes(c.text)) use.other.push(c.text);
     }
   }
@@ -150,7 +170,7 @@ export function accessTokenHook(projectDir: string): { uri: string } | undefined
 
 /** A remote hook (http or https) runs on every sign-in, off this machine. */
 export function remoteHook(uri: string): boolean {
-  const m = /^https?:\/\/([^/:]+)/i.exec(uri);
+  const m = /^https?:\/\/(\[[^\]]*\]|[^/:]+)/i.exec(uri);
   return m !== null && !/^(localhost|127\.0\.0\.1|\[::1\]|host\.docker\.internal)$/i.test(m[1] ?? "");
 }
 
@@ -176,17 +196,19 @@ export function claimFindings(plan: ClaimsPlan, hook: { uri: string } | undefine
       case "identity":
         break;
       case "shared":
-        if (u.other.length === 0 && u.columns.length === 0 && u.values.every((v) => v === "authenticated" && u.key !== "iss")) {
+        if (!u.negated && u.other.length === 0 && u.columns.length === 0 && u.values.every((v) => v === "authenticated" && u.key !== "iss")) {
           add("ok", `${read}; every run user is authenticated, so it holds for all of them`);
         } else add("warn", `${read}; every run user carries the same ${u.key}, so a rule that tells users apart by it is tested for that value only`);
         break;
       case "auth-state":
-        add("warn", `${read}; every run user is a password user at aal1 with no other sign-in state, so rules reading ${u.key} are tested for that state only`);
+        add("warn", `${read}; ${AUTH_STATE[u.key] ?? `every run user is a password user at aal1 with no other sign-in state, so rules reading ${u.key} are tested for that state only`}`);
         break;
       case "app_metadata":
-      case "user_metadata":
-        add("warn", `${read}; run users do not carry ${u.key}, so every user reads it as null`);
+      case "user_metadata": {
+        const values = tokens ? heldBy(tokens, u.path) : undefined;
+        add("warn", values ? `${read}; the run users' tokens carry it, though audit did not set it${values}` : `${read}; run users do not carry ${u.key}, so every user reads it as null`);
         break;
+      }
       case "hook":
         add("warn", hookDetail(read, u, hook, tokens));
         break;
@@ -198,6 +220,20 @@ export function claimFindings(plan: ClaimsPlan, hook: { uri: string } | undefine
   for (const x of plan.unreadable) add("warn", `${x.where} ${x.reason}: ${x.text}; audit cannot tell which claim or value it needs`);
   if (out.length === 0) add("ok", "no rule reads a token claim other than the user id");
   return out;
+}
+
+/** Auth-state claims that differ per user, or that no run user has. */
+const AUTH_STATE: Record<string, string> = {
+  email: "each run user has its own email, which audit does not put in generated rows, so rules matching it are tested on rows that do not match it",
+  session_id: "each sign-in has its own session_id, which audit does not put in generated rows, so rules matching it are tested on rows that do not match it",
+  phone: "run users have no phone, so every user reads it as null",
+};
+
+/** " (u0: "admin", u1: null)" when some token carries a value at the path, else undefined. */
+function heldBy(tokens: Map<string, Record<string, unknown>>, path: string[]): string | undefined {
+  const held = [...tokens].map(([label, claims]) => [label, at(claims, path)] as const);
+  if (held.every(([, v]) => v === undefined || v === null)) return undefined;
+  return ` (${held.map(([label, v]) => `${label}: ${v === undefined ? "null" : JSON.stringify(v)}`).join(", ")})`;
 }
 
 /** What a hook-only claim means for this run, from the tokens when users have signed in. */

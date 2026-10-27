@@ -9,7 +9,7 @@ import fc from "fast-check";
 import type pg from "pg";
 import { rows } from "../db.ts";
 import { sqlHints } from "../differential/model.ts";
-import { differential, setUpUsers, tearDown } from "../differential/run.ts";
+import { differential, type Run, setUpUsers, tearDown } from "../differential/run.ts";
 import { worldArbitrary } from "../differential/world.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
@@ -125,7 +125,14 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const { hints, users } = sqlHints(rules.map((r) => r.sql).join("\n"));
   // Columns compared with the user id in any spelling (auth.uid(), auth.jwt() ->> 'sub', token_parameters.user_id).
   const userColumns = new Set([...users, ...claims.identityColumns]);
-  const s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name, hints, userColumns })), synced: scope.synced });
+  let s: Run;
+  try {
+    s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name, hints, userColumns })), synced: scope.synced });
+  } catch (e) {
+    // Users could not sign in (a rate limit, say): the claims are still worth showing.
+    section("Claims", claimFindings(claims, hook));
+    throw e;
+  }
   try {
     const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
     section("Claims", claimFindings(claims, hook, tokens));

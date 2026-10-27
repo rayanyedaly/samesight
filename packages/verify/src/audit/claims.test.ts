@@ -37,8 +37,10 @@ describe("planClaims", () => {
     expect(plan.uses.find((u) => u.key === "app_metadata.org_id")).toMatchObject({ columns: ["org_id"], casts: ["uuid"], values: [] });
   });
 
-  it("gives the generator every column compared with the user id, in any spelling", () => {
+  it("gives the generator every column compared with the user id, in any spelling, subqueries included", () => {
     expect(plan.identityColumns).toEqual(["author", "owner_id"]);
+    const member = planClaims([policy("m", "(EXISTS ( SELECT 1 FROM public.members m WHERE (m.user_id = ((auth.jwt() ->> 'sub'::text))::uuid)))")]);
+    expect(member.identityColumns).toEqual(["user_id"]);
   });
 
   it("keeps what it cannot follow, by rule", () => {
@@ -82,9 +84,23 @@ describe("claimFindings", () => {
     expect(differ).toMatch(/\(u0: "ADMIN", u1: "VIEWER"\); audit does not choose these values/);
   });
 
+  it("never calls a negated shared claim one that holds for every user", () => {
+    const lines = details(claimFindings(planClaims([policy("p", "(auth.role() <> 'authenticated'::text)")]), undefined));
+    expect(lines).toEqual([expect.stringMatching(/^warn role: .*compared with 'authenticated'; every run user carries the same role/)]);
+  });
+
+  it("words metadata from the tokens when they carry it, and per-user sign-in claims as such", () => {
+    const meta = details(claimFindings(plan, undefined, new Map([["u0", { app_metadata: { role: "member" } }], ["u1", {}]]))).find((l) => l.includes("app_metadata.role"));
+    expect(meta).toMatch(/; the run users' tokens carry it, though audit did not set it \(u0: "member", u1: null\)$/);
+    const email = details(claimFindings(planClaims([policy("e", "(auth.email() = owner_email)")]), undefined));
+    expect(email).toEqual([expect.stringMatching(/^warn email: .*compared with column owner_email; each run user has its own email, which audit does not put in generated rows/)]);
+  });
+
   it("warns about a hook that runs off this machine", () => {
     expect(details(claimFindings(plan, { uri: "https://hooks.example.com/claims" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/claims is not on this machine/);
     expect(remoteHook("http://127.0.0.1:3000/hook")).toBe(false);
+    expect(remoteHook("http://[::1]:3000/hook")).toBe(false);
+    expect(remoteHook("https://[2001:db8::1]/hook")).toBe(true);
     expect(remoteHook("pg-functions://postgres/public/hook")).toBe(false);
   });
 
