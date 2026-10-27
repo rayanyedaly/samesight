@@ -88,10 +88,11 @@ Already running PowerSync with hand-written RLS? Lint your sync config in second
 npx samesight lint powersync/sync-config.yaml
 ```
 
-Then point the verifier at your project to test the rows themselves:
+Then test the rows themselves. With the project's local Supabase stack running and Docker, the verifier starts a PowerSync service of its own for the run and removes it afterwards:
 
 ```bash
-npx @samesight/verify audit --sync-config powersync/sync-config.yaml --powersync http://127.0.0.1:8080
+npx supabase start
+npx @samesight/verify audit --sync-config powersync/sync-config.yaml
 ```
 
 See [auditing an existing project](docs/verify.md#audit-mode).
