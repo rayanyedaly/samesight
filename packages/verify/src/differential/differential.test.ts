@@ -2,6 +2,7 @@ import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compare, normalize } from "./compare.ts";
 import { type Flow, rowsFromOps, streamOfBucket, watchErrors } from "./device.ts";
+import { brokeDown } from "./run.ts";
 import { type ColumnModel, insertOrder, parseCheck, sqlHints, type TableModel } from "./model.ts";
 import { rowKey } from "./rls.ts";
 import { columnArbitrary } from "./world.ts";
@@ -216,5 +217,15 @@ describe("watchErrors", () => {
     vi.advanceTimersByTime(1_500);
     expect(gaveUp).toEqual(["second"]);
     stop();
+  });
+});
+
+describe("brokeDown", () => {
+  it("tells a run that could not finish its datasets from one that found something", () => {
+    const fail = (detail: string) => ({ status: "fail" as const, check: "differential", detail });
+    expect(brokeDown([fail("the run failed: Error: no complete sync from http://x: fetch failed")])).toBe(true);
+    expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows (then a run failed: Error: fetch failed)):\n    u0 received ...")])).toBe(true);
+    expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows):\n    u0 received ...")])).toBe(false);
+    expect(brokeDown([{ status: "warn", check: "differential", detail: "the run failed: x" }])).toBe(false);
   });
 });

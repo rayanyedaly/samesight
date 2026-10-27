@@ -259,7 +259,7 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
                   const column = model.find((m) => m.name === t)?.foreignKeys.find((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1)?.columns[0];
                   return column ? [{ table: t, column }] : [];
                 }),
-                ...(hook ? { hook: hook.uri } : {}),
+                ...(hook ? { hook: showUri(hook.uri) } : {}),
                 names,
               },
             }

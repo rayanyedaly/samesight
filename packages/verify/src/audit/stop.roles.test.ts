@@ -8,6 +8,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Docker } from "../autostart/docker.ts";
+import { PROJECT_LABEL } from "../autostart/storage.ts";
 import { connectLocal } from "../db.ts";
 import { PREFIX } from "../differential/run.ts";
 import { readStack } from "../stack.ts";
@@ -55,6 +57,10 @@ describe("a roles audit stopped by Ctrl+C mid-differential", () => {
     expect(await exit, out).toBe(130);
     expect(await count("select count(*) as n from auth.users where email like '%@verify.samesight.test'")).toBe(0);
     for (const table of ["memberships", "teams", "documents", "orgs"]) expect(await count(`select count(*) as n from public.${table} where id::text like '${PREFIX}%'`), table).toBe(0);
+    // And the PowerSync service it started: containers, its role and its replication slot.
+    expect(await new Docker().containers([`label=${PROJECT_LABEL}=samesight-audit-roles`])).toEqual([]);
+    expect(await count("select count(*) as n from pg_roles where starts_with(rolname, 'samesight_audit_')")).toBe(0);
+    expect(await count("select count(*) as n from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')")).toBe(0);
     const lock = Number.parseInt(PREFIX, 16);
     expect((await client.query<{ ok: boolean }>("select pg_try_advisory_lock($1) as ok", [lock])).rows).toEqual([{ ok: true }]);
     await client.query("select pg_advisory_unlock($1)", [lock]);

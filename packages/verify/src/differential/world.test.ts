@@ -45,3 +45,13 @@ describe("columnArbitrary with claim values", () => {
     expect(fc.sample(columnArbitrary(base) as fc.Arbitrary<unknown>, { numRuns: 200, seed: 1 }).filter((v) => v === "ss-a" || v === "ss-b")).toEqual([]);
   });
 });
+
+describe("a CHECK pattern JavaScript cannot run as Postgres does", () => {
+  it("falls back to plain strings rather than throwing or matching it differently", () => {
+    const col = (pattern: string) => ({ name: "code", type: "text", nullable: false, hasDefault: false, computed: false, hints: [], pattern });
+    for (const pattern of ["^[[:alpha:]]+$", "\\mword\\M", "(?i)abc", "(unclosed"]) {
+      const arb = columnArbitrary(col(pattern)) as fc.Arbitrary<unknown>;
+      expect(fc.sample(arb, { numRuns: 5, seed: 1 }).every((v) => typeof v === "string"), pattern).toBe(true);
+    }
+  });
+});

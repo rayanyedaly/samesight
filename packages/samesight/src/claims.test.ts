@@ -323,6 +323,10 @@ describe("callsIn", () => {
     expect(callsIn('select public.Get_Org(x) and "getOrg"() and auth.jwt() ->> \'a\'').sort()).toEqual(["auth.jwt", "getOrg", "public.get_org"]);
   });
 
+  it("takes no keyword before a parenthesis for a call: LATERAL (...), EXISTS (...)", () => {
+    expect(callsIn("select 1 from a, lateral (select 2) x where exists (select 3)")).toEqual([]);
+  });
+
   it("scans a plpgsql body it cannot tokenize, ignoring calls in comments and strings", () => {
     const body = "begin\n  -- skip_me(1)\n  v := Lookup(1); /* gone(2) */ raise notice 'not_a_call(3)';\n  return \"Keep\"();\nend";
     expect(callsIn(body).sort()).toEqual(["Keep", "lookup"]);

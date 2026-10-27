@@ -210,6 +210,13 @@ describe("Auth's rate limit", () => {
     await expect(createUsers(stack, 1, "r")).rejects.toThrow(/^Auth POST \/admin\/users: 429 \{"msg":"rate limited"\}$/);
   });
 
+  it("says when Auth does not answer, rather than waiting on it", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    });
+    await expect(createUsers(stack, 1, "r")).rejects.toThrow(/^Auth POST \/admin\/users: no answer within 30s$/);
+  });
+
   it("sends each user's metadata in the create body", async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {

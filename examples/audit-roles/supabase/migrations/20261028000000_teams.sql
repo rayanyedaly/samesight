@@ -61,7 +61,7 @@ end
 $$;
 
 grant execute on function public.custom_access_token_hook(jsonb) to supabase_auth_admin;
-revoke execute on function public.custom_access_token_hook(jsonb) from public, anon, authenticated;
+revoke execute on function public.custom_access_token_hook(jsonb) from public, anon, authenticated, service_role;
 
 -- Leads read their team's documents (archived ones stay with their owner, as above).
 create policy "team leads read team documents" on public.documents

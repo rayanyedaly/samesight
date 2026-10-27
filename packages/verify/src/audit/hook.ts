@@ -20,10 +20,14 @@ export function parseHookUri(uri: string): HookUri {
   return /^https?:\/\//i.test(uri.trim()) ? { kind: "remote" } : { kind: "unknown" };
 }
 
-/** The URI as printed: an http(s) one as its host alone, since a user, password, path or query may hold a secret. */
+/**
+ * The URI as printed: a pg-functions one in full; an http(s) one as its host alone, since a
+ * user, password, path or query may hold a secret; anything else as its scheme.
+ */
 export function showUri(uri: string): string {
   const trimmed = uri.trim();
-  if (!/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^pg-functions:\/\/[^@]*$/i.test(trimmed)) return trimmed;
+  if (!/^https?:\/\//i.test(trimmed)) return /^[a-z][a-z0-9+.-]*:/i.exec(trimmed)?.[0].concat("...") ?? "(a hook uri audit does not read)";
   try {
     const u = new URL(trimmed);
     return `${u.protocol}//${u.host}${u.pathname === "/" ? "" : "/..."}`;

@@ -393,10 +393,10 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
   }
   const values = held ? ` (${held.map(([label, v]) => `${label}: ${v === undefined ? "null" : JSON.stringify(v)}`).join(", ")})` : "";
   const same = held && new Set(held.map(([, v]) => JSON.stringify(v ?? null))).size <= 1;
-  const by = hook ? `added by the access token hook ${hook.uri}` : "carried by the run users' tokens";
-  if (!held) return `${read}; ${by}. Users sign in before any rows are generated, so the hook sees none; steering hook claims is planned (B3b)`;
+  const by = hook ? `added by the access token hook ${showUri(hook.uri)}` : "carried by the run users' tokens";
+  if (!held) return `${read}; ${by}, whose values audit does not choose`;
   return same
-    ? `${read}; ${by}; users signed in before any rows were generated, so every token carries the same value${values}. Rules that read it are tested for that value only; steering hook claims is planned (B3b)`
+    ? `${read}; ${by}; every token carries the same value${values}. Rules that read it are tested for that value only`
     : `${read}; ${by}${values}; audit does not choose these values, so rules that read it are tested for them only`;
 }
 

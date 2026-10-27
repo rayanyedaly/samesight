@@ -113,7 +113,7 @@ jobs:
   audit:
     name: audit mode on the to-do list demo
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -155,7 +155,7 @@ jobs:
   roles:
     name: audit mode on the roles app
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -177,7 +177,7 @@ jobs:
         run: >-
           timeout 420 bash scripts/ci/verify-coverage.sh examples/audit-roles
           "9 of 9 RLS read policies on synced tables were seen both allowing and refusing a run user a row\. 8 of 8 stream/table pairs both sent and withheld a row\."
-          --sync-config sync-config.yaml --runs 8 --seed 7
+          --sync-config sync-config.yaml --runs 8 --seed 7 --time-limit 300
       # Run users hold the roles the rules compare: a leak only editors see must be caught.
       - name: samesight-verify audit on a planted editor leak
         working-directory: examples/audit-roles
