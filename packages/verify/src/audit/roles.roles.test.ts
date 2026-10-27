@@ -18,7 +18,7 @@ import { readStack } from "../stack.ts";
 import { metadataOf } from "./assign.ts";
 import { checkAuditCatalog } from "./catalog.ts";
 import type { Assignment } from "./assign.ts";
-import { planRun } from "./run.ts";
+import { hookKeysHeld, planRun, type RunPlan } from "./run.ts";
 import { claimFindings, type ClaimsPlan, planClaims, policyFunctions, policyRules, syncRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
 import { SIGN_IN } from "./signin.ts";
@@ -34,6 +34,7 @@ let started: AutoStarted | undefined;
 let s: Run;
 let plan: ClaimsPlan;
 let assignment: Assignment;
+let run: RunPlan;
 beforeAll(async () => {
   let stack = readStack(APP, "http://127.0.0.1");
   client = await connectLocal(stack.db);
@@ -50,10 +51,10 @@ beforeAll(async () => {
   });
   stack = { ...stack, powersync: started.url, slotPrefix: started.slotPrefix };
   // Planned as audit() plans it: the claims, the hook's rows, the values each user holds.
-  const p = await planRun(client, parseSyncConfig(CONFIG), APP);
-  plan = p.claims;
-  assignment = p.assignment;
-  s = await setUpUsers(client, stack, p.setUp.scope, p.setUp.claims);
+  run = await planRun(client, parseSyncConfig(CONFIG), APP);
+  plan = run.claims;
+  assignment = run.assignment;
+  s = await setUpUsers(client, stack, run.setUp.scope, run.setUp.claims);
 }, 180_000);
 afterAll(async () => {
   let left: string[] = [];
@@ -81,12 +82,14 @@ describe("the roles app's catalog", () => {
 const discover = async () => planClaims([...(await policyRules(client)), ...syncRules(parseSyncConfig(CONFIG))], await policyFunctions(client));
 
 describe("claim discovery on the roles app", () => {
-  it("finds the role and the org in app_metadata, in the policies and the streams, and nothing it cannot read", async () => {
+  it("finds the role and the org in app_metadata, the team and team role the hook adds, and nothing it cannot read", async () => {
     const plan = await discover();
     expect(plan.uses.map((u) => [u.key, u.cls])).toEqual([
       ["app_metadata.org_id", "app_metadata"],
       ["app_metadata.role", "app_metadata"],
       ["sub", "identity"],
+      ["team_id", "hook"],
+      ["team_role", "hook"],
     ]);
     const role = plan.uses.find((u) => u.key === "app_metadata.role");
     expect(role?.values).toEqual(["admin", "editor"]);
@@ -99,49 +102,73 @@ describe("claim discovery on the roles app", () => {
       "admin.queries[1]",
     ]);
     expect(plan.uses.find((u) => u.key === "app_metadata.org_id")).toMatchObject({ columns: ["org_id", "id"], casts: ["uuid"], values: [], other: [] });
-    expect(plan.identityColumns).toEqual(["owner_id"]);
+    expect(plan.identityColumns).toEqual(["owner_id", "user_id"]);
     expect(plan.unreadable).toEqual([]);
   });
 });
 
 
-describe("run users holding the roles and the orgs", () => {
-  it("signs users up with every role and org together, whose tokens carry them, labelled by them", () => {
-    const [orgA, orgB] = assignment.paths.find((p) => p.key === "app_metadata.org_id")?.pool ?? [];
+describe("run users holding the roles, the orgs and the hook's teams", () => {
+  const tokensOf = () => new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
+
+  it("plans the hook's rows: a membership per user but the last, over two teams and both roles", () => {
+    expect(run.hookPlan).toMatchObject({ tables: ["memberships"], role: "supabase_auth_admin", steer: { perUser: ["memberships"] } });
+    expect(run.hookPlan?.cannot).toBeUndefined();
+    expect(run.setUp.scope.fixed?.tables).toEqual(["teams", "memberships"]);
+    const rows = run.setUp.scope.fixed?.rows ?? [];
+    expect(rows.filter((r) => r.table === "teams")).toHaveLength(2);
+    expect(rows.filter((r) => r.table === "memberships").map((r) => r.user)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(s.fixedRefused).toEqual([]);
+  });
+
+  it("signs users up holding every role, org, team and team role, whose tokens carry them, the copy and the bare user as planned", () => {
     expect(assignment.paths.map((p) => [p.key, p.columns])).toEqual([
       ["app_metadata.org_id", ["orgs.id"]],
       ["app_metadata.role", []],
     ]);
-    expect(assignment.keyPools.get("orgs")).toEqual({ column: "id", values: [orgA, orgB] });
-    // Three roles by two orgs: all six combinations, a copy of the first user, and one with neither.
-    const labels = s.fixed.users.map((u) => u.label.replace(String(orgA), "A").replace(String(orgB), "B"));
-    expect(labels).toHaveLength(8);
-    const claimsOf = (label: string | undefined) => (label ?? "").replace(/^u\d+ ?/, "");
-    expect(labels.slice(0, 6).map(claimsOf).sort()).toEqual(
-      ["A", "B"].flatMap((o) => ["admin", "editor", "samesight-other"].map((r) => `(app_metadata.org_id=${o}, app_metadata.role=${r})`)).sort(),
-    );
-    expect(claimsOf(labels[6])).toBe(claimsOf(labels[0]));
-    expect(labels[7]).toBe("u7");
-    const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
-    expect(tokens.get("u0")).toMatchObject({ app_metadata: { provider: "email", org_id: expect.stringMatching(/^5a3e5a3e-/) } });
-    const lines = claimFindings(plan, undefined, tokens, assignment);
-    expect(lines.filter((f) => f.status !== "ok")).toEqual([]);
+    const tokens = tokensOf();
+    expect(s.fixed.users).toHaveLength(8);
+    // Each token carries the team and role of the membership audit gave its user.
+    const rows = (run.setUp.scope.fixed?.rows ?? []).filter((r) => r.table === "memberships");
+    for (const [i, u] of s.fixed.users.entries()) {
+      const row = rows.find((r) => r.user === i)?.row;
+      expect([tokens.get(`u${i}`)?.team_id ?? null, tokens.get(`u${i}`)?.team_role ?? null], u.label).toEqual([row ? row.team_id : null, row ? row.role : null]);
+    }
+    const held = (path: (t: Record<string, unknown>) => unknown) => new Set([...tokens.values()].map((t) => JSON.stringify(path(t) ?? null)));
+    expect(held((t) => (t.app_metadata as Record<string, unknown>)?.role)).toEqual(new Set(['"admin"', '"editor"', '"samesight-other"', "null"]));
+    expect(held((t) => t.team_role)).toEqual(new Set(['"lead"', '"member"', "null"]));
+    expect(held((t) => t.team_id).size).toBe(3);
+    expect(s.fixed.users[6]?.label.replace(/^u6/, "")).toBe(s.fixed.users[0]?.label.replace(/^u0/, ""));
+    expect(s.fixed.users[7]?.label).toBe("u7");
+    expect(s.fixed.users[0]?.label).toMatch(/team_id=teams row [12], team_role=(lead|member)\)$/);
+    expect(hookKeysHeld(plan, tokens)).toEqual(["team_id", "team_role"]);
+    // Only the joint picker's warning: 3 roles x 2 orgs x 2 teams x 2 team roles over 6 users.
+    const lines = claimFindings(plan, run.hook, tokens, assignment, run.hookPlan);
+    expect(lines.filter((f) => f.status !== "ok").map((f) => f.detail)).toEqual(["24 combinations of claim values and access token hook rows, and 8 users hold 6 of them; rules that need values together may not be tested"]);
+    expect(lines.find((f) => f.detail.startsWith("team_role"))?.detail).toMatch(/from rows audit gives each run user in memberships before signing in; held: (lead|member) u0 /);
     expect(lines.find((f) => f.detail.startsWith("app_metadata.org_id"))?.detail).toMatch(/; generated rows take them in orgs\.id$/);
+  });
+
+  it("keeps the hook from anon and authenticated, as the migration says", async () => {
+    const can = async (role: string) =>
+      (await client.query<{ ok: boolean }>("select has_function_privilege($1, 'public.custom_access_token_hook(jsonb)', 'execute') as ok", [role])).rows[0]?.ok;
+    expect([await can("anon"), await can("authenticated"), await can("supabase_auth_admin")]).toEqual([false, false, true]);
   });
 });
 
 describe("coverage on the roles app", () => {
   it("sees every policy and stream allowing and refusing a run user a row", async () => {
     const config = parseSyncConfig(CONFIG);
-    const cov = await coverageScope(client, SYNCED, config.streams, await policyFunctions(client), config.kind, new Set(assignment.paths.map((p) => p.key)));
-    const result = await differential(s, { runs: 4, seed: 5, timeLimitMs: 120_000, coverage: cov });
+    const held = new Set([...assignment.paths.map((p) => p.key), ...hookKeysHeld(plan, new Map(s.fixed.users.map((u) => [u.id, s.sessions.get(u.id)?.claims ?? {}])))]);
+    const cov = await coverageScope(client, SYNCED, config.streams, await policyFunctions(client), config.kind, held);
+    const result = await differential(s, { runs: 8, seed: 5, timeLimitMs: 240_000, coverage: cov });
     expect(result.findings.filter((f) => f.status === "fail")).toEqual([]);
     expect(cov.policies.map((p) => [`${p.table}: ${p.name}`, stateOf(p.tally)]).filter(([, state]) => state !== "exercised")).toEqual([]);
-    expect(cov.policies).toHaveLength(8);
+    expect(cov.policies).toHaveLength(9);
     expect(cov.units.map((u) => [`${u.streams.join("+")} ${u.table}`, stateOf(u.tally)]).filter(([, state]) => state !== "exercised")).toEqual([]);
-    expect(cov.units).toHaveLength(7);
+    expect(cov.units).toHaveLength(8);
     expect(cov.triggers).toEqual([]);
-  }, 300_000);
+  }, 400_000);
 });
 
 describe("what Supabase Auth puts in run users' tokens about the sign-in", () => {

@@ -1,6 +1,7 @@
 # The same access as the RLS in supabase/migrations, as PowerSync sync streams. The role is
 # read in both spellings seen in the wild: a $. path, and ->> on the app_metadata object.
 # The own stream's alias (d) names the table on devices; audit maps it back to documents.
+# The team stream reads team_id and team_role, which the access token hook adds to tokens.
 config:
   edition: 3
 
@@ -24,3 +25,7 @@ streams:
     queries:
       - SELECT * FROM orgs WHERE id = auth.parameter('app_metadata') ->> 'org_id'
       - SELECT * FROM documents WHERE org_id = auth.parameter('app_metadata') ->> 'org_id' AND status != 'archived'
+  team:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM documents WHERE team_id = auth.parameter('team_id') AND auth.parameter('team_role') = 'lead' AND status != 'archived'
