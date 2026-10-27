@@ -67,7 +67,7 @@ const CLAIM_NAME = /^[a-z_][a-z0-9_]*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // Claims Supabase Auth and PostgREST own; the access token hook must not overwrite them.
 const RESERVED_CLAIMS = new Set(
-  "role sub aud exp iat iss nbf jti email phone app_metadata user_metadata is_anonymous session_id aal amr".split(" "),
+  "role sub aud exp iat iss nbf jti email phone app_metadata user_metadata is_anonymous session_id aal amr client_id".split(" "),
 );
 // Sync buckets cannot re-evaluate on a clock, so time-relative raw rules are refused. A
 // heuristic: the verifier is what proves a raw rule agrees on both sides.
