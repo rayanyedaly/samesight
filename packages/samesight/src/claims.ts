@@ -224,11 +224,15 @@ interface Span {
 /** Token reads other than the user id: a helper that reads only auth.uid() tells users apart by id alone. */
 const READS_CLAIMS = /auth\s*\.\s*(jwt|role|email|parameters?)\s*\(|request\s*\.\s*jwt\s*\(|token_parameters\s*\.|current_setting\s*\(\s*'request\.jwt/i;
 
+/** How function bodies are joined under one key: the overloads that take one argument count. */
+export const BODY_JOIN = "\n;\n";
+
 /**
  * The functions a body calls, as Postgres resolves names: an unquoted name folded to lower
  * case, a quoted one kept as written, schema.name when qualified. A body that does not
  * tokenize (plpgsql's := and the like) is scanned with its comments and strings removed.
  */
+
 export function callsIn(body: string): string[] {
   const out = new Set<string>();
   let t: Token[] | undefined;
@@ -241,7 +245,9 @@ export function callsIn(body: string): string[] {
     for (let i = 0; i < t.length; i++) {
       const a = t[i];
       if (!a || (a.kind !== "word" && a.kind !== "quoted") || sym(t[i - 1], ".")) continue;
-      if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], "(")) out.add(`${a.text}.${name(t[i + 2])}`);
+      // db.schema.fn(...): the schema and the name, as Postgres resolves it in this database.
+      if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], ".") && name(t[i + 4]) && sym(t[i + 5], "(")) out.add(`${name(t[i + 2])}.${name(t[i + 4])}`);
+      else if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], "(")) out.add(`${a.text}.${name(t[i + 2])}`);
       else if (sym(t[i + 1], "(") && !(a.kind === "word" && NOT_CALLS.has(a.text))) out.add(a.text);
     }
     return [...out];
@@ -249,10 +255,12 @@ export function callsIn(body: string): string[] {
   const text = codeOnly(body);
   const part = `("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
   const unquote = (x: string) => (x.startsWith('"') ? x.slice(1, -1).replace(/""/g, '"') : x.toLowerCase());
-  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
+  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
     // A keyword before a parenthesis is no call; a quoted name ("if") is one.
     if (m[2] === undefined && !(m[1] as string).startsWith('"') && NOT_CALLS.has((m[1] as string).toLowerCase())) continue;
-    out.add(m[2] === undefined ? unquote(m[1] as string) : `${unquote(m[1] as string)}.${unquote(m[2])}`);
+    // db.schema.fn(...) is schema.fn.
+    const parts = [m[1], m[2], m[3]].filter((x): x is string => x !== undefined).map(unquote).slice(-2);
+    out.add(parts.join("."));
   }
   return [...out];
 }
@@ -426,11 +434,49 @@ function typeAt(t: Token[], i: number): { type: string; end: number } | undefine
   return { type: parts.join(""), end: j };
 }
 
+/**
+ * A number's canonical text, the same for every spelling of one value (1, 1.0, '01', 1e0),
+ * or undefined when the value is no number. Built from the digits, so a bigint past 2^53
+ * and text like '', '0x10' or 'Infinity' are never taken for one; nor is an exponent no
+ * database takes (more than 15 digits), which a double cannot count exactly.
+ */
+export function canonicalNumber(v: unknown): string | undefined {
+  const text = typeof v === "number" ? (Number.isFinite(v) ? String(v) : undefined) : typeof v === "string" ? v.trim() : undefined;
+  const m = text === undefined ? null : /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!m || (!m[2] && !m[3]) || (m[4]?.replace(/^[+-]/, "").length ?? 0) > 15) return undefined;
+  const whole = m[2] ?? "";
+  let digits = whole + (m[3] ?? "");
+  let point = whole.length + Number(m[4] ?? 0);
+  const lead = /^0*/.exec(digits)?.[0].length ?? 0;
+  digits = digits.slice(lead).replace(/0+$/, "");
+  point -= lead;
+  return digits ? `${m[1] === "-" ? "-" : ""}0.${digits}e${point}` : "0";
+}
+
+/** The number a literal spells, when a double holds that number exactly; else its text, which still compares as a number. */
+function exactNumber(text: string): ClaimValue {
+  const n = Number(text);
+  return Number.isFinite(n) && canonicalNumber(n) === canonicalNumber(text) ? n : text;
+}
+
+const NUMERIC_TYPE = /^(int[248]?|integer|bigint|smallint|numeric|real|double precision|float[48]?|decimal)$/;
+const INTEGER_TYPE = /^(int[248]?|integer|bigint|smallint)$/;
+/** Text Postgres reads as a number: optional sign, digits with an optional point, an optional exponent. */
+const NUMERIC_TEXT = /^\s*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/;
+/** Text Postgres reads as an integer: '1.5' and '1e2' are errors there, not numbers. */
+const INTEGER_TEXT = /^\s*[+-]?\d+\s*$/;
+
+/** The read's cast when it is numeric: an uncast literal compared with it is read as a number too, as Postgres does. */
+const numericCast = (casts: string[]): string[] => {
+  const cast = casts.at(-1)?.toLowerCase();
+  return cast && NUMERIC_TYPE.test(cast) ? [cast] : [];
+};
+
 /** A literal value from a single token, typed by the casts after it. */
 function literalValue(tok: Token, casts: string[]): ClaimValue | undefined {
   let v: ClaimValue | undefined;
   if (tok.kind === "string") v = tok.text;
-  else if (tok.kind === "number") v = Number(tok.text);
+  else if (tok.kind === "number") v = exactNumber(tok.text);
   else if (word(tok, "true")) v = true;
   else if (word(tok, "false")) v = false;
   else if (word(tok, "null")) v = null;
@@ -439,16 +485,15 @@ function literalValue(tok: Token, casts: string[]): ClaimValue | undefined {
   if (typeof v === "string" && (cast === "json" || cast === "jsonb")) {
     try {
       const parsed: unknown = JSON.parse(v);
-      // An object or array is no single value to give a user.
+      // An object or array is no single value to give a user; nor is a JSON number a double
+      // cannot hold, which a user's metadata could only hold rounded.
+      if (typeof parsed === "number") return typeof exactNumber(v.trim()) === "number" ? parsed : undefined;
       return parsed !== null && typeof parsed === "object" ? undefined : (parsed as ClaimValue);
     } catch {
       return v;
     }
   }
-  if (typeof v === "string" && cast && /^(int[248]?|integer|bigint|smallint|numeric|real|double precision|float[48]?|decimal)$/.test(cast)) {
-    const n = Number(v);
-    return Number.isNaN(n) ? v : n;
-  }
+  if (typeof v === "string" && tok.kind === "string" && cast && NUMERIC_TYPE.test(cast) && (INTEGER_TYPE.test(cast) ? INTEGER_TEXT : NUMERIC_TEXT).test(v)) return exactNumber(v);
   if (typeof v === "string" && (cast === "boolean" || cast === "bool")) return v === "true" || v === "t" ? true : v === "false" || v === "f" ? false : v;
   return v;
 }
@@ -580,13 +625,14 @@ function bare(side: Token[]): { tokens: Token[]; casts: string[] } {
 }
 
 /** A list of literals: 'a', 'b'::text, ... (from IN (...) or ARRAY[...]). */
-function literalList(items: Token[]): ClaimValue[] | undefined {
+function literalList(items: Token[], readCasts: string[] = []): ClaimValue[] | undefined {
   const values: ClaimValue[] = [];
   let depth = 0;
   let current: Token[] = [];
   const flush = () => {
     const b = bare(current);
-    const v = b.tokens.length === 1 ? literalValue(b.tokens[0] as Token, b.casts) : undefined;
+    // A literal's own cast wins; an uncast one takes the read's numeric type.
+    const v = b.tokens.length === 1 ? literalValue(b.tokens[0] as Token, b.casts.length ? b.casts : numericCast(readCasts)) : undefined;
     current = [];
     if (v === undefined) return false;
     values.push(v);
@@ -631,10 +677,11 @@ function arrayList(t: Token[], from: number, close: number): { from: number; to:
 }
 
 /** What one side of a comparison is. */
-function classifySide(side: Token[], negated: boolean): Compared {
+function classifySide(side: Token[], negated: boolean, readCasts: string[] = []): Compared {
   const b = bare(side);
   if (b.tokens.length === 1) {
-    const v = literalValue(b.tokens[0] as Token, b.casts);
+    // A literal's own cast wins; an uncast one takes the read's numeric type ('01' = (read)::integer is 1).
+    const v = literalValue(b.tokens[0] as Token, b.casts.length ? b.casts : numericCast(readCasts));
     if (v !== undefined) return { kind: "literals", values: [v], negated };
     const n = name(b.tokens[0]);
     if (n) return { kind: "column", column: n, negated };
@@ -645,6 +692,10 @@ function classifySide(side: Token[], negated: boolean): Compared {
   // alias.column (not a call: no parenthesis follows).
   if (b.tokens.length === 3 && name(b.tokens[0]) && sym(b.tokens[1], ".") && name(b.tokens[2])) {
     return { kind: "column", column: name(b.tokens[2]) as string, negated, qualifier: name(b.tokens[0]) as string };
+  }
+  // public.table.column; a column of another schema's table is not one of the run's.
+  if (b.tokens.length === 5 && word(b.tokens[0], "public") && sym(b.tokens[1], ".") && name(b.tokens[2]) && sym(b.tokens[3], ".") && name(b.tokens[4])) {
+    return { kind: "column", column: name(b.tokens[4]) as string, negated, qualifier: name(b.tokens[2]) as string };
   }
   return { kind: "other", text: sqlText(side) };
 }
@@ -672,7 +723,7 @@ function comparedWith(t: Token[], s: Span): Compared {
     if (word(right, "in") || notIn) {
       const open = s.end + (notIn ? 3 : 2);
       const close = sym(t[open], "(") ? closing(t, open) : -1;
-      const values = close > 0 && rightEdge(t, close + 1) ? literalList(t.slice(open + 1, close)) : undefined;
+      const values = close > 0 && rightEdge(t, close + 1) ? literalList(t.slice(open + 1, close), s.casts) : undefined;
       return values ? flip({ kind: "literals", values, negated: notIn }, s.start, close) : other();
     }
     if (right?.kind === "symbol" && COMPARE.has(right.text)) {
@@ -685,20 +736,20 @@ function comparedWith(t: Token[], s: Span): Compared {
         const inLike = (right.text === "=") === word(t[s.end + 2], "any");
         if (list && !inLike) return other();
         if (list) {
-          const values = rightEdge(t, close + 1) ? literalList(t.slice(list.from, list.to)) : undefined;
+          const values = rightEdge(t, close + 1) ? literalList(t.slice(list.from, list.to), s.casts) : undefined;
           return values ? flip({ kind: "literals", values, negated }, s.start, close) : other();
         }
       }
       const side = operand(t, s.end + 2, 1);
       if (!rightEdge(t, s.end + 2 + side.length)) return other();
-      return flip(classifySide(side, negated), s.start, s.end + 1 + side.length);
+      return flip(classifySide(side, negated, s.casts), s.start, s.end + 1 + side.length);
     }
   }
   if (left?.kind === "symbol" && COMPARE.has(left.text) && rightEdge(t, s.end + 1)) {
     const side = operand(t, s.start - 2, -1);
     const from = s.start - 1 - side.length;
     if (!leftEdge(t, from - 1)) return other();
-    return flip(classifySide(side, left.text !== "="), from, s.end);
+    return flip(classifySide(side, left.text !== "=", s.casts), from, s.end);
   }
   // The read alone as a condition: true when it holds.
   if (leftEdge(t, s.start - 1) && rightEdge(t, s.end + 1)) return { kind: "literals", values: [true], negated: negatedAround(t, s.start, s.end) };
@@ -817,8 +868,9 @@ export function claimReads(sql: string, dialect: ClaimDialect, options: ClaimOpt
         const reading = run.filter((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>));
         if (reading.length) {
           const claims = reading.some((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>, new Set(), READS_CLAIMS));
-          if (claims && run.length > 1) {
-            // Several overloads take this many arguments: which one runs is Postgres's choice by type.
+          // Several overloads take this many arguments (under several keys, or joined under one when
+          // they differ only by type): which one runs is Postgres's choice by type.
+          if (claims && (run.length > 1 || run.some((k) => options.functions?.get(k)?.includes(BODY_JOIN)))) {
             unreadable.push({ text: qualified, reason: `calls ${qualified}, one of whose overloads reads the token` });
           } else if (claims) {
             unreadable.push({ text: qualified, reason: `calls ${qualified}, which reads the token in a way this cannot follow` });
@@ -858,7 +910,7 @@ function finish(t: Token[], span: Span): ClaimRead {
 export type ClaimClass = "identity" | "shared" | "auth-state" | "app_metadata" | "user_metadata" | "hook" | "object";
 
 const SHARED = new Set(["role", "aud", "iss"]);
-const AUTH_STATE = new Set(["aal", "amr", "is_anonymous", "session_id", "email", "phone", "exp", "iat", "nbf", "jti"]);
+const AUTH_STATE = new Set(["aal", "amr", "is_anonymous", "session_id", "email", "phone", "exp", "iat", "nbf", "jti", "client_id"]);
 const AUTH_APP = new Set(["provider", "providers"]);
 const AUTH_USER = new Set(["email", "email_verified", "phone_verified", "sub"]);
 

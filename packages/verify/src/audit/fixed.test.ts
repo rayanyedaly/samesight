@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnModel, TableModel } from "../differential/model.ts";
-import { deleteRows } from "../differential/world.ts";
+import { cleanable, deleteRows } from "../differential/world.ts";
 import { assignClaims } from "./assign.ts";
 import { planClaims } from "./claims.ts";
 import { dimLabel, fixedPlan, fixedRows, hookDims, userColumn } from "./fixed.ts";
@@ -137,6 +137,8 @@ describe("fixed rows across keys", () => {
     expect(hookDims(model, plan, "select m.* from public.memberships m", "select m.* from public.memberships m").map((d) => d.column)).toEqual(["team_id", "role"]);
     // A helper's select * reads its own table, not every column of the hook's.
     expect(hookDims(model, plan, "select team_id from public.memberships\n;\nselect * from settings", "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
+    // A helper's select * from a per-user table reads every column of it.
+    expect(hookDims(model, plan, "select public.team_of(u)\n;\nselect * from public.memberships", "select public.team_of(u)", ["memberships"]).map((d) => d.column)).toEqual(["team_id", "role"]);
     const rows = fixedRows(model, plan, [], [], [], mint, undefined, undefined, (t) => (t === "teams" ? new Map([["name", ["red", "blue"]]]) : undefined));
     expect(rows.map((r) => r.row.name)).toEqual(["red", "blue"]);
   });
@@ -158,6 +160,58 @@ describe("assignClaims with the hook's dims", () => {
     expect(new Set(a.hookPicks.slice(0, 6).map((p) => p?.[1]))).toEqual(new Set([0, 1]));
     expect(a.partial).toBe(true);
     expect(a.findings).toContainEqual(expect.objectContaining({ detail: expect.stringMatching(/^8 combinations of claim values and access token hook rows, and 8 users hold 6 of them/) }));
+  });
+
+  it("gives a column compared with a hook claim the values the hook can add, never a key or the hook's own table", () => {
+    const docs: TableModel = {
+      name: "documents",
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [col("id", "uuid"), col("required_role", "text"), col("level", "integer")],
+      foreignKeys: [],
+    };
+    const rule = (sql: string, table: string) => ({ where: `policy on ${table}`, sql, dialect: "postgres" as const, table });
+    const hookPlan = planClaims([
+      rule("(required_role = (auth.jwt() ->> 'team_role'::text))", "documents"),
+      rule("((auth.jwt() ->> 'team_role'::text) = 'lead'::text)", "documents"),
+      rule("(role = (auth.jwt() ->> 'team_role'::text))", "memberships"),
+      rule("(id = ((auth.jwt() ->> 'team_id'::text))::uuid)", "documents"),
+    ]);
+    const a = assignClaims(hookPlan, () => "fresh", [...model, docs], [], dims);
+    // With one value no hook gives, so a document no role matches is generated too.
+    expect(a.claimValues.get("documents")?.get("required_role")).toEqual(["lead", "member", "samesight-other"]);
+    expect(a.claimValues.get("documents")?.has("id")).toBe(false);
+    expect(a.claimValues.get("memberships")).toBeUndefined();
+  });
+
+  it("gives the hook's parent rows two values at least, so their run users' tokens differ", () => {
+    const named = planClaims([
+      { where: "policy on teams", sql: "(name = (auth.jwt() ->> 'team_name'::text))", dialect: "postgres", table: "teams" },
+      { where: "policy on documents", sql: "((auth.jwt() ->> 'team_name'::text) = 'red'::text)", dialect: "postgres", table: "documents" },
+    ]);
+    expect(assignClaims(named, () => "fresh", model, [], dims).claimValues.get("teams")?.get("name")).toEqual(["red", "lead", "member", "samesight-other"]);
+  });
+
+  it("leaves a parent alone when one value alone fits it, and gives a generated table that one value", () => {
+    const short = (t: TableModel): TableModel => ({ ...t, columns: [...t.columns.filter((c) => c.name !== "code"), col("code", "character varying(3)")] });
+    const docs: TableModel = { name: "documents", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid")], foreignKeys: [] };
+    const coded = planClaims([
+      { where: "policy on teams", sql: "(code = (auth.jwt() ->> 'team_code'::text))", dialect: "postgres", table: "teams" },
+      { where: "policy on documents", sql: "(code = (auth.jwt() ->> 'team_code'::text))", dialect: "postgres", table: "documents" },
+      { where: "policy on documents", sql: "((auth.jwt() ->> 'team_code'::text) = 'red'::text)", dialect: "postgres", table: "documents" },
+    ]);
+    const a = assignClaims(coded, () => "fresh", [memberships, short(teams), audits, short(docs)], [], dims);
+    // Only 'red' fits three characters.
+    expect(a.claimValues.get("teams")?.get("code")).toBeUndefined();
+    expect(a.claimValues.get("documents")?.get("code")).toEqual(["red"]);
+    // A fixed table reached only through another (an org the teams point at) counts as one too.
+    const orgs = short({ name: "orgs", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid")], foreignKeys: [] });
+    const both = planClaims([
+      { where: "policy on orgs", sql: "(code = (auth.jwt() ->> 'team_code'::text))", dialect: "postgres", table: "orgs" },
+      { where: "policy on documents", sql: "((auth.jwt() ->> 'team_code'::text) = 'red'::text)", dialect: "postgres", table: "documents" },
+    ]);
+    expect(assignClaims(both, () => "fresh", [memberships, teams, orgs, audits], [], dims).claimValues.get("orgs")?.get("code")).toEqual(["red"]);
+    expect(assignClaims(both, () => "fresh", [memberships, teams, orgs, audits], [], dims, ["orgs", "teams", "memberships"]).claimValues.get("orgs")).toBeUndefined();
   });
 
   it("names a hook row no user holds", () => {
@@ -192,9 +246,45 @@ describe("deleteRows on a table found by its user column alone", () => {
     expect(userColumn(members)).toBe("user_id");
     const sql: [string, unknown[]][] = [];
     await deleteRows({ query: async (text: string, values: unknown[] = []) => sql.push([text, values]) } as never, [members], "5a3e5a3e", ["u0"]);
-    expect(sql.filter(([t]) => t.startsWith("delete"))).toEqual([['delete from public.team_members where invited_by = any($1::uuid[]) or user_id = any($1::uuid[])', [["u0"]]]]);
+    // By its required user column only: a row u0 only invited is someone else's.
+    expect(sql.filter(([t]) => t.startsWith("delete"))).toEqual([['delete from public.team_members where user_id = any($1::uuid[])', [["u0"]]]]);
     const rows = fixedRows([teams, members], fixedPlan([teams, members], ["team_members"]), [], [[]], ["u0-id"], () => "5a3e5a3e-k");
     expect(rows.find((r) => r.table === "team_members")?.row).toMatchObject({ user_id: "u0-id", invited_by: "u0-id" });
+  });
+
+  it("matches a table outside the run by its prefix and required owners only", async () => {
+    const audits: TableModel = {
+      name: "audits",
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [col("id", "uuid"), col("user_id", "uuid"), col("reviewer_id", "uuid", { nullable: true })],
+      foreignKeys: [toUsers("reviewer_id"), toUsers("user_id")],
+    };
+    const deleted = async (ownedOnly?: Set<string>) => {
+      const sql: [string, unknown[]][] = [];
+      await deleteRows({ query: async (text: string, values: unknown[] = []) => sql.push([text, values]) } as never, [audits], "5a3e5a3e", ["u0"], ownedOnly ? { ownedOnly } : {});
+      return sql.filter(([t]) => t.startsWith("delete")).map(([t]) => t);
+    };
+    expect(await deleted()).toEqual(["delete from public.audits where id::text like $1 or reviewer_id = any($2::uuid[]) or user_id = any($2::uuid[])"]);
+    expect(await deleted(new Set(["audits"]))).toEqual(["delete from public.audits where id::text like $1 or user_id = any($2::uuid[])"]);
+    // Two owners a row must have: beyond the run's tables, both must be run users; in the run's own, either.
+    const messages: TableModel = { ...audits, name: "messages", columns: [col("id", "uuid"), col("sender_id", "uuid"), col("recipient_id", "uuid")], foreignKeys: [toUsers("sender_id"), toUsers("recipient_id")] };
+    const sql: string[] = [];
+    const recorder = { query: async (text: string) => sql.push(text) } as never;
+    await deleteRows(recorder, [messages], "5a3e5a3e", ["u0"], { ownedOnly: new Set(["messages"]) });
+    await deleteRows(recorder, [messages], "5a3e5a3e", ["u0"]);
+    expect(sql.filter((x) => x.startsWith("delete"))).toEqual([
+      "delete from public.messages where id::text like $1 or sender_id = any($2::uuid[]) and recipient_id = any($2::uuid[])",
+      "delete from public.messages where id::text like $1 or sender_id = any($2::uuid[]) or recipient_id = any($2::uuid[])",
+    ]);
+  });
+
+  it("says which tables it can clean", () => {
+    const base: TableModel = { name: "t", primaryKey: ["a_id", "b_id"], unique: [], columns: [col("a_id", "uuid"), col("b_id", "uuid"), col("by", "uuid", { nullable: true })], foreignKeys: [toUsers("by")] };
+    expect(cleanable(base)).toBe(false);
+    expect(cleanable({ ...base, primaryKey: ["a_id"] })).toBe(true);
+    expect(cleanable({ ...base, tenant: "a_id" })).toBe(true);
+    expect(cleanable({ ...base, columns: base.columns.map((c) => ({ ...c, nullable: false })) })).toBe(true);
   });
 
   it("still refuses a table without a single key whose owner column may be null: such rows would never be found", async () => {

@@ -12,7 +12,7 @@ import { readModel, sqlHints } from "../differential/model.ts";
 import type { Teardown } from "../autostart/teardown.ts";
 import { differential, PREFIX, type Run, runUserIds, setUpUsers, stoppable, type UserClaims } from "../differential/run.ts";
 import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
-import { type Assignment, assignClaims, MAX_USERS, metadataOf } from "./assign.ts";
+import { type Assignment, assignClaims, MAX_USERS, metadataOf, valueKeyFor } from "./assign.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
@@ -82,6 +82,21 @@ export async function auditTables(client: pg.Client, start: string[]): Promise<s
   return found.map((r) => r.name);
 }
 
+/**
+ * Tables beyond the run's `tables` an earlier run may have left rows in (the access token
+ * hook's, from a run made while it was enabled): the public tables with a column pointing at
+ * auth.users, and the tables those reach as auditTables follows them (foreign keys, and the
+ * tables their policies read). Every run's cleanup looks there for the run's prefix and users.
+ */
+export async function cleanupScope(client: pg.Client, tables: string[]): Promise<string[]> {
+  const owning = await rows<{ name: string }>(
+    client,
+    `select distinct c.relname as name from pg_constraint k join pg_class c on c.oid = k.conrelid join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and k.contype = 'f' and k.confrelid = 'auth.users'::regclass and cardinality(k.conkey) = 1`,
+  );
+  return (await auditTables(client, owning.map((r) => r.name))).filter((t) => !tables.includes(t));
+}
+
 /** Runs the audit; the findings are reported through `section` as each step ends. */
 export async function audit(client: pg.Client, given: Stack, o: AuditOptions): Promise<Finding[]> {
   const findings: Finding[] = [];
@@ -128,7 +143,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const fixedTables = p.setUp.scope.fixed?.tables ?? [];
   o.log(`signing up users; generating rows for ${tables.filter((t) => !fixedTables.includes(t)).join(", ")}${fixedTables.length ? `; rows the access token hook reads in ${fixedTables.join(", ")}` : ""}`);
   // Added before any user exists, so a run stopped at any point after removes what it made.
-  const stop = await stoppable(client, stack, p.setUp.scope.tables, o.log);
+  const stop = await stoppable(client, stack, p.setUp.scope.tables, o.log, p.setUp.scope.cleanup);
   o.teardown?.add("the run's users and rows", stop.step);
   let s: Run;
   try {
@@ -153,7 +168,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     const coverage = await coverageScope(client, scope.synced, config.streams, p.functions, config.kind, held);
     const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
     section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, qualifyDifferential(result.findings, coverage));
-    section(coverageTitle(coverage, result), coverageFindings(coverage, held, assignment.partial));
+    section(coverageTitle(coverage, result), coverageFindings(coverage, held, assignment.partial, new Set(claims.uses.filter((u) => u.cls === "hook").map((u) => u.key))));
     o.log("writing as each user");
     const [world] = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 16 }), { numRuns: 1, seed: o.seed ?? 7 });
     section("Write path", world ? await checkWriteEscape(s, world, undefined, scope.reads) : [{ status: "fail", check: "write path", detail: "no dataset was generated" }]);
@@ -188,8 +203,8 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
   const scope = auditScope(config.streams, config.kind);
   const policies = await rows<{ qual: string | null; with_check: string | null }>(client, "select qual, with_check from pg_policies where schemaname = 'public'");
   const functions = await policyFunctions(client);
-  const claims = planClaims([...(await policyRules(client)), ...streamSql], functions);
   const hook = projectDir === undefined ? undefined : accessTokenHook(projectDir);
+  const claims = planClaims([...(await policyRules(client)), ...streamSql], functions, { hook: hook !== undefined });
   // Its function, the tables it reads, and what it does on each sign-in.
   const hookPlan = hook ? await planHook(client, hook.uri, functions) : undefined;
   const named = [...new Set([...scope.synced, ...scope.reads])];
@@ -212,14 +227,15 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
   }
   const tables = await auditTables(client, [...named, ...(fixed?.perUser ?? [])]);
   const model = await modelOf(tables);
+  const cleanup = await cleanupScope(client, tables);
   // A column counts as one the hook reads when its body or a function it calls names it.
-  const dims = fixed && hookPlan?.fn ? hookDims(model, fixed, hookPlan.fn.read, hookPlan.fn.body) : [];
+  const dims = fixed && hookPlan?.fn ? hookDims(model, fixed, hookPlan.fn.read, hookPlan.fn.body, hookPlan.fn.starred) : [];
   // Run users' ids are minted up front, so a claim compared with a user column can hold two of
   // them, and the hook's rows can point at them.
   const userIds = runUserIds(MAX_USERS);
   const mint = () => prefixedUuid(PREFIX);
   // A uuid none of the rules name is one of the run's own (its prefix), so cleanup finds it.
-  const assignment = assignClaims(claims, mint, model, userIds, dims);
+  const assignment = assignClaims(claims, mint, model, userIds, dims, fixed?.tables);
   const rowsGiven = fixed ? fixedRows(model, fixed, dims, assignment.hookPicks, userIds, mint, undefined, (t) => assignment.keyPools.get(t), (t) => assignment.claimValues.get(t)) : [];
   const names = new Map<string, string>();
   if (fixed) {
@@ -250,6 +266,7 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
         tables: scopeTables,
         synced: scope.synced,
         deviceTables: scope.deviceTables,
+        cleanup,
         ...(fixed
           ? {
               fixed: {
@@ -293,8 +310,9 @@ export function hookKeysHeld(claims: ClaimsPlan, tokens: Map<string, Record<stri
   return claims.uses
     .filter((u) => u.cls === "hook")
     .filter((u) => {
-      const carried = new Set([...tokens.values()].map((t) => JSON.stringify(at(t, u.path) ?? null)));
-      return carried.size >= 2 && u.values.every((v) => carried.has(JSON.stringify(v)));
+      const same = valueKeyFor(u.numeric);
+      const carried = new Set([...tokens.values()].map((t) => same(at(t, u.path) ?? null)));
+      return carried.size >= 2 && u.values.every((v) => carried.has(same(v)));
     })
     .map((u) => u.key);
 }

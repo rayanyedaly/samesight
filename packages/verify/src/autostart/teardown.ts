@@ -11,19 +11,25 @@
  */
 
 export class Teardown {
-  private readonly steps: { what: string; fn: () => Promise<void> }[] = [];
+  private readonly steps: { what: string; fn: () => Promise<void>; remedy?: string }[] = [];
   private done: Promise<string[]> | undefined;
   private pending: Promise<unknown> = Promise.resolve();
   private readonly log: (line: string) => void;
   /** What began the teardown, when onSignals did (SIGINT, output closed): the run did not end on its own. */
   stoppedBy: string | undefined;
+  /** Whether a step removes a PowerSync service the run started (autoStart's), which the next audit's sweep removes. */
+  service = false;
+  /** The run's mode: who removes its users and rows when it cannot. */
+  readonly mode: Mode;
 
-  constructor(log: (line: string) => void) {
+  constructor(log: (line: string) => void, mode: Mode = "audit") {
     this.log = log;
+    this.mode = mode;
   }
 
-  add(what: string, fn: () => Promise<void>): void {
-    this.steps.push({ what, fn });
+  /** A step, and what to do about what it removes should it fail (said after its error). */
+  add(what: string, fn: () => Promise<void>, remedy?: string): void {
+    this.steps.push({ what, fn, ...(remedy ? { remedy } : {}) });
   }
 
   /** Whether every step has run. */
@@ -46,6 +52,13 @@ export class Teardown {
     return p;
   }
 
+  /** The steps that have not ended yet, with what to do about each: what a stop cut short leaves. */
+  unended(): { what: string; remedy?: string }[] {
+    return this.steps.filter((x) => !this.ended.has(x));
+  }
+
+  private readonly ended = new Set<object>();
+
   /** Runs every step, last added first; resolves with what could not be removed. */
   run(): Promise<string[]> {
     this.done ??= (async () => {
@@ -56,8 +69,9 @@ export class Teardown {
           await step.fn();
         } catch (e) {
           failed.push(step.what);
-          this.log(`could not remove ${step.what}: ${(e as Error).message}; the next audit that starts PowerSync removes it`);
+          this.log(`could not remove ${step.what}: ${(e as Error).message}${step.remedy ? `; ${step.remedy}` : ""}`);
         }
+        this.ended.add(step);
       }
       this.finished = true;
       return failed;
@@ -66,24 +80,38 @@ export class Teardown {
   }
 }
 
-type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
+type Signal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGBREAK";
 
-/** What to do about a run's leftovers: run users can hold privileged app_metadata (role=admin) until removed. */
-export const LEFT_FOR_NEXT =
-  "the next audit that reaches the differential removes the run's users and rows (the users may hold privileged app_metadata); to remove the users now, with no audit running, delete the run's rows a key without on delete cascade ties to them, then `delete from auth.users where email like '%@verify.samesight.test'`";
+/** An audit (`audit`), or a run under a Samesight policy (`policy`). */
+export type Mode = "audit" | "policy";
+
+/** What a service step's failure leaves, and who removes it. */
+export const SERVICE_REMEDY = "the next audit that starts PowerSync removes it";
+
+/** What to do about a run's leftovers: run users can hold privileged app_metadata (role=admin) or roles until removed. */
+export function leftForNext(mode: Mode): string {
+  const next = mode === "audit" ? "the next audit that reaches the differential removes the run's users and rows (the users may hold privileged app_metadata)" : "the next verify run removes the run's users and rows (some are members with privileged roles)";
+  const running = mode === "audit" ? "no audit" : "no verify run";
+  return `${next}; to remove the users now, with ${running} running, delete the run's rows a key without on delete cascade ties to them, then \`delete from auth.users where email like '%@verify.samesight.test'\``;
+}
+
+/** An audit's leftovers, as leftForNext says. */
+export const LEFT_FOR_NEXT = leftForNext("audit");
 
 /** What onSignals needs of `process`. */
 export interface Signals {
   on(event: Signal, listener: () => void): unknown;
   off(event: Signal, listener: () => void): unknown;
   exit(code: number): never;
+  /** win32 also has Ctrl+Break (SIGBREAK). */
+  platform?: string;
   stdout: Pick<NodeJS.EventEmitter, "on" | "off">;
   stderr: Pick<NodeJS.EventEmitter, "on" | "off">;
 }
 
 /**
- * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP, then exits as a killed process would
- * (130, 143, 129); and when the output fails (a closed terminal, or a reader that left:
+ * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP (and Ctrl+Break, SIGBREAK, on Windows),
+ * then exits as a killed process would (130, 143, 129; 149); and when the output fails (a closed terminal, or a reader that left:
  * | head, | tee), exits 141 as on SIGPIPE (129 when SIGHUP comes first), or 1 for any
  * other output error. During it, a different signal does not cut it short; the same one
  * again a second or more later (Ctrl+C again, a second SIGTERM) exits at once, and so
@@ -107,7 +135,11 @@ export function onSignals(
   const unfinished = () => {
     if (teardown.finished) return;
     try {
-      log(`stopped before the clean-up finished: the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`);
+      // Each step not ended that says what to do about it (the sync config's mutants), then the service and the users.
+      const unended = teardown.unended();
+      const own = [...new Set(unended.filter((x) => x.remedy && x.remedy !== SERVICE_REMEDY).map((x) => `${x.what}: ${x.remedy}`))];
+      const service = teardown.service && unended.some((x) => x.remedy === SERVICE_REMEDY) ? "the next audit that starts PowerSync removes what is left of the service it started, and " : "";
+      log(`stopped before the clean-up finished: ${own.map((x) => `${x}; `).join("")}${service}${leftForNext(teardown.mode)}`);
     } catch {}
   };
   const end = (why: string, exitCode: number) => {
@@ -125,7 +157,7 @@ export function onSignals(
     }
     code = exitCode;
     try {
-      log(`${why}: removing what this run made (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next audit)`);
+      log(`${why}: removing what this run made (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next ${teardown.mode === "audit" ? "audit" : "verify run"})`);
     } catch {}
     setTimeout(() => {
       unfinished();
@@ -137,11 +169,12 @@ export function onSignals(
       void teardown.run().then(() => proc.exit(exitCode));
     }
   };
-  const handlers = [
+  const handlers: [Signal, () => void][] = [
     ["SIGINT", () => end("SIGINT", 130)],
     ["SIGTERM", () => end("SIGTERM", 143)],
     ["SIGHUP", () => end("SIGHUP", 129)],
-  ] as const;
+    ...(proc.platform === "win32" ? [["SIGBREAK", () => end("SIGBREAK", 149)] as [Signal, () => void]] : []),
+  ];
   // Unhandled, a failed write would end the process at once, before any teardown.
   const broken = (e: NodeJS.ErrnoException) => end("output closed", e.code === "EPIPE" || e.code === "EIO" ? 141 : 1);
   for (const [signal, fn] of handlers) proc.on(signal, fn);

@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compare, normalize } from "./compare.ts";
 import { type Flow, rowsFromOps, streamOfBucket, watchErrors } from "./device.ts";
-import { brokeDown } from "./run.ts";
+import { brokeDown, isRunRow } from "./run.ts";
 import { type ColumnModel, insertOrder, parseCheck, sqlHints, type TableModel } from "./model.ts";
 import { rowKey } from "./rls.ts";
 import { columnArbitrary } from "./world.ts";
@@ -227,5 +227,27 @@ describe("brokeDown", () => {
     expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows (then a run failed: Error: fetch failed)):\n    u0 received ...")])).toBe(true);
     expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows):\n    u0 received ...")])).toBe(false);
     expect(brokeDown([{ status: "warn", check: "differential", detail: "the run failed: x" }])).toBe(false);
+  });
+});
+
+describe("isRunRow", () => {
+  const model: TableModel[] = [
+    { name: "lists", primaryKey: ["id"], unique: ["id"], columns: [column({ name: "id", type: "uuid" })], foreignKeys: [] },
+    { name: "tags", primaryKey: ["slug"], unique: ["slug"], columns: [column({ name: "slug", type: "text" })], foreignKeys: [] },
+  ];
+  const run = (table: string, id: string) => isRunRow(model, "5a3e5a3e", ["0b0b0b0b-0000-4000-8000-000000000001"], table, id);
+
+  it("counts a row keyed by the run's prefix, and not another's", () => {
+    expect(run("lists", "5a3e5a3e-0000-4000-8000-000000000009")).toBe(true);
+    expect(run("lists", "0c0c0c0c-0000-4000-8000-000000000009")).toBe(false);
+  });
+
+  it("counts a row keyed by a run user's id, whoever chose it", () => {
+    expect(run("lists", "0b0b0b0b-0000-4000-8000-000000000001")).toBe(true);
+  });
+
+  it("counts every row of a table whose key is no uuid, and of a table it does not know", () => {
+    expect(run("tags", "anything")).toBe(true);
+    expect(run("elsewhere", "0c0c0c0c-0000-4000-8000-000000000009")).toBe(true);
   });
 });

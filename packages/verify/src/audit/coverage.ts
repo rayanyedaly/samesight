@@ -398,11 +398,19 @@ const SIDES: Record<State, [string, string]> = {
 };
 
 /** Why a rule was not seen both ways, as far as the run can tell. */
-function reason(cov: Coverage, x: { table: string; claims: string[]; reachable: boolean; tally: Tally }, held: ReadonlySet<string>, together: boolean, kind: "permissive" | "restrictive" | "stream"): string {
+function reason(
+  cov: Coverage,
+  x: { table: string; claims: string[]; reachable: boolean; tally: Tally },
+  held: ReadonlySet<string>,
+  together: boolean,
+  kind: "permissive" | "restrictive" | "stream",
+  hookKeys: ReadonlySet<string>,
+): string {
   if (!cov.inserted.get(x.table)) return `no ${x.table} row was inserted`;
   const missing = x.claims.filter((k) => !held.has(k));
-  // Sign-in state is what Supabase Auth gives every password user (signin.ts), not a claim audit holds.
-  const signIn = missing.filter((k) => classify(k.split(".")) === "auth-state");
+  // Sign-in state is what Supabase Auth gives every password user (signin.ts), not a claim audit
+  // holds; unless the Claims section takes it as the access token hook's (client_id under a hook).
+  const signIn = missing.filter((k) => classify(k.split(".")) === "auth-state" && !hookKeys.has(k));
   const unheld = missing.filter((k) => !signIn.includes(k));
   if (unheld.length) return `it reads ${unheld.join(", ")}, which no run user holds; see Claims`;
   const signInWhy = signInReason(signIn);
@@ -421,7 +429,7 @@ function reason(cov: Coverage, x: { table: string; claims: string[]; reachable: 
  * and why. `held` are the claim keys run users hold; `together` is true when users could
  * not hold every combination of their values.
  */
-export function coverageFindings(cov: Coverage, held: ReadonlySet<string>, together: boolean): Finding[] {
+export function coverageFindings(cov: Coverage, held: ReadonlySet<string>, together: boolean, hookKeys: ReadonlySet<string> = new Set()): Finding[] {
   const out: Finding[] = [];
   const measured = cov.triggers.length ? [] : cov.policies;
   const policyLine = (p: ScopedPolicy): Finding | undefined => {
@@ -430,7 +438,7 @@ export function coverageFindings(cov: Coverage, held: ReadonlySet<string>, toget
     const state = stateOf(p.tally);
     if (state === "exercised") return undefined;
     if (p.sameForAll) return { status: "ok", check: "coverage", detail: `${name}: ${SIDES[state][0]}; it reads nothing of the user, so it applies to every user alike` };
-    return { status: "warn", check: "coverage", detail: `${name}: ${SIDES[state][0]} (${reason(cov, p, held, together, p.permissive ? "permissive" : "restrictive")})` };
+    return { status: "warn", check: "coverage", detail: `${name}: ${SIDES[state][0]} (${reason(cov, p, held, together, p.permissive ? "permissive" : "restrictive", hookKeys)})` };
   };
   const unitLine = (u: StreamUnit): Finding | undefined => {
     const name = u.streams.length > 1 ? `streams ${u.streams.join(" + ")} (one bucket), ${u.table}` : `stream ${u.streams[0]}, ${u.table}`;
@@ -438,7 +446,7 @@ export function coverageFindings(cov: Coverage, held: ReadonlySet<string>, toget
     const state = stateOf(u.tally);
     if (state === "exercised") return undefined;
     if (u.sameForAll) return { status: "ok", check: "coverage", detail: `${name}: ${SIDES[state][1]}; it reads nothing of the user, so every user gets the same rows` };
-    return { status: "warn", check: "coverage", detail: `${name}: ${SIDES[state][1]} (${reason(cov, u, held, together, "stream")})` };
+    return { status: "warn", check: "coverage", detail: `${name}: ${SIDES[state][1]} (${reason(cov, u, held, together, "stream", hookKeys)})` };
   };
   const policyLines = measured.map(policyLine);
   const unitLines = cov.units.map(unitLine);

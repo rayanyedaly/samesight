@@ -44,6 +44,8 @@ export function tokenize(sql: string, options: TokenizeOptions = {}): Token[] {
   const postgres = options.dialect === "postgres";
   const out: Token[] = [];
   let i = 0;
+  // Inside [ ], a single : is an array slice's bound separator ((tags)[1:2], [:2]).
+  let brackets = 0;
   while (i < sql.length) {
     const ch = sql[i] as string;
     if (/\s/.test(ch)) {
@@ -70,12 +72,18 @@ export function tokenize(sql: string, options: TokenizeOptions = {}): Token[] {
       if (sql[i + m[0].length] === "'" || sql[i + m[0].length] === "&") throw new Error(`has a prefixed literal (${m[0]}${sql[i + m[0].length]}) that cannot be read safely`);
       out.push({ kind: "word", text: m[0].toLowerCase() });
       i += m[0].length;
-    } else if (/[0-9]/.test(ch)) {
-      const m = /^[0-9]+(\.[0-9]+)?/.exec(sql.slice(i)) as RegExpExecArray;
+    } else if (/[0-9]/.test(ch) || (ch === "." && /[0-9]/.test(sql[i + 1] ?? ""))) {
+      // 1, 1.5, 1., .5, 1e2, 1.5E-3: the numeric constants Postgres reads.
+      const m = /^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/.exec(sql.slice(i)) as RegExpExecArray;
       out.push({ kind: "number", text: m[0] });
       i += m[0].length;
     } else if (postgres && "[];".includes(ch)) {
+      if (ch === "[") brackets++;
+      if (ch === "]") brackets = Math.max(0, brackets - 1);
       out.push({ kind: "symbol", text: ch });
+      i++;
+    } else if (postgres && ch === ":" && sql[i + 1] !== ":" && brackets > 0) {
+      out.push({ kind: "symbol", text: ":" });
       i++;
     } else if (postgres && OPERATOR_CHARS.includes(ch) && !sql.startsWith("/*", i)) {
       const op = operatorAt(sql, i);
@@ -146,6 +154,9 @@ export function parseQuery(sql: string): ParsedQuery {
   let i = from + 1;
   let table: string | undefined;
   if (isName(tokens[i]) && tokens[i + 1]?.text === "." && isName(tokens[i + 2])) {
+    if (tokens[i + 3]?.text === "." && isName(tokens[i + 4])) {
+      throw new Error(`names ${tokens[i]?.text}.${tokens[i + 2]?.text}.${tokens[i + 4]?.text} with its database; only tables named public.t or t are read`);
+    }
     if (tokens[i]?.text !== "public") throw new Error(`reads ${tokens[i]?.text}.${tokens[i + 2]?.text}, outside public`);
     table = tokens[i + 2]?.text;
     i += 3;

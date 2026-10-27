@@ -49,6 +49,7 @@ describe("outputTable", () => {
     expect(() => outputTable("SELECT * FROM a LEFT JOIN b ON a.x = b.y")).toThrow(/only \[INNER\] JOIN/);
     expect(() => outputTable("SELECT * FROM a JOIN b USING (x)")).toThrow(/without ON/);
     expect(() => outputTable("SELECT * FROM auth.users")).toThrow(/outside public/);
+    expect(() => outputTable("SELECT * FROM postgres.public.lists")).toThrow(/names postgres\.public\.lists with its database; only tables named public\.t or t are read/);
   });
 
   it("refuses an unqualified column in a join: it could be another table's, sent with these rows", () => {

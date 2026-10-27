@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { type ClaimDialect, type ClaimRead, callsIn, claimReads, classify, wrapperRead } from "./claims.ts";
+import { BODY_JOIN, type ClaimDialect, type ClaimRead, callsIn, claimReads, classify, wrapperRead } from "./claims.ts";
 import { parseSyncConfig } from "./sync/config.ts";
 
 /** The reads of one rule as [path, compared] pairs, for compact expectations. */
@@ -17,6 +17,49 @@ const lit = (values: unknown[], negated = false) => ({ kind: "literals", values,
 const col = (column: string, negated = false) => ({ kind: "column", column, negated });
 
 // Policies as pg_policies prints them (captured from Postgres 17 for the same CREATE POLICY).
+describe("claimReads on SQL it used to refuse or misread", () => {
+  it("reads a policy with an array slice in it", () => {
+    expect(reads("((((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text) = 'admin'::text) AND ((tags)[1:2] = ARRAY['a'::text]))", "postgres")).toEqual([
+      { path: "app_metadata.role", compared: lit(["admin"]) },
+    ]);
+  });
+
+  it("reads an uncast literal compared with a numeric read as a number, as Postgres does, and leaves text reads alone", () => {
+    // As a function body or hand-written SQL has it; Postgres folds '01' itself when it prints a policy.
+    const level = "((auth.jwt() -> 'app_metadata'::text) ->> 'level'::text)";
+    expect(reads(`((${level})::integer = '01')`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([1]), casts: ["integer"] }]);
+    expect(reads(`((${level})::integer IN ('01', '2'))`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([1, 2]), casts: ["integer"] }]);
+    expect(reads(`((${level})::integer = ANY (ARRAY['01', '2']))`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([1, 2]), casts: ["integer"] }]);
+    expect(reads(`(${level} = '01')`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit(["01"]) }]);
+    // The literal's own cast wins, and text that is no number stays text.
+    expect(reads(`((${level})::integer = '01'::text)`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit(["01"]), casts: ["integer"] }]);
+    expect(reads(`((${level})::integer = '')`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([""]), casts: ["integer"] }]);
+  });
+
+  it("keeps a number a double cannot hold exactly as its text, and text an integer cannot take as text", () => {
+    const level = "((auth.jwt() -> 'app_metadata'::text) ->> 'level'::text)";
+    const one = (sql: string) => {
+      const c = reads(sql, "postgres")[0]?.compared;
+      return c?.kind === "literals" ? c.values : undefined;
+    };
+    expect(one(`((${level})::bigint = '9007199254740993')`)).toEqual(["9007199254740993"]);
+    expect(one(`((${level})::bigint = 9007199254740993)`)).toEqual(["9007199254740993"]);
+    expect(one(`((${level})::numeric = '1e400')`)).toEqual(["1e400"]);
+    expect(one(`((${level})::numeric = '0.10')`)).toEqual([0.1]);
+    // Postgres refuses '1.5' and '1e2' as integers.
+    expect(one(`((${level})::integer IN ('1.5', '1e2', ' 7 '))`)).toEqual(["1.5", "1e2", 7]);
+    expect(one(`((${level})::numeric IN ('1.5', '1e2'))`)).toEqual([1.5, 100]);
+    // A JSON number a double cannot hold: no value metadata could carry exactly.
+    expect(reads(`((auth.jwt() -> 'app_metadata'::text) -> 'level'::text) = '9007199254740993'::jsonb`, "postgres")[0]?.compared).toEqual({ kind: "other", text: "'9007199254740993'::jsonb" });
+    expect(one(`((auth.jwt() -> 'app_metadata'::text) -> 'level'::text) = '2'::jsonb`)).toEqual([2]);
+  });
+
+  it("reads public.table.column as that table's column, and another schema's as no column of the run's", () => {
+    expect(reads("(auth.uid() = public.lists.owner_id)", "postgres")).toEqual([{ path: "sub", compared: { ...col("owner_id"), qualifier: "lists" } }]);
+    expect(reads("(auth.uid() = private.lists.owner_id)", "postgres")).toEqual([{ path: "sub", compared: { kind: "other", text: "private.lists.owner_id" } }]);
+  });
+});
+
 describe("claimReads on Postgres policies", () => {
   it.each([
     ["(((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text) = 'admin'::text)", [{ path: "app_metadata.role", compared: lit(["admin"]) }]],
@@ -253,6 +296,8 @@ describe("classify", () => {
     [["aud"], "shared"],
     [["aal"], "auth-state"],
     [["is_anonymous"], "auth-state"],
+    // Supabase Auth sets it for OAuth clients; no hook adds it.
+    [["client_id"], "auth-state"],
     [["app_metadata", "provider"], "auth-state"],
     [["user_metadata", "email_verified"], "auth-state"],
     [["app_metadata", "role"], "app_metadata"],
@@ -319,6 +364,11 @@ describe("negations around a comparison, as Postgres prints them", () => {
 });
 
 describe("callsIn", () => {
+  it("reads db.schema.fn(...) as schema.fn, tokenized or scanned", () => {
+    expect(callsIn("select postgres.app.helper(1)")).toEqual(["app.helper"]);
+    expect(callsIn("begin v := postgres.app.helper(1); end")).toEqual(["app.helper"]);
+  });
+
   it("names each call as Postgres resolves it: unquoted names folded, quoted ones kept, schemas kept", () => {
     expect(callsIn('select public.Get_Org(x) and "getOrg"() and auth.jwt() ->> \'a\'').sort()).toEqual(["auth.jwt", "getOrg", "public.get_org"]);
   });
@@ -363,6 +413,14 @@ describe("overloads and wrappers two levels deep", () => {
     expect(claimReads("g(x)", "postgres", { functions }).unreadable).toEqual([{ text: "g", reason: "calls g, one of whose overloads reads the token" }]);
     // Two arguments: only g/1-2 takes them.
     expect(claimReads("g(x, y)", "postgres", { functions }).unreadable).toEqual([{ text: "g", reason: "calls g, which reads the token in a way this cannot follow" }]);
+  });
+
+  it("reports overloads that differ only by argument type, which share one key, as several bodies", () => {
+    const functions = new Map([
+      ["f", `select 1${BODY_JOIN}${jwtRole}`],
+      ["f/1-1", `select 1${BODY_JOIN}${jwtRole}`],
+    ]);
+    expect(claimReads("f(x)", "postgres", { functions }).unreadable).toEqual([{ text: "f", reason: "calls f, one of whose overloads reads the token" }]);
   });
 
   it("takes a listed name without counts for any arity, as before", () => {
