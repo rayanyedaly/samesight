@@ -145,6 +145,12 @@ describe("scanDeep", () => {
     expect(starredTables("select row_to_json(memberships) from memberships")).toEqual(["public.memberships"]);
     expect(starredTables("select to_jsonb(n) into j from memberships m")).toEqual([]);
     expect(starredTables("select count(*) from memberships")).toEqual([]);
+    expect(starredTables("select to_json(m) from memberships m")).toEqual(["public.memberships"]);
+    expect(starredTables("select hstore(m) from memberships m")).toEqual(["public.memberships"]);
+    expect(starredTables("select all * from memberships")).toEqual(["public.memberships"]);
+    // No space before from.
+    expect(starredTables("select *from public.profiles into r")).toEqual(["public.profiles"]);
+    expect(starredTables("select t.*from teams t")).toEqual(["public.teams"]);
   });
 
   it("takes select * as reading every column, but not exists (select * ...)", () => {

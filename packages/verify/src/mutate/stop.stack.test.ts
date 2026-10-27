@@ -23,6 +23,8 @@ let client: pg.Client;
 let child: ChildProcess | undefined;
 let exited: Promise<unknown> = Promise.resolve();
 let interrupted = false;
+// The run's output, for afterAll to show when the test gave up on it.
+let out = "";
 // Set once PowerSync has caught up on the original: until then, afterAll restarts it.
 let settledOnOriginal = false;
 const original = readFileSync(CONFIG, "utf8");
@@ -37,8 +39,13 @@ const signal = (name: NodeJS.Signals) => {
     process.kill(-(child?.pid as number), name);
   } catch {}
 };
+// In a group of its own, the run does not get a Ctrl+C that stops the tests: pass it on.
+process.once("exit", () => {
+  if (child && child.exitCode === null && child.signalCode === null) signal("SIGINT");
+});
 afterAll(async () => {
   try {
+    if (child && !settledOnOriginal) process.stderr.write(`\nthe --mutate run's output:\n${out.slice(-4000)}\n`);
     // A run the test gave up on still cleans up, as Ctrl+C would; killed only if that hangs.
     if (child && child.exitCode === null && child.signalCode === null) {
       if (!interrupted) signal("SIGINT");
@@ -49,13 +56,14 @@ afterAll(async () => {
     if (readFileSync(CONFIG, "utf8") !== original) writeFileSync(CONFIG, original);
     if (child && !settledOnOriginal) {
       execFileSync("docker", ["compose", "restart", "powersync"], { cwd: APP, stdio: "ignore", timeout: 120_000 });
-      const until = Date.now() + 120_000;
+      const until = Date.now() + 60_000;
       while (Date.now() < until && !((await ready()) && (await slots()).length === 1)) await new Promise((r) => setTimeout(r, 1000));
-      await waitForReplication(client, 120_000).catch(() => {});
+      await waitForReplication(client, 60_000).catch(() => {});
     }
   } finally {
     await client?.end();
   }
+  // At most 150s for the run to clean up, 120s to restart PowerSync, a minute each to settle and catch up.
 }, 420_000);
 
 const slots = async () =>
@@ -71,7 +79,6 @@ const ready = async () => {
 describe("a --mutate run stopped by Ctrl+C while PowerSync serves the mutants", () => {
   it("puts the sync config back, restarts PowerSync on it, and removes its users", async () => {
     child = spawn(process.execPath, [CLI, "--mutate", "--runs", "1", "--mutate-datasets", "1", "--powersync", POWERSYNC], { cwd: APP, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    let out = "";
     child.stderr?.on("data", (d: Buffer) => {
       out += d.toString();
     });
