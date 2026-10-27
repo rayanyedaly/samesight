@@ -32,7 +32,10 @@ const container = (name: string, image: string, labels: Record<string, string>, 
   Name: `/${name}`,
   Config: { Image: image, Labels: labels },
   State: { Running: running },
-  NetworkSettings: { Networks: Object.fromEntries(networks.map((n) => [n, {}])) },
+  NetworkSettings: {
+    Networks: Object.fromEntries(networks.map((n) => [n, {}])),
+    Ports: name.startsWith("supabase_db_") ? { "5432/tcp": [{ HostIp: "0.0.0.0", HostPort: "54322" }] } : {},
+  },
 });
 
 /** A fake docker holding these containers. */
@@ -72,6 +75,12 @@ describe("findSupabase", () => {
   it("falls back to the project_id label when no container names this directory", async () => {
     const dir = project("todo");
     expect(await findSupabase(docker(stack("todo", "/moved/since")), dir)).toMatchObject({ db: "supabase_db_todo" });
+  });
+
+  it("checks the database container publishes the port the audit reaches the database at", async () => {
+    const dir = project("todo");
+    expect(await findSupabase(docker(stack("todo", dir)), dir, 54322)).toMatchObject({ db: "supabase_db_todo" });
+    await expect(findSupabase(docker(stack("todo", dir)), dir, 5432)).rejects.toThrow(/supabase_db_todo does not publish port 5432.*DOCKER_HOST/);
   });
 
   it("says to run supabase start when the stack is down, and names a missing config", async () => {

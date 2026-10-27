@@ -35,7 +35,7 @@ export interface ContainerInfo {
   Name: string;
   Config: { Image: string; Labels: Record<string, string> | null };
   State: { Running: boolean };
-  NetworkSettings: { Networks: Record<string, unknown> | null };
+  NetworkSettings: { Networks: Record<string, unknown> | null; Ports?: Record<string, { HostIp: string; HostPort: string }[] | null> | null };
 }
 
 const PROJECT = "com.supabase.cli.project";
@@ -53,8 +53,13 @@ const isDb = (c: ContainerInfo) => /(^|\/)supabase\/postgres(:|@|$)/.test(c.Conf
 const isKong = (c: ContainerInfo) => /(^|\/)kong(:|@|$)/.test(c.Config.Image) || /^\/?supabase_kong_/.test(c.Name);
 const name = (c: ContainerInfo) => c.Name.replace(/^\//, "");
 
-/** Finds the running Supabase stack of the project in `projectDir` (the directory holding supabase/). */
-export async function findSupabase(docker: Docker, projectDir: string): Promise<SupabaseStack> {
+/**
+ * Finds the running Supabase stack of the project in `projectDir` (the directory holding
+ * supabase/). With `dbPort`, the port on this machine the audit reaches the database at,
+ * its database container must be the one publishing it: the same database, on this
+ * machine's Docker.
+ */
+export async function findSupabase(docker: Docker, projectDir: string, dbPort?: number): Promise<SupabaseStack> {
   const configPath = join(projectDir, "supabase", "config.toml");
   if (!existsSync(configPath)) throw new Error(`no supabase/config.toml in ${resolve(projectDir)}; pass --project with the directory that holds supabase/`);
   const project = projectId(readFileSync(configPath, "utf8"));
@@ -71,6 +76,11 @@ export async function findSupabase(docker: Docker, projectDir: string): Promise<
   const kong = mine.find(isKong);
   if (!db?.State.Running || !kong?.State.Running) {
     throw new Error(`the Supabase stack of ${resolve(projectDir)} (project ${project}) is not running; run supabase start there first`);
+  }
+  if (dbPort !== undefined && !(db.NetworkSettings.Ports?.["5432/tcp"] ?? []).some((b) => Number(b.HostPort) === dbPort)) {
+    throw new Error(
+      `${name(db)} does not publish port ${dbPort}, where the audit reaches the database; is Docker (DOCKER_HOST, docker context) another machine's?`,
+    );
   }
   const shared = Object.keys(db.NetworkSettings.Networks ?? {}).filter((n) => n in (kong.NetworkSettings.Networks ?? {}));
   const network = shared.find((n) => n.startsWith("supabase_network_")) ?? shared[0];

@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { Docker, type Exec } from "./docker.ts";
 import { ensureImage, POWERSYNC_IMAGE, startPowerSync } from "./powersync.ts";
+import { POSTGRES_IMAGE } from "./storage.ts";
 
 let server: Server | undefined;
 afterEach(() => {
@@ -81,17 +82,20 @@ describe("startPowerSync", () => {
 });
 
 describe("ensureImage", () => {
-  it("pulls a missing image once, naming PowerSync and its license", async () => {
+  it("pulls missing images once, naming PowerSync and its license", async () => {
     const lines: string[] = [];
     const pulls: string[][] = [];
     await ensureImage(fake(0).docker, (l) => lines.push(l), async (args) => {
       pulls.push(args);
     });
-    expect(pulls).toEqual([["pull", POWERSYNC_IMAGE]]);
-    expect(lines).toEqual([expect.stringMatching(/PowerSync service 1\.27\.2 .*FSL-1\.1-ALv2 license; run locally, never redistributed/)]);
+    expect(pulls).toEqual([
+      ["pull", POWERSYNC_IMAGE],
+      ["pull", POSTGRES_IMAGE],
+    ]);
+    expect(lines).toEqual([expect.stringMatching(/PowerSync service 1\.27\.2 .*FSL-1\.1-ALv2 license; run locally, never redistributed/), "pulling Postgres for the service's storage"]);
   });
 
-  it("does nothing when the image is here", async () => {
+  it("does nothing when the images are here", async () => {
     const here: Exec = async () => ({ stdout: JSON.stringify([{ Id: "sha256:d7a9" }]), stderr: "" });
     const pulls: string[][] = [];
     await ensureImage(new Docker(here), () => {}, async (args) => {

@@ -7,17 +7,22 @@
  */
 
 import { type Docker, streamDocker } from "./docker.ts";
-import { containerName, labels } from "./storage.ts";
+import { containerName, labels, POSTGRES_IMAGE } from "./storage.ts";
 
 /** Pinned by digest; the version the examples' compose files run. Above the security floor (1.20.1). */
 export const POWERSYNC_VERSION = "1.27.2";
 export const POWERSYNC_IMAGE = "journeyapps/powersync-service@sha256:d7a99817057a42dae9e6d8fe0c70b49d99105dcac8b8ab0e9ed3cf1ff0978b8b";
 
-/** Pulls the image, with Docker's progress on stderr, unless it is already here. */
+/** Pulls the service's image and its storage's, with Docker's progress on stderr, unless they are here. */
 export async function ensureImage(docker: Docker, log: (line: string) => void, pull: (args: string[]) => Promise<void> = streamDocker): Promise<void> {
-  if (await docker.inspect("image", POWERSYNC_IMAGE)) return;
-  log(`pulling the PowerSync service ${POWERSYNC_VERSION} (journeyapps/powersync-service, FSL-1.1-ALv2 license; run locally, never redistributed)`);
-  await pull(["pull", POWERSYNC_IMAGE]);
+  if (!(await docker.inspect("image", POWERSYNC_IMAGE))) {
+    log(`pulling the PowerSync service ${POWERSYNC_VERSION} (journeyapps/powersync-service, FSL-1.1-ALv2 license; run locally, never redistributed)`);
+    await pull(["pull", POWERSYNC_IMAGE]);
+  }
+  if (!(await docker.inspect("image", POSTGRES_IMAGE))) {
+    log("pulling Postgres for the service's storage");
+    await pull(["pull", POSTGRES_IMAGE]);
+  }
 }
 
 export interface PowerSync {
