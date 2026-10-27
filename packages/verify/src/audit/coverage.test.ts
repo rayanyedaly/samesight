@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { DeviceRow } from "../differential/device.ts";
 import type { Run } from "../differential/run.ts";
 import type { Inserted } from "../differential/world.ts";
-import { type Coverage, measure, pending, stateOf, streamUnits } from "./coverage.ts";
+import { type Coverage, coverageFindings, measure, pending, type ScopedPolicy, type StreamUnit, stateOf, streamUnits, untested } from "./coverage.ts";
 
 const streams = (yaml: string) => parseSyncConfig(`config:\n  edition: 3\nstreams:\n${yaml}`).streams;
 
@@ -110,5 +110,69 @@ describe("measure, for streams", () => {
     ]);
     expect(cov.inserted).toEqual(new Map([["docs", 3]]));
     expect(cov.datasets).toBe(1);
+  });
+});
+
+describe("coverageFindings", () => {
+  const policy = (name: string, allowed: number, refused: number, more: Partial<ScopedPolicy> = {}): ScopedPolicy => ({
+    table: "docs",
+    name,
+    permissive: true,
+    qual: "true",
+    sameForAll: false,
+    claims: [],
+    reachable: true,
+    tally: { allowed, refused },
+    ...more,
+  });
+  const unit = (streams: string[], allowed: number, refused: number, claims: string[] = []): StreamUnit => ({ streams, table: "docs", claims, reachable: true, tally: { allowed, refused } });
+  const cov = (policies: ScopedPolicy[], units: StreamUnit[], inserted = 3): Coverage => ({
+    policies,
+    units,
+    inserted: new Map([["docs", inserted]]),
+    datasets: 2,
+    triggers: [],
+    notes: [],
+  });
+  const lines = (c: Coverage, held: string[] = ["app_metadata.role"], together = false) => coverageFindings(c, new Set(held), together).map((f) => `${f.status} ${f.detail}`);
+
+  it("sums up, then names each rule seen one way, with the side and why", () => {
+    const c = cov(
+      [
+        policy("owners", 4, 8),
+        policy("editors", 0, 9, { claims: ["app_metadata.role"] }),
+        policy("orgs", 0, 9, { claims: ["app_metadata.org_id"], reachable: false }),
+        policy("visible", 3, 0, { permissive: false }),
+        policy("everyone", 12, 0, { sameForAll: true }),
+      ],
+      [unit(["own"], 2, 5), unit(["editor", "admin"], 0, 12, ["app_metadata.role"])],
+    );
+    expect(lines(c)).toEqual([
+      "ok 1 of 5 RLS read policies on synced tables was seen both allowing and refusing a run user a row; 4 were not (below). 1 of 2 stream/table pairs both sent and withheld a row.",
+      'warn policy "editors" on docs: only refused rows seen (no generated row matched it)',
+      'warn policy "orgs" on docs: only refused rows seen (it reads app_metadata.org_id, which no run user holds; see Claims)',
+      'warn policy "visible" on docs (restrictive): only allowed rows seen (it kept out no row the other policies let through)',
+      'ok policy "everyone" on docs: only allowed rows seen; it reads nothing of the user, so it applies to every user alike',
+      "warn streams editor + admin (one bucket), docs: only withheld rows seen (no generated row matched it)",
+    ]);
+    // The rule that applies to every user alike is not owned up to on the Differential line.
+    expect(untested(c)).toBe(4);
+  });
+
+  it("gives the reason a run can tell: no row, values held only apart, another policy, a read error", () => {
+    expect(lines(cov([policy("p", 0, 0)], [], 0))).toContain('warn policy "p" on docs: no row seen either way (no docs row was inserted)');
+    expect(lines(cov([policy("p", 0, 4, { claims: ["app_metadata.a", "app_metadata.b"] })], []), ["app_metadata.a", "app_metadata.b"], true)).toContain(
+      'warn policy "p" on docs: only refused rows seen (no run user holds the values it needs together)',
+    );
+    expect(lines(cov([policy("p", 0, 0)], []))).toContain('warn policy "p" on docs: no row seen either way (every row it kept from a user, another policy let through)');
+    expect(lines(cov([policy("p", 1, 1, { tally: { allowed: 1, refused: 1, error: "invalid input syntax for type uuid" } })], []))).toContain(
+      'warn policy "p" on docs: a read failed, so it was not measured (invalid input syntax for type uuid)',
+    );
+  });
+
+  it("measures no policy when an event trigger would run, and says so through its notes", () => {
+    const c = { ...cov([policy("p", 0, 0)], [unit(["own"], 1, 1)]), triggers: ["audit_ddl (log_ddl)"] };
+    expect(lines(c)).toEqual(["ok 1 of 1 stream/table pair both sent and withheld a row."]);
+    expect(untested(c)).toBe(0);
   });
 });

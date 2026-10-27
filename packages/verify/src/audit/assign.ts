@@ -32,6 +32,8 @@ export interface Assignment {
   notSet: Map<string, string>;
   /** Values and combinations no user holds, when they do not fit. */
   findings: Finding[];
+  /** Some combination of values of two or more paths is held by no user. */
+  partial: boolean;
 }
 
 /** The value none of the literals match, of the type every cast on the path accepts; undefined when there is none. */
@@ -94,11 +96,12 @@ export function assignClaims(plan: ClaimsPlan, fresh: () => string): Assignment 
   const findings: Finding[] = [];
   const unheld = paths.flatMap((p) => p.pool.filter((v) => !users.some((u) => u.has(p.key) && JSON.stringify(u.get(p.key)) === JSON.stringify(v))).map((v) => `${p.key}=${show(v)}`));
   if (unheld.length) findings.push({ status: "warn", check: "claims", detail: `${count} users cannot hold every value: no user holds ${unheld.join(", ")}` });
-  if (paths.length > 1 && combos > spread) {
+  const partial = paths.length > 1 && combos > spread;
+  if (partial) {
     const held = new Set(users.filter((u) => u.size).map((u) => JSON.stringify([...u])));
     findings.push({ status: "warn", check: "claims", detail: `${combos} combinations of claim values, and ${count} users hold ${held.size} of them; rules that need values together may not be tested` });
   }
-  return { paths, users, notSet, findings };
+  return { paths, users, notSet, findings, partial };
 }
 
 /** Beyond this many combinations, users take value i of each pool, which still holds each value while pools fit. */
