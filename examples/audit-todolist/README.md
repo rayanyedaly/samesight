@@ -13,8 +13,12 @@ Auth signing key. The policies and sync config are audited as published.
 rules (`bucket_definitions`), the form most PowerSync apps used before sync streams;
 `verify:rules` audits it, then a copy whose parameter query lost its owner filter.
 
+Only Supabase is started by hand. Each audit starts its own PowerSync service for the run
+(it needs Docker), on whichever sync config it is given, and removes it afterwards; see
+[what audit creates and removes](../../docs/verify.md#what-audit-starts-and-removes).
+
 ```bash
-pnpm --filter audit-todolist stack:up        # fetch, supabase start, PowerSync on :8081
+pnpm --filter audit-todolist stack:up        # fetch, then supabase start
 pnpm --filter audit-todolist verify          # must pass on the demo as published
 pnpm --filter audit-todolist verify:planted  # must fail: the lists query loses its owner filter
 pnpm --filter audit-todolist verify:rules    # the same rules as legacy sync rules: pass, then a planted leak

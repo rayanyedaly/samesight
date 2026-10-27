@@ -122,9 +122,11 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Fetches PowerSync's demo at a pinned commit (hash-checked), then Supabase and PowerSync.
+      # Fetches PowerSync's demo at a pinned commit (hash-checked), then Supabase. Each audit
+      # below starts its own PowerSync (auto-start) and removes it.
       - run: pnpm --filter audit-todolist stack:up
-      # Planted catalog, RLS and insert-policy breakages (rolled back).
+      # Planted catalog, RLS and insert-policy breakages (rolled back), and auto-start's
+      # clean-up on Ctrl+C, SIGTERM and SIGKILL.
       - run: pnpm --filter @samesight/verify test:audit
       # The Phase 5 gate: the demo as published passes, and a planted sync config divergence is caught.
       - name: samesight-verify audit
@@ -137,10 +139,17 @@ jobs:
       - name: samesight-verify audit on sync rules
         working-directory: examples/audit-todolist
         run: timeout 600 pnpm run verify:rules
-      - if: failure()
-        working-directory: examples/audit-todolist
+      # Every auto-started container and role must be gone after the runs above.
+      - name: nothing left behind
         run: |
-          PS_STORAGE_PASSWORD=${PS_STORAGE_PASSWORD:-unused} PS_REPLICATION_PASSWORD=${PS_REPLICATION_PASSWORD:-unused} docker compose logs powersync --tail 100 || true
-          docker logs supabase_db_react-supabase-todolist --tail 100 || true
+          left=$(docker ps --all --quiet --filter label=dev.samesight.audit.run)
+          roles=$(docker exec supabase_db_react-supabase-todolist psql -tA -U postgres -d postgres -c "select count(*) from pg_roles where starts_with(rolname, 'samesight_audit_')")
+          slots=$(docker exec supabase_db_react-supabase-todolist psql -tA -U postgres -d postgres -c "select count(*) from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')")
+          if [ -n "$left" ] || [ "$roles" != 0 ] || [ "$slots" != 0 ]; then
+            echo "left behind: containers [$left], $roles roles, $slots slots"
+            exit 1
+          fi
+      - if: failure()
+        run: docker logs supabase_db_react-supabase-todolist --tail 100 || true
       - if: always()
         run: pnpm --filter audit-todolist stack:down
