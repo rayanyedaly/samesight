@@ -6,15 +6,16 @@ const config = (streams: string[]) => ["config:", "  edition: 3", "streams:", ..
 
 describe("outputTable", () => {
   it("reads the table a query sends, alone or through joins", () => {
-    expect(outputTable("SELECT * FROM lists WHERE owner_id = auth.user_id()")).toEqual({ table: "lists", reads: ["lists"] });
-    expect(outputTable("SELECT id, name FROM public.lists")).toEqual({ table: "lists", reads: ["lists"] });
-    expect(outputTable("SELECT todos.* FROM todos INNER JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()")).toEqual({
+    expect(outputTable("SELECT * FROM lists WHERE owner_id = auth.user_id()")).toMatchObject({ table: "lists", reads: ["lists"] });
+    expect(outputTable("SELECT id, name FROM public.lists")).toMatchObject({ table: "lists", reads: ["lists"] });
+    expect(outputTable("SELECT todos.* FROM todos INNER JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()")).toMatchObject({
       table: "todos",
       reads: ["todos", "lists"],
     });
-    expect(outputTable("SELECT todos.* FROM todos JOIN lists l ON todos.list_id = l.id")).toEqual({ table: "todos", reads: ["todos", "lists"] });
+    // A join's alias names its table.
+    expect(outputTable("SELECT todos.* FROM todos JOIN lists l ON todos.list_id = l.id")).toEqual({ table: "todos", reads: ["todos", "lists"], aliases: { todos: "todos", l: "lists" } });
     // A qualified column renamed with AS, as PowerSync's group chat demo writes it.
-    expect(outputTable("SELECT profiles.id, profiles.id as profile_id FROM profiles JOIN messages ON messages.recipient_id = profiles.id")).toEqual({
+    expect(outputTable("SELECT profiles.id, profiles.id as profile_id FROM profiles JOIN messages ON messages.recipient_id = profiles.id")).toMatchObject({
       table: "profiles",
       reads: ["profiles", "messages"],
     });

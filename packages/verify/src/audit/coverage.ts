@@ -74,6 +74,9 @@ const HARMLESS_TRIGGERS = new Set(["pgrst_ddl_watch:extensions.pgrst_ddl_watch",
 
 const READ_COMMANDS = new Set(["r", "*"]);
 
+/** Sign-in claims every run user holds the same value of. */
+const ALIKE_STATE = new Set(["aal", "amr", "is_anonymous", "app_metadata.provider", "app_metadata.providers", "user_metadata.email_verified"]);
+
 /** What coverage measures on these synced tables and streams, before any dataset. */
 export async function coverageScope(
   client: pg.Client,
@@ -396,11 +399,15 @@ const SIDES: Record<State, [string, string]> = {
 function reason(cov: Coverage, x: { table: string; claims: string[]; reachable: boolean; tally: Tally }, held: ReadonlySet<string>, together: boolean, kind: "permissive" | "restrictive" | "stream"): string {
   if (!cov.inserted.get(x.table)) return `no ${x.table} row was inserted`;
   const missing = x.claims.filter((k) => !held.has(k));
-  // Sign-in state (aal, email, is_anonymous): every run user has it, alike, as a password user.
-  const alikeState = missing.filter((k) => classify(k.split(".")) === "auth-state");
-  const unheld = missing.filter((k) => !alikeState.includes(k));
+  // Sign-in state: every run user is an aal1 password user, alike; email and session_id differ
+  // per user but no generated row holds them; phone, exp and iat audit does not choose.
+  const signIn = missing.filter((k) => classify(k.split(".")) === "auth-state");
+  const alikeState = signIn.filter((k) => ALIKE_STATE.has(k));
+  const ownState = signIn.filter((k) => !ALIKE_STATE.has(k));
+  const unheld = missing.filter((k) => !signIn.includes(k));
   if (unheld.length) return `it reads ${unheld.join(", ")}, which no run user holds; see Claims`;
   if (alikeState.length) return `it reads ${alikeState.join(", ")}, which every run user has alike (an aal1 password user); see Claims`;
+  if (ownState.length) return `it reads ${ownState.join(", ")}, whose values audit does not choose or put in generated rows; see Claims`;
   if (!x.reachable) return "it reads the token in a way audit cannot follow; see Claims";
   const state = stateOf(x.tally);
   if (kind === "restrictive") return state === "only refused" ? "it let no row through" : "it kept out no row the other policies let through";
