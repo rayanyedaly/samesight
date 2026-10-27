@@ -26,6 +26,10 @@ export interface RowReport {
   row: string;
   columns?: string[];
   sentBy: { stream: string; query?: string; sql?: string }[];
+  /** For a leak or a gap: the user's RLS read policies on the table, each evaluated on the row. */
+  policies?: { name: string; permissive: boolean; verdict: "allows" | "refuses" }[];
+  /** Why the policies were not evaluated, or what they say together. */
+  policiesNote?: string;
 }
 
 /** What a row report says happened, with the streams that sent it when `via` is given. */
@@ -53,7 +57,14 @@ export function formatRow(r: RowReport): string[] {
     `${i === 0 ? label("sent by") : blank}stream ${x.stream}${x.query ? `, ${x.query}` : ""}`,
     ...(x.sql ? [`${blank}${x.sql.replace(/\s+/g, " ").trim()}`] : []),
   ]);
-  return [`${r.kind}: ${rowSentence(r)}`, ...sent];
+  // A leak names what refused the row: the restrictive policies when a permissive one allows it, else every permissive one.
+  // A gap names what let the user read it.
+  const allows = r.policies?.some((p) => p.permissive && p.verdict === "allows");
+  const decided = (r.policies ?? []).filter((p) => (r.kind === "gap" ? p.permissive && p.verdict === "allows" : p.verdict === "refuses" && p.permissive === !allows));
+  const by = r.kind === "gap" ? "allowed by" : "refused by";
+  const policies = decided.map((p, i) => `${i === 0 ? label(by) : blank}${p.permissive ? "" : "restrictive "}policy "${p.name}" on ${r.table}`);
+  const note = r.policiesNote ? [`${label("policies")}${r.policiesNote}`] : [];
+  return [`${r.kind}: ${rowSentence(r)}`, ...sent, ...policies, ...note];
 }
 
 const MARK = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
