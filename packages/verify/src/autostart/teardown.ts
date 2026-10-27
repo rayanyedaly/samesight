@@ -70,7 +70,7 @@ type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
 /** What to do about a run's leftovers: run users can hold privileged app_metadata (role=admin) until removed. */
 export const LEFT_FOR_NEXT =
-  "the next audit removes what is left, run users included (they may hold privileged app_metadata); `delete from auth.users where email like '%@verify.samesight.test'` removes those now";
+  "the next audit that reaches the differential removes the run's users and rows (the users may hold privileged app_metadata); to remove the users now, with no audit running, delete the run's rows a key without on delete cascade ties to them, then `delete from auth.users where email like '%@verify.samesight.test'`";
 
 /** What onSignals needs of `process`. */
 export interface Signals {
@@ -107,7 +107,7 @@ export function onSignals(
   const unfinished = () => {
     if (teardown.finished) return;
     try {
-      log(`stopped before the clean-up finished: ${LEFT_FOR_NEXT}`);
+      log(`stopped before the clean-up finished: the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`);
     } catch {}
   };
   const end = (why: string, exitCode: number) => {

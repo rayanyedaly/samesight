@@ -17,7 +17,7 @@ custom access token hook adds from the user's row in `memberships`:
 
 The hook, `public.custom_access_token_hook`, is enabled in `supabase/config.toml`. It runs
 as `supabase_auth_admin`, which gets `usage` on `public`, `select` on `memberships` and an
-RLS policy of its own there; only that role may execute it. Audit gives each run user but
+RLS policy of its own there; no API role (`anon`, `authenticated`, `service_role`) may execute it. Audit gives each run user but
 the last a membership before they sign in (two teams, both roles), so the hook adds
 different claims to their tokens, and keeps those rows until the run ends. Auth reads the
 hook settings when it starts: after changing them, restart the stack (`stack:down`, then
