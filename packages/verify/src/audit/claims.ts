@@ -44,11 +44,27 @@ export interface ClaimsPlan {
   identityColumns: string[];
 }
 
+/**
+ * Runs catalog reads with an empty search_path, so Postgres prints every function with its
+ * schema (auth.jwt(), not a bare jwt() when auth happens to be on the path).
+ */
+async function qualified<T>(client: pg.Client, fn: () => Promise<T>): Promise<T> {
+  const { rows: current } = await client.query<{ path: string }>("select pg_catalog.current_setting('search_path') as path");
+  await client.query("select pg_catalog.set_config('search_path', '', false)");
+  try {
+    return await fn();
+  } finally {
+    await client.query("select pg_catalog.set_config('search_path', $1, false)", [current[0]?.path ?? ""]);
+  }
+}
+
 /** Each public policy's USING and WITH CHECK, in a stable order. */
-export async function policyRules(client: Pick<pg.Client, "query">): Promise<RuleSql[]> {
-  const policies = await rows<{ table: string; name: string; qual: string | null; with_check: string | null }>(
-    client as pg.Client,
-    "select tablename as table, policyname as name, qual, with_check from pg_policies where schemaname = 'public' order by tablename, policyname",
+export async function policyRules(client: pg.Client): Promise<RuleSql[]> {
+  const policies = await qualified(client, () =>
+    rows<{ table: string; name: string; qual: string | null; with_check: string | null }>(
+      client,
+      "select tablename as table, policyname as name, qual, with_check from pg_catalog.pg_policies where schemaname = 'public' order by tablename, policyname",
+    ),
   );
   return policies.flatMap((p) => [
     ...(p.qual ? [{ where: `policy "${p.name}" on ${p.table} (USING)`, sql: p.qual, dialect: "postgres" as const }] : []),
@@ -58,22 +74,25 @@ export async function policyRules(client: Pick<pg.Client, "query">): Promise<Rul
 
 /**
  * The bodies of the functions public policies call (outside the auth and system schemas),
- * keyed by how a policy calls them: schema.name, and the bare name for public ones, which
- * Postgres prints unqualified.
+ * keyed by how a policy calls them: schema.name (policies are read with an empty
+ * search_path), and the bare name for public ones. Functions with arguments are listed
+ * too, so a call that reads the token is reported even though it is not read through.
  */
-export async function policyFunctions(client: Pick<pg.Client, "query">): Promise<Map<string, string>> {
-  const fns = await rows<{ schema: string; name: string; body: string | null }>(
-    client as pg.Client,
-    `select distinct fn.nspname as schema, f.proname as name,
+export async function policyFunctions(client: pg.Client): Promise<Map<string, string>> {
+  const fns = await qualified(client, () =>
+    rows<{ schema: string; name: string; body: string | null }>(
+      client,
+      `select distinct fn.nspname as schema, f.proname as name,
             case when l.lanname = 'sql' then coalesce(pg_get_function_sqlbody(f.oid), f.prosrc) else f.prosrc end as body
        from pg_policy pol
        join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
        join pg_depend d on d.classid = 'pg_policy'::regclass and d.objid = pol.oid and d.refclassid = 'pg_proc'::regclass
        join pg_proc f on f.oid = d.refobjid join pg_namespace fn on fn.oid = f.pronamespace
        join pg_language l on l.oid = f.prolang
-      where n.nspname = 'public' and f.pronargs = 0
+      where n.nspname = 'public'
         and fn.nspname not in ('pg_catalog', 'auth', 'extensions', 'information_schema')
       order by 1, 2`,
+    ),
   );
   const out = new Map<string, string>();
   for (const f of fns) {
@@ -105,7 +124,8 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
         for (const v of c.values) if (!use.values.some((x) => valueKey(x) === valueKey(v))) use.values.push(v);
       } else if (c.kind === "column") {
         if (!use.columns.includes(c.column)) use.columns.push(c.column);
-        if (use.cls === "identity") identityColumns.add(c.column);
+        // Only a column of the rule's own table: one inside a subquery belongs to the subquery's.
+        if (use.cls === "identity" && !read.inSubquery) identityColumns.add(c.column);
       } else if (!use.other.includes(c.text)) use.other.push(c.text);
     }
   }

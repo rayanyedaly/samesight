@@ -45,7 +45,7 @@ describe("claimReads on Postgres policies", () => {
     ["(auth.role() = 'authenticated'::text)", [{ path: "role", compared: lit(["authenticated"]) }]],
     ["((auth.jwt() ->> 'tier'::text) = ('gold'::character varying)::text)", [{ path: "tier", compared: lit(["gold"]) }]],
     ["(owner_id = auth.uid())", [{ path: "sub", compared: col("owner_id") }]],
-    ["(auth.uid() IN ( SELECT m.user_id FROM members m))", [{ path: "sub", compared: { kind: "other", text: "in (select m.user_id from members m)" } }]],
+    ["(auth.uid() IN ( SELECT m.user_id FROM members m))", [{ path: "sub", compared: { kind: "other", text: "auth.uid() in (select m.user_id from members m)" } }]],
   ])("%s", (sql, expected) => {
     expect(reads(sql, "postgres")).toEqual(expected);
     expect(claimReads(sql, "postgres").unreadable).toEqual([]);
@@ -158,6 +158,60 @@ describe("claimReads on sync rules", () => {
     ["SELECT * FROM t WHERE token_parameters.team = team_id", [{ path: "parameters.team", compared: col("team_id") }]],
   ])("%s", (sql, expected) => {
     expect(reads(sql, "rules")).toEqual(expected);
+  });
+});
+
+describe("claimReads on inputs a scan gets wrong without care", () => {
+  const other = (sql: string, dialect: ClaimDialect) => claimReads(sql, dialect).reads.map((r) => r.compared.kind);
+
+  it("does not take a comparison an operator beside the read belongs to", () => {
+    expect(other("SELECT * FROM t WHERE 1 + auth.parameter('lvl') = 3", "streams")).toEqual(["other"]);
+    expect(other("SELECT * FROM t WHERE 'x' || auth.parameter('r') = 'xa'", "streams")).toEqual(["other"]);
+    expect(other("SELECT * FROM t WHERE org = auth.parameter('org') || '-x'", "streams")).toEqual(["other"]);
+    expect(other("SELECT * FROM t WHERE lvl = auth.parameter('l') * 2", "streams")).toEqual(["other"]);
+  });
+
+  it("does not take a CASE result value for a condition", () => {
+    expect(other("(org_id = CASE WHEN (status = 'x'::text) THEN ((auth.jwt() ->> 'org'::text))::uuid ELSE NULL::uuid END)", "postgres")).toEqual(["other"]);
+    expect(other("(CASE status WHEN (auth.jwt() ->> 'r'::text) THEN true ELSE false END)", "postgres")).toEqual(["other"]);
+    expect(reads("(CASE WHEN ((auth.jwt() ->> 'r'::text) = 'admin'::text) THEN true ELSE false END)", "postgres")).toEqual([{ path: "r", compared: lit(["admin"]) }]);
+  });
+
+  it("reports array elements and quoted keys in a path instead of reading a wrong key", () => {
+    for (const sql of ["SELECT * FROM t WHERE auth.parameter('$.roles[0]') = 'a'", "SELECT * FROM t WHERE json_extract(auth.parameters(), '$.roles[0]') = 'a'", "SELECT * FROM t WHERE auth.parameter('x') ->> '$.roles[0]' = 'a'"]) {
+      expect(claimReads(sql, "streams"), sql).toMatchObject({ reads: [], unreadable: [{ reason: "reads an array element or quoted key in a JSON path" }] });
+    }
+    expect(claimReads("((auth.jwt())['app_metadata'::text] = '1'::jsonb)", "postgres").unreadable).toMatchObject([{ reason: "reads a [ ] subscript" }]);
+    // Postgres reads '$.a.b' as one key.
+    expect(reads("((auth.jwt() ->> '$.a.b'::text) = 'x'::text)", "postgres")).toEqual([{ path: "$.a.b", compared: lit(["x"]) }]);
+  });
+
+  it("reports every call of a listed function that reads the token, through other listed functions too", () => {
+    const functions = new Map([
+      ["has_role", "select auth.jwt() ->> 'role'"],
+      ["app_role", "select auth.jwt() ->> 'app_role'"],
+      ["outer_fn", "select app_role() = 'admin'"],
+      ["visible", "select true"],
+    ]);
+    expect(claimReads("(has_role('x'::text) = 'admin'::text)", "postgres", { functions }).unreadable).toEqual([
+      { text: "has_role", reason: "calls has_role, which reads the token in a way this cannot follow" },
+    ]);
+    expect(claimReads("outer_fn()", "postgres", { functions }).unreadable).toEqual([{ text: "outer_fn", reason: "calls outer_fn, which reads the token in a way this cannot follow" }]);
+    expect(claimReads("(visible = true) AND visible()", "postgres", { functions })).toEqual({ reads: [], unreadable: [] });
+  });
+
+  it("marks a column compared inside a subquery as that subquery's", () => {
+    const [read] = claimReads("(EXISTS ( SELECT 1 FROM members m WHERE ((m.user_id = auth.uid()) AND (m.list_id = lists.id))))", "postgres").reads;
+    expect(read).toMatchObject({ path: ["sub"], compared: col("user_id"), inSubquery: true });
+    expect(claimReads("(owner_id = auth.uid())", "postgres").reads[0]?.inSubquery).toBe(false);
+  });
+
+  it("keeps only single JSON values as values, follows NOT, CAST and nullif(read, '') only", () => {
+    expect(other("((auth.jwt() -> 'app_metadata'::text) = '{\"role\":\"admin\"}'::jsonb)", "postgres")).toEqual(["other"]);
+    expect(reads("(NOT (((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text) = 'a'::text))", "postgres")).toEqual([{ path: "app_metadata.role", compared: lit(["a"], true) }]);
+    expect(reads("SELECT * FROM t WHERE NOT auth.parameter('a') = 'x'", "streams")).toEqual([{ path: "a", compared: lit(["x"], true) }]);
+    expect(reads("(CAST((auth.jwt() ->> 'org'::text) AS uuid) = org_id)", "postgres")).toEqual([{ path: "org", compared: col("org_id"), casts: ["uuid"] }]);
+    expect(other("(nullif((auth.jwt() ->> 'org'::text), 'none'::text) = org)", "postgres")).toEqual(["other"]);
   });
 });
 

@@ -110,7 +110,7 @@ describe("claim discovery on the demo's catalog", () => {
       return discover();
     });
     expect(plan.uses.find((u) => u.key === "app_metadata.role")).toMatchObject({ values: ["admin"], rules: ['policy "samesight_role" on lists (USING)'] });
-    expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_check" on lists (USING)', reason: expect.stringMatching(/calls samesight_test_check, which reads the token/) }));
+    expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_check" on lists (USING)', reason: expect.stringMatching(/calls public\.samesight_test_check, which reads the token/) }));
     expect(plan.identityColumns).toEqual(["created_by", "owner_id"]);
   });
 });
