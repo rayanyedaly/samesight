@@ -90,12 +90,33 @@ export interface UserProblems {
  */
 export async function cleanup(client: pg.Client, stack: Stack, model: TableModel[], outside: TableModel[] = []): Promise<void> {
   const users = await leftoverUsers(client);
-  // Past the project's triggers (deleteRows), the order of the outside tables does not matter.
-  const tables = [...insertOrder(model), ...outside.filter((t) => !model.some((m) => m.name === t.name))];
-  const rowsDeleted = await deleteRows(client, tables, PREFIX, users, { ownedOnly: new Set(outside.map((t) => t.name)) }).then(
+  // Tables the run does not model are cleaned as the project's own deletes would be: one at a
+  // time, children first, with its foreign keys, cascades and triggers. One that refuses (a row
+  // still referenced, a trigger that raises) keeps its rows and stops nothing else; it is tried
+  // again once the run's own rows, which may reference it, are gone.
+  const others = outside.filter((t) => !model.some((m) => m.name === t.name));
+  const ordered = (() => {
+    try {
+      return insertOrder(others);
+    } catch {
+      return others;
+    }
+  })().reverse();
+  const refused = new Set<string>();
+  const outsideRows = async (tables: TableModel[]) => {
+    for (const t of tables) {
+      await deleteRows(client, [t], PREFIX, users, { ownedOnly: new Set([t.name]), replica: false }).then(
+        () => refused.delete(t.name),
+        () => refused.add(t.name),
+      );
+    }
+  };
+  await outsideRows(ordered);
+  const rowsDeleted = await deleteRows(client, insertOrder(model), PREFIX, users).then(
     () => undefined,
     (e: unknown) => e,
   );
+  await outsideRows(ordered.filter((t) => refused.has(t.name)));
   // Every user is tried, whatever happened to the rows; a row outside the run's tables that
   // still points at one can block its delete.
   const failed: string[] = [];

@@ -485,8 +485,9 @@ function literalValue(tok: Token, casts: string[]): ClaimValue | undefined {
   if (typeof v === "string" && (cast === "json" || cast === "jsonb")) {
     try {
       const parsed: unknown = JSON.parse(v);
-      // An object or array is no single value to give a user; a number keeps its exactness.
-      if (typeof parsed === "number") return exactNumber(v.trim());
+      // An object or array is no single value to give a user; nor is a JSON number a double
+      // cannot hold, which a user's metadata could only hold rounded.
+      if (typeof parsed === "number") return typeof exactNumber(v.trim()) === "number" ? parsed : undefined;
       return parsed !== null && typeof parsed === "object" ? undefined : (parsed as ClaimValue);
     } catch {
       return v;

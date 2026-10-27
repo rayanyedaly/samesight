@@ -49,7 +49,8 @@ describe("claimReads on SQL it used to refuse or misread", () => {
     // Postgres refuses '1.5' and '1e2' as integers.
     expect(one(`((${level})::integer IN ('1.5', '1e2', ' 7 '))`)).toEqual(["1.5", "1e2", 7]);
     expect(one(`((${level})::numeric IN ('1.5', '1e2'))`)).toEqual([1.5, 100]);
-    expect(one(`((auth.jwt() -> 'app_metadata'::text) -> 'level'::text) = '9007199254740993'::jsonb`)).toEqual(["9007199254740993"]);
+    // A JSON number a double cannot hold: no value metadata could carry exactly.
+    expect(reads(`((auth.jwt() -> 'app_metadata'::text) -> 'level'::text) = '9007199254740993'::jsonb`, "postgres")[0]?.compared).toEqual({ kind: "other", text: "'9007199254740993'::jsonb" });
     expect(one(`((auth.jwt() -> 'app_metadata'::text) -> 'level'::text) = '2'::jsonb`)).toEqual([2]);
   });
 
