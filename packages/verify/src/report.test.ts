@@ -53,6 +53,11 @@ describe("formatRow", () => {
     const refused = { ...leak, sentBy: [], policies: [{ name: "a", permissive: true, verdict: "refuses" as const }, { name: "b", permissive: true, verdict: "refuses" as const }, { name: "r", permissive: false, verdict: "allows" as const }] };
     expect(formatRow(refused).slice(1)).toEqual(['  refused by policy "a" on lists', '             policy "b" on lists']);
     expect(formatRow({ ...leak, sentBy: [], policies: [], policiesNote: "no permissive read policy" }).slice(1)).toEqual(["  policies   no permissive read policy"]);
+    // A likely fix goes last, the clause to add on a line of its own.
+    expect(formatRow({ ...leak, sentBy: [], fix: { query: "queries[0]", add: "WHERE owner_id = auth.user_id()", why: 'queries[0] has no owner_id filter, which policy "owned lists" has' } }).slice(1)).toEqual([
+      '  likely fix queries[0] has no owner_id filter, which policy "owned lists" has; add',
+      "             WHERE owner_id = auth.user_id()",
+    ]);
     // A gap was sent by nothing.
     expect(formatRow({ ...leak, kind: "gap", sentBy: [] })).toEqual(["gap: RLS lets u1 (app_metadata.role=editor) read lists 5a3e (owner_id u0), but no stream sent it"]);
   });

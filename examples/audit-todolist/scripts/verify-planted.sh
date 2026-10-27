@@ -34,4 +34,13 @@ if ! grep -qE "^ *leak: u[0-9]+ .*received lists .*; RLS returns no such row" "$
   echo "verify-planted.sh: the audit failed, but not on the planted lists leak" >&2
   exit 1
 fi
+# The leak's bug report: the query that sent it, the policy that refuses it, and the fix.
+block=$(grep -m1 -A5 -E "^ *leak: u[0-9]+ .*received lists " "$log")
+for line in "sent by +stream user_data, queries\[0\]$" "^ +SELECT \* FROM lists$" "refused by +policy \"owned lists\" on lists$" \
+  "likely fix +queries\[0\] has no owner_id filter, which policy \"owned lists\" has; add$" "^ +WHERE owner_id = auth\.user_id\(\)$"; do
+  if ! grep -qE "$line" <<<"$block"; then
+    echo "verify-planted.sh: the leak's report lacks a line matching: $line" >&2
+    exit 1
+  fi
+done
 echo "The audit caught the planted divergence."
