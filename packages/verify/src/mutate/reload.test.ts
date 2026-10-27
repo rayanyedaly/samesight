@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type pg from "pg";
@@ -45,7 +45,8 @@ describe("withSyncConfig under the run's teardown", () => {
   });
 
   /** A service that takes up each restart: a new slot on every look, and ready. */
-  function live(failFrom = Number.POSITIVE_INFINITY) {
+  /** Restarts fail from the `failFrom`th (0-based) on, or only the `failAt`th; each takes `delayMs`. */
+  function live(failFrom = Number.POSITIVE_INFINITY, { failAt = -1, delayMs = 0 } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "samesight-reload-test-"));
     const configPath = join(dir, "sync-config.yaml");
     const marker = join(dir, "restarts");
@@ -53,7 +54,7 @@ describe("withSyncConfig under the run's teardown", () => {
     vi.stubGlobal("fetch", async () => new Response("", { status: 200 }));
     let n = 0;
     const slots = { query: async () => ({ rows: [{ name: `powersync_${++n}` }] }) } as unknown as pg.Client;
-    const script = `const fs=require("fs");const n=fs.existsSync(${JSON.stringify(marker)})?fs.readFileSync(${JSON.stringify(marker)},"utf8").length:0;fs.appendFileSync(${JSON.stringify(marker)},"r");process.exit(n>=${failFrom}?1:0)`;
+    const script = `const fs=require("fs");const n=fs.existsSync(${JSON.stringify(marker)})?fs.readFileSync(${JSON.stringify(marker)},"utf8").length:0;fs.appendFileSync(${JSON.stringify(marker)},"r");setTimeout(()=>process.exit(n>=${failFrom}||n===${failAt}?1:0),${delayMs})`;
     const ps = { configPath, restart: [process.execPath, "-e", script], cwd: dir, url: "http://127.0.0.1:1" };
     const restarts = () => readFileSync(marker, "utf8").length;
     return { ps, slots, restarts };
@@ -106,14 +107,40 @@ describe("withSyncConfig under the run's teardown", () => {
     expect(lines).toEqual([expect.stringMatching(/^could not remove the mutant streams PowerSync serves: .*: exit code 1; PowerSync serves them to every device until it restarts on the original sync config: the original is at .*sync-config\.yaml; copy it to .* if it is not there, then restart PowerSync \(.*\)$/)]);
   });
 
-  it("still restarts PowerSync as a step when the run's own put-back did not get it to reload", async () => {
-    // The first restart (loading the mutants) works; the put-back's fails, as a Ctrl+C that kills it would.
-    const { ps, slots, restarts } = live(1);
+  it("still restarts PowerSync as a step when the run's own put-back did not get it to reload, and keeps the copy it named", async () => {
+    // Loading the mutants works; the put-back's restart fails, as a Ctrl+C that kills it would; the step's works.
+    const { ps, slots, restarts } = live(Number.POSITIVE_INFINITY, { failAt: 1 });
     const t = new Teardown(() => {}, "policy");
-    await expect(withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {}, t)).rejects.toThrow(/did not reload/);
+    const error = await withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {}, t).catch((e: Error) => e);
+    expect(String(error)).toMatch(/did not reload/);
+    const copy = /a copy is at (\S+)\)/.exec(String(error))?.[1] as string;
     expect(restarts()).toBe(2);
-    await t.run();
+    expect(await t.run()).toEqual([]);
     expect(restarts()).toBe(3);
+    expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
+    // The run's error named it: it is not deleted from under that message.
+    expect(existsSync(copy)).toBe(true);
+  });
+
+  it("restarts PowerSync once when a stop comes while the run is still going, whoever finishes first", async () => {
+    const { ps, slots, restarts } = live(Number.POSITIVE_INFINITY, { delayMs: 300 });
+    const t = new Teardown(() => {}, "policy");
+    // The stop's step starts restarting; the run then fails (its devices lose PowerSync) and puts back too.
+    const run = withSyncConfig(
+      slots,
+      ps,
+      `${MUTANT_HEADER}\nstreams: {}\n`,
+      async () => {
+        void t.run();
+        await new Promise((r) => setTimeout(r, 50));
+        throw new Error("devices lost PowerSync");
+      },
+      t,
+    );
+    await expect(run).rejects.toThrow("devices lost PowerSync");
+    expect(await t.run()).toEqual([]);
+    // Loaded once, restored once.
+    expect(restarts()).toBe(2);
     expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
   });
 
