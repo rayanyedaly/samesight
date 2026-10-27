@@ -29,6 +29,12 @@ export interface AuditOptions {
   timeLimitMs: number;
   section: (title: string, findings: Finding[]) => void;
   log: (line: string) => void;
+  /**
+   * Starts a PowerSync service for the differential, once the sync config and catalog
+   * have passed, given the public tables it must read; resolves with where it runs.
+   * Without it, the stack's own service is used.
+   */
+  startPowerSync?: (tables: string[]) => Promise<Pick<Stack, "powersync" | "slotPrefix">>;
 }
 
 /**
@@ -67,7 +73,7 @@ export async function auditTables(client: pg.Client, start: string[]): Promise<s
 }
 
 /** Runs the audit; the findings are reported through `section` as each step ends. */
-export async function audit(client: pg.Client, stack: Stack, o: AuditOptions): Promise<Finding[]> {
+export async function audit(client: pg.Client, given: Stack, o: AuditOptions): Promise<Finding[]> {
   const findings: Finding[] = [];
   const section = (title: string, f: Finding[]) => {
     findings.push(...f);
@@ -107,7 +113,10 @@ export async function audit(client: pg.Client, stack: Stack, o: AuditOptions): P
     return findings;
   }
 
-  const tables = await auditTables(client, [...new Set([...scope.synced, ...scope.reads])]);
+  const named = [...new Set([...scope.synced, ...scope.reads])];
+  const tables = await auditTables(client, named);
+  // Only the tables that exist: a query can read from a function (json_each) too.
+  const stack = o.startPowerSync ? { ...given, ...(await o.startPowerSync(named.filter((t) => tables.includes(t)).sort())) } : given;
   o.log(`signing up users; generating rows for ${tables.join(", ")}`);
   // The literals and user comparisons in the project's own rules steer the generated data.
   const { hints, users } = sqlHints(rules.map((r) => r.sql).join("\n"));

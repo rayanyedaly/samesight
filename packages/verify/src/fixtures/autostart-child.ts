@@ -16,6 +16,7 @@ const client = await connectLocal(stack.db);
 const started = await autoStart({
   projectDir: demo,
   client,
+  dbPort: Number(new URL(stack.db).port),
   api: stack.api,
   ...(stack.jwtSecret ? { jwtSecret: stack.jwtSecret } : {}),
   syncConfig: readFileSync(`${demo}sync-config.yaml`, "utf8"),

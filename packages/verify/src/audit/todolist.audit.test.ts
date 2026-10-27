@@ -24,6 +24,7 @@ const DEMO = fileURLToPath(new URL("../../../../examples/audit-todolist/upstream
 const SYNCED = ["lists", "todos"];
 
 let client: pg.Client;
+let own: pg.Client | undefined;
 let s: Run;
 let started: AutoStarted | undefined;
 beforeAll(async () => {
@@ -32,14 +33,16 @@ beforeAll(async () => {
   client = await connectLocal(stack.db);
   const tables = await auditTables(client, SYNCED);
   if (!given) {
+    own = await connectLocal(stack.db);
     started = await autoStart({
       projectDir: DEMO,
-      client,
+      client: own,
+      dbPort: Number(new URL(stack.db).port),
       api: stack.api,
       ...(stack.jwtSecret ? { jwtSecret: stack.jwtSecret } : {}),
       syncConfig: readFileSync(`${DEMO}sync-config.yaml`, "utf8"),
       tables: SYNCED,
-      log: () => {},
+      log: (line) => process.stderr.write(`${line}\n`),
     });
     stack = { ...stack, powersync: started.url, slotPrefix: started.slotPrefix };
   }
@@ -47,7 +50,8 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => {
   if (s) await tearDown(s);
-  await started?.stop();
+  expect((await started?.stop()) ?? []).toEqual([]);
+  await own?.end();
   await client?.end();
 });
 

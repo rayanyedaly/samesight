@@ -14,22 +14,22 @@
  * RLS (pg_policies) against its own sync config.
  *
  * It refuses any database or service that is not on this machine: it creates users,
- * writes and deletes rows, and (with --mutate) restarts PowerSync.
+ * writes and deletes rows, (with --mutate) restarts PowerSync, and (audit) starts
+ * PowerSync containers and a replication role of its own.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import fc from "fast-check";
+import type pg from "pg";
 import {
-  auditScope,
   buildIR,
   introspect,
   loadPolicy,
   outputPaths,
   PUBLICATION,
   parseStreams,
-  parseSyncConfig,
   plan,
   resolvePolicyPath,
   type SchemaInfo,
@@ -70,18 +70,19 @@ Options:
 Audit options (a project with hand-written RLS and sync config, no policy file):
   --sync-config <file>  the PowerSync sync config (default: sync-config.yaml)
   --project <dir>       the directory holding supabase/ (default: the current directory)
-  --publication <name>  the publication to check; PowerSync replicates "powersync" unless its config says otherwise
   --powersync <url>     audit a PowerSync service you run yourself; without it, audit starts one
                         for this run (needs Docker) and removes it, and all it made, at the end
-  --keep-powersync      leave the service audit started up, for the next audit of the project to reuse
+  --keep-powersync      leave the service audit started up, for the next audit of the project to
+                        reuse (the next audit without the flag removes it)
   --compose <file>      with --powersync: the compose file that runs it, to check its version floor
+  --publication <name>  with --powersync or --static: the publication to check (default: powersync)
   --static, --runs, --seed, --time-limit   as above
 
   -v, --version         print the version
   -h, --help            print this help
 
 Needs the project's local Supabase stack running (supabase start); the policy mode also needs
-its PowerSync service, and audit needs Docker unless given --powersync.
+its PowerSync service, and audit needs Docker unless given --powersync or --static.
 Docs: https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme
 `;
 
@@ -261,7 +262,13 @@ async function auditMain(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
-  if (values["keep-powersync"] && values.powersync !== undefined) throw new Error("--keep-powersync keeps the service audit starts; it cannot be combined with --powersync");
+  const ownService = values.powersync !== undefined;
+  // The service audit starts replicates "powersync"; these only mean something with one of the user's own.
+  if (values["keep-powersync"] && (ownService || values.static)) throw new Error("--keep-powersync keeps the service audit starts; it cannot be combined with --powersync or --static");
+  if (values.compose !== undefined && !ownService) throw new Error("--compose checks the version of a PowerSync service you run yourself; pass it with --powersync");
+  if (values.publication !== undefined && values.publication !== "powersync" && !ownService && !values.static) {
+    throw new Error(`the PowerSync service audit starts replicates the "powersync" publication; --publication ${values.publication} needs --powersync or --static`);
+  }
   const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
   const runs = int("runs", values.runs, 8);
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
@@ -279,33 +286,37 @@ async function auditMain(argv: string[]): Promise<number> {
   const startedAt = Date.now();
   const log = (line: string) => process.stdout.write(`  ${((Date.now() - startedAt) / 1000).toFixed(0)}s  ${line}\n`);
   const syncText = readFileSync(syncPath, "utf8");
-  if (values.powersync !== undefined && values.compose !== undefined) {
+  if (ownService && values.compose !== undefined) {
     const compose = existsSync(values.compose) ? readFileSync(values.compose, "utf8") : null;
     section(
       "PowerSync",
       compose === null ? [{ status: "fail", check: "powersync version", detail: `no ${values.compose}` }] : checkVersionFloor(values.compose, compose),
     );
   }
-  // Without --powersync, a service of the run's own is started once the database is open.
-  let stack = readStack(project, values.powersync ?? "http://127.0.0.1");
+  const stack = readStack(project, values.powersync ?? "http://127.0.0.1");
   const db = await connectLocal(stack.db);
+  // Without --powersync, a service of the run's own, on a connection of its own, once the checks before the differential pass.
+  let client: pg.Client | undefined;
   let started: AutoStarted | undefined;
+  let threw = false;
+  const startPowerSync = async (tables: string[]) => {
+    client = await connectLocal(stack.db);
+    started = await autoStart({
+      projectDir: project,
+      client,
+      dbPort: Number(new URL(stack.db).port || 5432),
+      api: stack.api,
+      ...(stack.jwtSecret ? { jwtSecret: stack.jwtSecret } : {}),
+      syncConfig: syncText,
+      tables,
+      log,
+      keep: values["keep-powersync"] === true,
+    });
+    const how = started.reused ? "kept by an earlier audit and reused" : "started by audit for this run";
+    section("PowerSync", [{ status: "ok", check: "powersync version", detail: `${started.version}, ${how} (pinned; at least the 1.20.1 security floor)` }]);
+    return { powersync: started.url, slotPrefix: started.slotPrefix };
+  };
   try {
-    const tables = values.powersync === undefined && values.static !== true ? replicatedTables(syncText) : undefined;
-    if (tables) {
-      started = await autoStart({
-        projectDir: project,
-        client: db,
-        api: stack.api,
-        ...(stack.jwtSecret ? { jwtSecret: stack.jwtSecret } : {}),
-        syncConfig: syncText,
-        tables,
-        log,
-        keep: values["keep-powersync"] === true,
-      });
-      stack = { ...stack, powersync: started.url, slotPrefix: started.slotPrefix };
-      section("PowerSync", [{ status: "ok", check: "powersync version", detail: `${started.version}, started by audit for this run (pinned; at least the 1.20.1 security floor)` }]);
-    }
     await audit(db, stack, {
       syncConfig: { path: syncPath, text: syncText },
       ...(values.publication !== undefined ? { publication: values.publication } : {}),
@@ -315,27 +326,19 @@ async function auditMain(argv: string[]): Promise<number> {
       ...(seed !== undefined ? { seed } : {}),
       section,
       log,
+      ...(ownService ? {} : { startPowerSync }),
     });
+  } catch (e) {
+    threw = true;
+    throw e;
   } finally {
-    const left = (await started?.stop()) ?? [];
-    if (left.length) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit of this project removes it` })));
+    // A run that broke down shows the service's last words before they are removed.
+    const left = (await started?.stop(threw ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? [];
+    if (left.length) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit that starts PowerSync removes it` })));
+    await client?.end();
     await db.end();
   }
   return report(findings, startedAt);
-}
-
-/**
- * The public tables PowerSync must read for this sync config: the synced ones and those
- * their queries read. Undefined when the config cannot be read, which the audit reports.
- */
-function replicatedTables(syncText: string): string[] | undefined {
-  try {
-    const config = parseSyncConfig(syncText);
-    const scope = auditScope(config.streams, config.kind);
-    return [...new Set([...scope.synced, ...scope.reads])].sort();
-  } catch {
-    return undefined;
-  }
 }
 
 function report(findings: Finding[], started: number): number {
