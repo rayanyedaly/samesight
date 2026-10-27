@@ -33,7 +33,7 @@ pnpm install
 | `pnpm --filter fieldbook test:db` | Fieldbook's stack | pgTAP tests of the generated migration. |
 | `pnpm --filter @samesight/verify test:stack` | Fieldbook's stack | Catalog tamper cases, the differential and the write path. |
 | `pnpm --filter fieldbook policy:verify` | Fieldbook's stack | The full verifier with the mutation test. |
-| `pnpm --filter @samesight/verify test:audit` | the to-do demo's stack | Audit mode tamper cases. |
+| `pnpm --filter @samesight/verify test:audit` | the to-do demo's Supabase stack, and Docker | Audit mode tamper cases, and auto-start's clean-up. |
 
 Start the stacks with `pnpm --filter fieldbook stack:up` (then `seed`), `pnpm --filter quickstart stack:up` and `pnpm --filter audit-todolist stack:up`. They run side by side; `pnpm --filter quickstart policy:verify` runs the full verifier on the quickstart.
 
