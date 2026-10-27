@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import fc from "fast-check";
 import type pg from "pg";
 import { ident } from "samesight/compiler";
-import type { ColumnModel, ForeignKeyModel, TableModel } from "./model.ts";
+import { type ColumnModel, type ForeignKeyModel, jsPattern, type TableModel } from "./model.ts";
 
 export interface Member {
   id: string;
@@ -66,9 +66,11 @@ function baseScalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
   const t = c.type;
   if (c.values?.length) return fc.constantFrom(...new Set([...c.values, ...c.hints]));
   if (c.pattern !== undefined) {
-    // A Postgres pattern JavaScript cannot run (a POSIX class, say) leaves the column to plain strings.
+    // A Postgres-only pattern (a POSIX class, say) gets plain strings: rows it refuses are skipped.
+    const re = jsPattern(c.pattern);
+    if (!re) return fc.string({ maxLength: 12 });
     try {
-      return fc.stringMatching(new RegExp(c.pattern));
+      return fc.stringMatching(re);
     } catch {
       return fc.string({ maxLength: 12 });
     }

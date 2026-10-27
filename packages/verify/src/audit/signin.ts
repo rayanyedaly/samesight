@@ -16,13 +16,13 @@ export type SignInKind =
   /** No run user's token carries it. */
   | "absent";
 
-export const SIGN_IN: Record<string, { kind: SignInKind; fact: string }> = {
-  aal: { kind: "alike", fact: "aal1: a password sign-in, no second factor" },
-  is_anonymous: { kind: "alike", fact: "false" },
-  phone: { kind: "alike", fact: "empty: run users have no phone" },
-  "app_metadata.provider": { kind: "alike", fact: "email" },
-  "app_metadata.providers": { kind: "alike", fact: '["email"]' },
-  "user_metadata.email_verified": { kind: "alike", fact: "true" },
+export const SIGN_IN: Record<string, { kind: SignInKind; fact: string; value?: unknown }> = {
+  aal: { kind: "alike", fact: "aal1: a password sign-in, no second factor", value: "aal1" },
+  is_anonymous: { kind: "alike", fact: "false", value: false },
+  phone: { kind: "alike", fact: "empty: run users have no phone", value: "" },
+  "app_metadata.provider": { kind: "alike", fact: "email", value: "email" },
+  "app_metadata.providers": { kind: "alike", fact: '["email"]', value: ["email"] },
+  "user_metadata.email_verified": { kind: "alike", fact: "true", value: true },
   amr: { kind: "set", fact: "the password method, with the time of each sign-in" },
   exp: { kind: "set", fact: "when each token expires" },
   iat: { kind: "set", fact: "when each token was issued" },
@@ -46,7 +46,7 @@ export function signInDetail(key: string): string {
     case "own":
       return `each run user has its own ${key} (${f.fact}), which audit does not choose or put in generated rows, so rules matching it are tested on rows that do not match it`;
     case "absent":
-      return `Supabase Auth puts no ${key} in a password user's token, so every run user reads it as null`;
+      return `no run user's token carries ${key} (Supabase Auth adds none for a user made by its admin API), so every run user reads it as null`;
     default:
       return `every run user is a password user at aal1 with no other sign-in state, so rules reading ${key} are tested for that state only`;
   }
@@ -54,14 +54,14 @@ export function signInDetail(key: string): string {
 
 /** Coverage's reason for rules reading these claim keys, or undefined when none is sign-in state. */
 export function signInReason(keys: string[]): string | undefined {
-  const byKind = (kind: SignInKind) => keys.filter((k) => SIGN_IN[signInKeyOf(k)]?.kind === kind);
-  const absent = byKind("absent");
-  if (absent.length) return `it reads ${absent.join(", ")}, which no run user's token carries; see Claims`;
-  const alike = byKind("alike");
-  if (alike.length) return `it reads ${alike.join(", ")}, which every run user has alike (an aal1 password user); see Claims`;
-  const chosen = [...byKind("set"), ...byKind("own")];
-  if (chosen.length) return `it reads ${chosen.join(", ")}, whose values audit does not choose or put in generated rows; see Claims`;
-  return undefined;
+  const byKind = (...kinds: SignInKind[]) => keys.filter((k) => kinds.includes(SIGN_IN[signInKeyOf(k)]?.kind as SignInKind));
+  const clauses = [
+    [byKind("absent"), "which no run user's token carries"],
+    [byKind("alike"), "which every run user has alike (an aal1 password user)"],
+    [byKind("set", "own"), "whose values audit does not choose or put in generated rows"],
+  ] as const;
+  const said = clauses.filter(([ks]) => ks.length).map(([ks, why]) => `${ks.join(", ")}, ${why}`);
+  return said.length ? `it reads ${said.join("; and ")}; see Claims` : undefined;
 }
 
 /** A claim key's sign-in fact key: amr.0.method reads amr. */
