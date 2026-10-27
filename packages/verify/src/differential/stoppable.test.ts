@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import type { Stack } from "../stack.ts";
 import { LEFT_FOR_NEXT } from "../autostart/teardown.ts";
-import { holdingLock, stoppable } from "./run.ts";
+import { holdingLock, setUp, stoppable } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
 const fresh = { sql: [] as string[], lock: true, ended: false };
@@ -102,5 +102,33 @@ describe("stoppable", () => {
     });
     await expect(stop.step()).resolves.toBeUndefined();
     expect(lines).toEqual([`could not remove the run's users and rows: refusing to connect; ${LEFT_FOR_NEXT}`]);
+  });
+});
+
+describe("policy mode's setUp", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("lets Auth pick its users' ids: it asks for none", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        if (url.endsWith("/auth/v1/admin/users")) {
+          bodies.push(JSON.parse(String(init.body)));
+          return new Response(JSON.stringify({ id: `0c0c0c0c-0000-4000-8000-00000000000${bodies.length}` }), { status: 200 });
+        }
+        return new Response("no", { status: 400 });
+      }),
+    );
+    const client = {
+      on: vi.fn(),
+      query: async (text: string) => ({ rows: /pg_try_advisory_lock/.test(text) ? [{ locked: true }] : [] }),
+    } as unknown as pg.Client;
+    const ir = { tables: [], claims: { roles: ["admin", "member"] }, membership: { table: "members", user: "user_id", tenant: "org_id", role: "role" } };
+    await expect(setUp(client, { ...stack, api: "http://127.0.0.1:54321" }, ir as never)).rejects.toThrow(/\/token/);
+    expect(bodies.length).toBeGreaterThan(0);
+    expect(bodies.filter((b) => "id" in b)).toEqual([]);
   });
 });
