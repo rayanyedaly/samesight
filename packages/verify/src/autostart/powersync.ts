@@ -28,8 +28,24 @@ export interface PowerSync {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** The service's address on this machine, from the port Docker published. */
+export async function serviceUrl(docker: Docker, container: string): Promise<string> {
+  const address = (await docker.run(["port", container, "8080/tcp"])).split(/\r?\n/).find((l) => l.startsWith("127.0.0.1:"));
+  if (!address) throw new Error(`docker published no 127.0.0.1 port for ${container}`);
+  return `http://${address}`;
+}
+
+export const isReady = (url: string) =>
+  fetch(`${url}/probes/readiness`, { signal: AbortSignal.timeout(2000) }).then(
+    (r) => r.ok,
+    () => false,
+  );
+
 /** Starts the service with this config and waits for its readiness probe. */
-export async function startPowerSync(docker: Docker, o: { run: string; project: string; network: string; config: string; timeoutMs?: number }): Promise<PowerSync> {
+export async function startPowerSync(
+  docker: Docker,
+  o: { run: string; project: string; network: string; config: string; labels?: string[]; timeoutMs?: number },
+): Promise<PowerSync> {
   const container = containerName(o.run, "powersync");
   await docker.run(
     [
@@ -38,6 +54,7 @@ export async function startPowerSync(docker: Docker, o: { run: string; project: 
       "--name",
       container,
       ...labels(o.run, o.project),
+      ...(o.labels ?? []).flatMap((l) => ["--label", l]),
       "--network",
       o.network,
       "--publish",
@@ -54,9 +71,7 @@ export async function startPowerSync(docker: Docker, o: { run: string; project: 
     ],
     { POWERSYNC_CONFIG_B64: Buffer.from(o.config).toString("base64") },
   );
-  const address = (await docker.run(["port", container, "8080/tcp"])).split(/\r?\n/).find((l) => l.startsWith("127.0.0.1:"));
-  if (!address) throw new Error(`docker published no 127.0.0.1 port for ${container}`);
-  const url = `http://${address}`;
+  const url = await serviceUrl(docker, container);
 
   const timeoutMs = o.timeoutMs ?? 120_000;
   const deadline = Date.now() + timeoutMs;
@@ -65,11 +80,7 @@ export async function startPowerSync(docker: Docker, o: { run: string; project: 
     return new Error(`the PowerSync service ${why}${logs ? `; its last log lines:\n${logs}` : ""}`);
   };
   for (;;) {
-    const ready = await fetch(`${url}/probes/readiness`, { signal: AbortSignal.timeout(2000) }).then(
-      (r) => r.ok,
-      () => false,
-    );
-    if (ready) return { container, url };
+    if (await isReady(url)) return { container, url };
     const state = await docker.inspect<{ State: { Running: boolean } }>("container", container);
     if (!state?.State.Running) throw await failure("stopped while starting");
     if (Date.now() > deadline) throw await failure(`was not ready within ${timeoutMs / 1000}s`);

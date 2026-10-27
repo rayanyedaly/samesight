@@ -28,8 +28,8 @@ afterAll(async () => {
 });
 
 /** Starts the child and resolves with it and its PowerSync URL once it prints READY. */
-function startChild(): Promise<{ child: ChildProcess; url: string }> {
-  const child = spawn(process.execPath, [CHILD], { stdio: ["ignore", "pipe", "pipe"] });
+function startChild(keep = false): Promise<{ child: ChildProcess; url: string }> {
+  const child = spawn(process.execPath, [CHILD], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, SAMESIGHT_KEEP: keep ? "1" : "0" } });
   let err = "";
   child.stderr?.on("data", (d: Buffer) => {
     err += d.toString();
@@ -78,4 +78,21 @@ describe("auto-start on the demo", () => {
     expect((await sweep(docker, client, PROJECT)).length).toBeGreaterThan(0);
     expect(await leftovers()).toEqual([]);
   }, 120_000);
+
+  it("keeps the service with keep, reuses it for the same config, and sweeps it otherwise", async () => {
+    const first = await startChild(true);
+    const firstExit = exited(first.child);
+    first.child.kill("SIGINT");
+    await firstExit;
+    const kept = await leftovers();
+    expect(kept.length).toBeGreaterThan(0);
+    expect((await fetch(`${first.url}/probes/readiness`)).ok).toBe(true);
+    // The same config: reused, and removed at the end of a run that does not keep it.
+    const second = await startChild(false);
+    expect(second.url).toBe(first.url);
+    const secondExit = exited(second.child);
+    second.child.kill("SIGINT");
+    await secondExit;
+    expect(await leftovers()).toEqual([]);
+  }, 240_000);
 });
