@@ -5,6 +5,7 @@
  * not have sent reaches a device.
  */
 
+import type { Teardown } from "../autostart/teardown.ts";
 import fc from "fast-check";
 import { parse } from "yaml";
 import type { Finding } from "../report.ts";
@@ -20,6 +21,8 @@ export interface MutationOptions {
   maxWorlds: number;
   seed?: number;
   log?: (line: string) => void;
+  /** The run's teardown: a stop puts the sync config back as a step of it. */
+  teardown?: Teardown;
 }
 
 export interface MutationResult {
@@ -103,7 +106,7 @@ export async function mutationTest(s: Setup, ps: PowerSyncControl, syncYaml: str
         });
         if (genuine.length) break;
       }
-    });
+    }, options.teardown);
   }
 
   const all = [...rls.mutants, ...sync.mutants];

@@ -72,7 +72,7 @@ export class Teardown {
   }
 }
 
-type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
+type Signal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGBREAK";
 
 /** An audit (`audit`), or a run under a Samesight policy (`policy`). */
 export type Mode = "audit" | "policy";
@@ -95,13 +95,15 @@ export interface Signals {
   on(event: Signal, listener: () => void): unknown;
   off(event: Signal, listener: () => void): unknown;
   exit(code: number): never;
+  /** win32 also has Ctrl+Break (SIGBREAK). */
+  platform?: string;
   stdout: Pick<NodeJS.EventEmitter, "on" | "off">;
   stderr: Pick<NodeJS.EventEmitter, "on" | "off">;
 }
 
 /**
- * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP, then exits as a killed process would
- * (130, 143, 129); and when the output fails (a closed terminal, or a reader that left:
+ * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP (and Ctrl+Break, SIGBREAK, on Windows),
+ * then exits as a killed process would (130, 143, 129; 149); and when the output fails (a closed terminal, or a reader that left:
  * | head, | tee), exits 141 as on SIGPIPE (129 when SIGHUP comes first), or 1 for any
  * other output error. During it, a different signal does not cut it short; the same one
  * again a second or more later (Ctrl+C again, a second SIGTERM) exits at once, and so
@@ -156,11 +158,12 @@ export function onSignals(
       void teardown.run().then(() => proc.exit(exitCode));
     }
   };
-  const handlers = [
+  const handlers: [Signal, () => void][] = [
     ["SIGINT", () => end("SIGINT", 130)],
     ["SIGTERM", () => end("SIGTERM", 143)],
     ["SIGHUP", () => end("SIGHUP", 129)],
-  ] as const;
+    ...(proc.platform === "win32" ? [["SIGBREAK", () => end("SIGBREAK", 149)] as [Signal, () => void]] : []),
+  ];
   // Unhandled, a failed write would end the process at once, before any teardown.
   const broken = (e: NodeJS.ErrnoException) => end("output closed", e.code === "EPIPE" || e.code === "EIO" ? 141 : 1);
   for (const [signal, fn] of handlers) proc.on(signal, fn);
