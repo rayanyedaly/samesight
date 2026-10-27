@@ -8,7 +8,7 @@
 import fc from "fast-check";
 import { parse } from "yaml";
 import type { Finding } from "../report.ts";
-import { parseStreams } from "../static/streams.ts";
+import { parseStreams } from "samesight/compiler";
 import { compareAll, describeFailures, type Setup, syncAll, withWorld } from "../differential/run.ts";
 import { worldArbitrary } from "../differential/world.ts";
 import { type Equivalent, mutantConfig, type RlsMutant, rlsMutants, type SyncMutant, syncMutants } from "./mutants.ts";

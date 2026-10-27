@@ -7,9 +7,8 @@
  */
 
 import type pg from "pg";
-import { ident } from "samesight/compiler";
+import { ident, parseQuery, sqlText, type Token, tokenize } from "samesight/compiler";
 import { rolledBack, rows } from "../db.ts";
-import { parseQuery, sqlText, type Token, tokenize } from "../static/stream-sql.ts";
 import type { SyncMutant } from "./mutants.ts";
 
 const quote = (v: unknown) => (v === null || v === undefined ? "null" : typeof v === "number" ? String(v) : `'${String(v).replaceAll("'", "''")}'`);

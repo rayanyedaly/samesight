@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { ir, syncConfig } from "../fixtures/fieldbook.ts";
 import { splitSqlStatements } from "../sql.ts";
-import { parseStreams } from "../static/streams.ts";
+import { parseStreams } from "samesight/compiler";
 import { toPostgres } from "./explain.ts";
 import { mutantConfig, rlsMutants, syncMutants } from "./mutants.ts";
 

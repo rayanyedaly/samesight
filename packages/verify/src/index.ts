@@ -7,5 +7,6 @@
 export { failed, type Finding, formatFindings } from "./report.ts";
 export { checkClientSchema, readClientSchema } from "./static/client-schema.ts";
 export { checkManifest, type Manifest } from "./static/manifest.ts";
-export { checkStreams, parseStreams, type Stream } from "./static/streams.ts";
+export { parseStreams, type Stream } from "samesight/compiler";
+export { checkStreams } from "./static/streams.ts";
 export { checkVersionFloor, VERSION_FLOOR } from "./static/version-floor.ts";

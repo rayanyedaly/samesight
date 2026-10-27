@@ -41,7 +41,8 @@
     "prepack": "pnpm run build"
   },
   "dependencies": {
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/pg": "8.23.1"
@@ -55,7 +56,8 @@
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
     "!src/fixtures",
-    "!src/**/__golden__"
+    "!src/**/__golden__",
+    "!src/**/__snapshots__"
   ],
   "publishConfig": {
     "access": "public",

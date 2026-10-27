@@ -2,7 +2,7 @@
 /**
  * Packs every published package the way `pnpm publish` would, installs the tarballs with
  * npm into fresh projects outside the workspace, and uses them as a user would: both CLIs,
- * `samesight check` and `explain` on Fieldbook's policy, policy loading under CommonJS and
+ * `samesight check`, `explain` and `lint` on Fieldbook, policy loading under CommonJS and
  * as .mts, `init` with no database, the runtime packages imported by plain Node, and
  * consumer code type-checked under several TypeScript versions and module resolutions.
  *
@@ -131,6 +131,25 @@ step("samesight check catches drift", () => {
     expectIn(runFailing("npx", ["--no-install", "samesight", "check"], { cwd: cli }), "powersync/sync-config.yaml differs from the policy", "drift");
   } finally {
     writeFileSync(path, original);
+  }
+});
+step("samesight lint on Fieldbook", () => {
+  expectIn(samesight("lint"), "No problems found.", "lint");
+  // The RLS rules ran too: lint found the copied migrations.
+  const report = JSON.parse(samesight("lint", "--format", "json"));
+  if (!report.rlsChecked || report.exitCode !== 0) throw new Error(`lint --format json: ${JSON.stringify(report)}`);
+});
+step("samesight lint catches a leak", () => {
+  writeFileSync(join(cli, "leaky.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM inspections\n");
+  try {
+    run("npx", ["--no-install", "samesight", "lint", "leaky.yaml"], { cwd: cli });
+    throw new Error("lint passed a leak");
+  } catch (e) {
+    // Exit 1 is findings; 2 would mean lint could not run.
+    if (e.status !== 1) throw e;
+    expectIn(e.stdout, "(unscoped-query)", "lint leak");
+  } finally {
+    rmSync(join(cli, "leaky.yaml"));
   }
 });
 step('a .ts policy under "type": "commonjs" names the fix', () => {
