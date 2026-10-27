@@ -141,7 +141,7 @@ export async function policyFunctions(client: pg.Client): Promise<Map<string, st
              or (not starts_with(fn.nspname, 'pg_')
                  and fn.nspname not in ('extensions', ${SUPABASE_SCHEMAS.map((x) => `'${x}'`).join(", ")})
                  and not exists (select from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = f.oid and e.deptype = 'e')))
-      -- Overloads of one argument count by their types too, so their joined bodies keep one order.
+      -- Overloads of one argument count by their arguments (names, then types) too, so their joined bodies keep one order.
       order by 1, 2, 3, pg_get_function_identity_arguments(f.oid)`,
     ),
   );
@@ -176,7 +176,7 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
   // hook's when the project enables one: only the hook could add it there.
   const classOf = (path: string[]): ClaimClass => {
     const cls = classify(path);
-    return options.hook && cls === "auth-state" && SIGN_IN[signInKeyOf(claimKey(path))]?.kind === "absent" ? "hook" : cls;
+    return options.hook && cls === "auth-state" && path.length === 1 && SIGN_IN[signInKeyOf(claimKey(path))]?.kind === "absent" ? "hook" : cls;
   };
   const uses = new Map<string, ClaimUse>();
   const unreadable: ClaimsPlan["unreadable"] = [];

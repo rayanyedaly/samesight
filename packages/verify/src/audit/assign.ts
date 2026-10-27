@@ -173,11 +173,16 @@ function fitsNumber(v: ClaimValue, type: string, numeric = false): boolean {
   if (text !== undefined && /^(real|float4|double precision|float8)$/.test(type) && canonicalNumber(text) !== undefined) {
     const n = Number(text);
     const stored = /^(real|float4)$/.test(type) ? Math.fround(n) : n;
-    // Read as a number, any spelling of a number the float holds exactly (1e2, 0.50).
-    const exact = numeric ? canonicalNumber(String(stored)) === canonicalNumber(text) : String(stored) === text;
+    // Read as a number, any spelling of a number the float holds exactly (1e2, 0.50). Read as
+    // text, the one Postgres prints, which JS shares only where neither takes an exponent.
+    const point = Number(/e(-?\d+)$/.exec(canonicalNumber(text) ?? "")?.[1] ?? 1);
+    const plain = n === 0 || (point >= -3 && point <= (/^(real|float4)$/.test(type) ? 6 : 15));
+    const exact = numeric ? canonicalNumber(String(stored)) === canonicalNumber(text) : plain && String(stored) === text;
     return Number.isFinite(n) && exact;
   }
   if (text === undefined || !/^-?\d+(\.\d+)?$/.test(text)) return false;
+  // Read as text, a number column matches only its printed form: no leading zero or minus zero.
+  if (!numeric && (!/^-?(0|[1-9]\d*)(\.\d+)?$/.test(text) || /^-0(\.0+)?$/.test(text))) return false;
   const range = WHOLE[type];
   if (range) {
     if (!/^-?\d+$/.test(text) || (typeof v === "number" && !Number.isSafeInteger(v))) return false;
@@ -191,6 +196,8 @@ function fitsNumber(v: ClaimValue, type: string, numeric = false): boolean {
   if (ps) {
     const [whole = "", fraction = ""] = text.replace(/^-/, "").split(".");
     const scale = Number(ps[2] ?? 0);
+    // Postgres prints numeric(p,s) with s decimals: 1.5 as 1.50.
+    if (!numeric && fraction.length !== scale) return false;
     return fraction.replace(/0+$/, "").length <= scale && whole.replace(/^0+/, "").length <= Number(ps[1]) - scale;
   }
   return true;
@@ -387,11 +394,15 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
     const families = new Set(u.casts.map(castFamily));
     const family = families.size === 1 && !families.has("unknown") ? [...families][0] : undefined;
     const same = valueKeyFor(u.numeric);
-    const values = [...u.values.filter((v) => v !== null), ...hookOptions].filter((v, i, all) => all.findIndex((w) => same(w) === same(v)) === i);
+    const given = [...u.values.filter((v) => v !== null), ...hookOptions];
+    // A value no rule names beside them, as for metadata: one value alone would make every row alike.
+    const other = otherValue(given, u.casts, mintKey);
+    const values = [...given, ...(other === undefined ? [] : [other])].filter((v, i, all) => all.findIndex((w) => same(w) === same(v)) === i);
     for (const x of targetsOf(u.columns, u.columnTables, family, model).targets) {
       if (x.key || x.users || perUser.has(x.table)) continue;
       const fits = values.filter((v) => fitsType(v, x.type, u.numeric) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || jsPattern(x.pattern)?.test(String(v)) === true));
-      if (!fits.length) continue;
+      // A parent table's rows (a team per run user) take them in turn: fewer than two leave them all alike.
+      if (fits.length < 2) continue;
       const columns = claimValues.get(x.table) ?? new Map<string, unknown[]>();
       claimValues.set(x.table, columns);
       columns.set(x.column, [...new Set([...(columns.get(x.column) ?? []), ...fits])]);

@@ -153,7 +153,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     const coverage = await coverageScope(client, scope.synced, config.streams, p.functions, config.kind, held);
     const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
     section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, qualifyDifferential(result.findings, coverage));
-    section(coverageTitle(coverage, result), coverageFindings(coverage, held, assignment.partial));
+    section(coverageTitle(coverage, result), coverageFindings(coverage, held, assignment.partial, new Set(claims.uses.filter((u) => u.cls === "hook").map((u) => u.key))));
     o.log("writing as each user");
     const [world] = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 16 }), { numRuns: 1, seed: o.seed ?? 7 });
     section("Write path", world ? await checkWriteEscape(s, world, undefined, scope.reads) : [{ status: "fail", check: "write path", detail: "no dataset was generated" }]);

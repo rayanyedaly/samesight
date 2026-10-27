@@ -67,6 +67,9 @@ describe("planClaims", () => {
     const rules = [policy("p", "(org_id = ((auth.jwt() ->> 'client_id'::text))::uuid)"), policy("q", "((auth.jwt() ->> 'aal'::text) = 'aal2'::text)")];
     expect(planClaims(rules).uses.map((u) => [u.key, u.cls])).toEqual([["aal", "auth-state"], ["client_id", "auth-state"]]);
     expect(planClaims(rules, new Map(), { hook: true }).uses.map((u) => [u.key, u.cls])).toEqual([["aal", "auth-state"], ["client_id", "hook"]]);
+    // A user made by signing up carries user_metadata.email: not only a hook could add it.
+    const email = [policy("e", "((auth.jwt() -> 'user_metadata'::text) ->> 'email'::text) = email")];
+    expect(planClaims(email, new Map(), { hook: true }).uses.map((u) => u.cls)).toEqual(["auth-state"]);
   });
 });
 

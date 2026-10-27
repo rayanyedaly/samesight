@@ -456,6 +456,13 @@ describe("claims compared with columns", () => {
     expect([fitsType("1e2", "double precision"), fitsType("0.10", "double precision"), fitsType("0.5", "real"), fitsType("100", "double precision")]).toEqual([false, false, true, true]);
     expect([fitsType("0100", "integer"), fitsType("-0", "integer"), fitsType("100", "integer"), fitsType(100, "integer")]).toEqual([false, false, true, true]);
     expect([fitsType("0100", "integer", true), fitsType("1e2", "double precision", true)]).toEqual([true, true]);
+    // Where Postgres prints an exponent and JS does not (1e+15, 1e+06 as real, 1e-05).
+    expect(["100000000000000", "1000000000000000", "0.0001", "0.00001"].map((v) => fitsType(v, "double precision"))).toEqual([true, false, true, false]);
+    expect(["100000", "1000000"].map((v) => fitsType(v, "real"))).toEqual([true, false]);
+    // numeric keeps the scale it is given; numeric(p,s) prints s decimals.
+    expect(["1.50", "100", "0100", "-0", "1.5"].map((v) => fitsType(v, "numeric"))).toEqual([true, true, false, false, true]);
+    expect(["1.50", "1.5", "2"].map((v) => fitsType(v, "numeric(5,2)"))).toEqual([true, false, false]);
+    expect(["1.5", "0100"].map((v) => fitsType(v, "numeric(5,2)", true))).toEqual([true, true]);
   });
 
   it("treats a pattern with Postgres-only syntax as one audit cannot read", () => {
@@ -476,7 +483,7 @@ describe("claims compared with columns", () => {
 });
 
 describe("one number, one value, where the rules read numbers", () => {
-  it("takes every numeric type the claim reader does as a number", () => {
+  it("takes every numeric type, with or without a typmod, as a number", () => {
     expect(["float", "float8", "numeric(10,2)", "int8", "double precision", "text"].map(castFamily)).toEqual(["number", "number", "number", "number", "number", "text"]);
   });
 
