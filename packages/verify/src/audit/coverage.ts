@@ -309,3 +309,71 @@ export function pending(cov: Coverage): boolean {
   const open = (x: { reachable: boolean; tally: Tally }) => x.reachable && x.tally.error === undefined && stateOf(x.tally) !== "exercised";
   return cov.policies.some((p) => !p.sameForAll && open(p)) || cov.units.some(open);
 }
+
+const SIDES: Record<State, [string, string]> = {
+  exercised: ["", ""],
+  "only allowed": ["only allowed rows seen", "only sent rows seen"],
+  "only refused": ["only refused rows seen", "only withheld rows seen"],
+  "not seen": ["no row seen either way", "no row seen either way"],
+};
+
+/** Why a rule was not seen both ways, as far as the run can tell. */
+function reason(cov: Coverage, x: { table: string; claims: string[]; reachable: boolean; tally: Tally }, held: ReadonlySet<string>, together: boolean, kind: "permissive" | "restrictive" | "stream"): string {
+  if (!cov.inserted.get(x.table)) return `no ${x.table} row was inserted`;
+  const missing = x.claims.filter((k) => !held.has(k));
+  if (missing.length) return `it reads ${missing.join(", ")}, which no run user holds; see Claims`;
+  if (!x.reachable) return "it reads the token in a way audit cannot follow; see Claims";
+  const state = stateOf(x.tally);
+  if (kind === "restrictive") return state === "only refused" ? "it let no row through" : "it kept out no row the other policies let through";
+  if (kind === "permissive" && state !== "only refused") return "every row it kept from a user, another policy let through";
+  if (kind === "stream" && state === "only allowed") return "it sent every generated row to every run user";
+  if (x.claims.length > 1 && together) return "no run user holds the values it needs together";
+  return "no generated row matched it";
+}
+
+/**
+ * The Coverage section: a summary, then each rule not seen both ways, with the side seen
+ * and why. `held` are the claim keys run users hold; `together` is true when users could
+ * not hold every combination of their values.
+ */
+export function coverageFindings(cov: Coverage, held: ReadonlySet<string>, together: boolean): Finding[] {
+  const out: Finding[] = [];
+  const measured = cov.triggers.length ? [] : cov.policies;
+  const policyLine = (p: ScopedPolicy): Finding | undefined => {
+    const name = `policy "${p.name}" on ${p.table}${p.permissive ? "" : " (restrictive)"}`;
+    if (p.tally.error !== undefined) return { status: "warn", check: "coverage", detail: `${name}: a read failed, so it was not measured (${p.tally.error})` };
+    const state = stateOf(p.tally);
+    if (state === "exercised") return undefined;
+    if (p.sameForAll) return { status: "ok", check: "coverage", detail: `${name}: ${SIDES[state][0]}; it reads nothing of the user, so it applies to every user alike` };
+    return { status: "warn", check: "coverage", detail: `${name}: ${SIDES[state][0]} (${reason(cov, p, held, together, p.permissive ? "permissive" : "restrictive")})` };
+  };
+  const unitLine = (u: StreamUnit): Finding | undefined => {
+    const name = u.streams.length > 1 ? `streams ${u.streams.join(" + ")} (one bucket), ${u.table}` : `stream ${u.streams[0]}, ${u.table}`;
+    if (u.tally.error !== undefined) return { status: "warn", check: "coverage", detail: `${name}: not measured (${u.tally.error})` };
+    const state = stateOf(u.tally);
+    if (state === "exercised") return undefined;
+    return { status: "warn", check: "coverage", detail: `${name}: ${SIDES[state][1]} (${reason(cov, u, held, together, "stream")})` };
+  };
+  const policyLines = measured.map(policyLine);
+  const unitLines = cov.units.map(unitLine);
+  const both = (n: number, of: number, what: string, verb: string) => `${n} of ${of} ${what} ${verb}`;
+  const exercised = (lines: (Finding | undefined)[]) => lines.filter((l) => l === undefined).length;
+  const parts: string[] = [];
+  if (measured.length) {
+    const n = exercised(policyLines);
+    parts.push(`${both(n, measured.length, measured.length === 1 ? "RLS read policy on synced tables" : "RLS read policies on synced tables", n === 1 ? "was seen both allowing and refusing a run user a row" : "were seen both allowing and refusing a run user a row")}${n < measured.length ? `; ${measured.length - n} ${measured.length - n === 1 ? "was" : "were"} not (below)` : ""}.`);
+  }
+  if (cov.units.length) {
+    const n = exercised(unitLines);
+    parts.push(`${both(n, cov.units.length, cov.units.length === 1 ? "stream/table pair" : "stream/table pairs", "both sent and withheld a row")}.`);
+  }
+  if (parts.length) out.push({ status: "ok", check: "coverage", detail: parts.join(" ") });
+  out.push(...[...policyLines, ...unitLines].filter((l): l is Finding => l !== undefined), ...cov.notes);
+  return out;
+}
+
+/** Rules that tell users apart and were not seen both ways: what the Differential line owns up to. */
+export function untested(cov: Coverage): number {
+  const policies = cov.triggers.length ? [] : cov.policies.filter((p) => !p.sameForAll);
+  return [...policies, ...cov.units].filter((x) => x.tally.error !== undefined || stateOf(x.tally) !== "exercised").length;
+}

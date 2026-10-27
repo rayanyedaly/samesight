@@ -400,6 +400,8 @@ export interface DifferentialResult {
   runs: number;
   /** The shrunk failing world's problems, in plain words. */
   counterexample?: string[];
+  /** The time limit ended the run before every dataset. */
+  stopped?: boolean;
 }
 
 /** Problems a run fails on, and those it only warns about: in an audit, sync may be meant to send less than RLS allows. */
@@ -550,7 +552,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       ]),
     };
   }
-  if (x.crash !== undefined) return fail(`the run failed: ${String(x.crash)}`, x.datasets);
+  if (x.crash !== undefined) return { ...fail(`the run failed: ${String(x.crash)}`, x.datasets), stopped: x.stopped };
   if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit" }] };
   const untested = s.tables
     .filter((t) => s.synced.includes(t.name))
@@ -575,6 +577,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const sum = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0);
   return {
     runs: x.datasets,
+    stopped: x.stopped,
     findings: withGaps([
       {
         status: "ok",
