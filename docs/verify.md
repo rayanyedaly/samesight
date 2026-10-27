@@ -128,7 +128,7 @@ end $$;
 SQL
 ```
 
-The run's users (`@verify.samesight.test`) and its rows (uuid keys starting `5a3e5a3e`) are removed when it ends, and by the next run if it was killed. Until then, some of those users can hold privileged `app_metadata` such as `role: admin`, with a random password nobody is shown. To remove them by hand, with no audit running: `delete from auth.users where email like '%@verify.samesight.test'` (delete the run's rows first if a foreign key without `on delete cascade` points at those users).
+The run's users (`@verify.samesight.test`) and its rows (uuid keys starting `5a3e5a3e`) are removed when the run ends by passing, failing or an error. A run stopped by a signal (Ctrl+C included) or killed leaves them until the next audit that reaches the differential removes them first. Until then, some of those users can hold privileged `app_metadata` such as `role: admin`, with a random password nobody is shown. To remove them by hand, with no audit running: `delete from auth.users where email like '%@verify.samesight.test'` (delete the run's rows first if a foreign key without `on delete cascade` points at those users).
 
 Passwords and the service config travel to the containers through Docker's environment, never on a command line; like any container's environment, they are visible to `docker inspect` while the containers exist. The errors from starting PowerSync, the service's log lines and auto-start's own log lines have the run's passwords and the JWT secret masked.
 

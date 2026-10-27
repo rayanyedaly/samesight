@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fails when audit runs left anything behind on a project's local stack: auto-started
-# containers, samesight_audit_ roles or replication slots, run users (@verify.samesight.test)
-# or the runs' rows (uuid keys starting 5a3e5a3e). With a publication name, also fails when
+# containers, samesight_audit_ roles or replication slots, run users (@verify.samesight.test),
+# the runs' rows (uuid keys starting 5a3e5a3e), or policies and functions the live tests plant
+# (named samesight_). With a publication name, also fails when
 # that publication is gone; with "all" after it, when it no longer lists every table.
 #
 #   scripts/ci/left-behind.sh <database container> [publication [all]]
@@ -15,6 +16,7 @@ containers=$(docker ps --all --quiet --filter label=dev.samesight.audit.run | tr
 roles=$(sql "select count(*) from pg_roles where starts_with(rolname, 'samesight_audit_')")
 slots=$(sql "select count(*) from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')")
 users=$(sql "select count(*) from auth.users where email like '%@verify.samesight.test'")
+planted=$(sql "select (select count(*) from pg_policy where starts_with(polname, 'samesight_')) + (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and starts_with(p.proname, 'samesight_'))")
 # Every uuid column of every public table: a run's rows are keyed, and point at each other, by prefixed uuids.
 rows=$(sql "select coalesce(sum((xpath('/row/n/text()', query_to_xml(format('select count(*) as n from %I.%I where %I::text like %L', table_schema, table_name, column_name, '5a3e5a3e%'), false, true, '')))[1]::text::int), 0)
               from information_schema.columns where table_schema = 'public' and data_type = 'uuid'")
@@ -24,6 +26,7 @@ problems=()
 [ "$roles" = 0 ] || problems+=("$roles samesight_audit_ roles")
 [ "$slots" = 0 ] || problems+=("$slots samesight_audit_ replication slots")
 [ "$users" = 0 ] || problems+=("$users run users")
+[ "$planted" = 0 ] || problems+=("$planted policies or functions named samesight_ (planted by a live test)")
 [ "$rows" = 0 ] || problems+=("$rows values of run rows in public uuid columns")
 if [ -n "$publication" ]; then
   filter=""

@@ -103,8 +103,9 @@ export async function policyRules(client: pg.Client): Promise<RuleSql[]> {
 }
 
 /**
- * The bodies of the functions public policies call, and of every function the project
- * defines itself (outside the system and Supabase schemas and extensions), so a policy
+ * The bodies of the functions public policies call (in any schema but the system ones and
+ * auth, whose token readers are read as such), and of every function the project defines
+ * itself (outside the system and Supabase schemas and extensions), so a policy
  * whose function reads the token through another one is reported too. Keyed by how a call
  * names them: schema.name (policies are read with an empty search_path), and the bare name
  * for public ones. Functions with arguments are listed, so a call that reads the token is
@@ -122,14 +123,14 @@ export async function policyFunctions(client: pg.Client): Promise<Map<string, st
             case when l.lanname = 'sql' then coalesce(pg_get_function_sqlbody(f.oid), f.prosrc) else f.prosrc end as body
        from pg_proc f join pg_namespace fn on fn.oid = f.pronamespace join pg_language l on l.oid = f.prolang
       where f.prokind = 'f'
-        and fn.nspname not in ('pg_catalog', 'auth', 'extensions', 'information_schema')
+        and fn.nspname not in ('pg_catalog', 'auth', 'information_schema')
         and (f.oid in (select d.refobjid
                          from pg_policy pol
                          join pg_class c on c.oid = pol.polrelid join pg_namespace n on n.oid = c.relnamespace
                          join pg_depend d on d.classid = 'pg_policy'::regclass and d.objid = pol.oid and d.refclassid = 'pg_proc'::regclass
                         where n.nspname = 'public')
              or (not starts_with(fn.nspname, 'pg_')
-                 and fn.nspname not in (${SUPABASE_SCHEMAS.map((x) => `'${x}'`).join(", ")})
+                 and fn.nspname not in ('extensions', ${SUPABASE_SCHEMAS.map((x) => `'${x}'`).join(", ")})
                  and not exists (select from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = f.oid and e.deptype = 'e')))
       order by 1, 2, 3 desc`,
     ),

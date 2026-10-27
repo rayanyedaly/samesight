@@ -192,7 +192,9 @@ function readsTokenThrough(fn: string, functions: ReadonlyMap<string, string>, s
   if (READS_TOKEN.test(body)) return true;
   for (const other of functions.keys()) {
     const bare = other.split(".").at(-1) as string;
-    if (other !== fn && new RegExp(`(^|[^A-Za-z0-9_$])${bare.replace(/[$]/g, "\\$")}\\s*\\(`, "i").test(body) && readsTokenThrough(other, functions, seen)) return true;
+    // Any name, quoted ones with regex characters included, is matched as text.
+    const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (other !== fn && new RegExp(`(^|[^A-Za-z0-9_$])${escaped}\\s*\\(`, "i").test(body) && readsTokenThrough(other, functions, seen)) return true;
   }
   return false;
 }

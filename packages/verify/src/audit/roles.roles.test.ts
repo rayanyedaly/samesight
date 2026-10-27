@@ -123,10 +123,11 @@ describe("run users holding the roles and the orgs", () => {
     // Three roles by two orgs: all six combinations, a copy of the first user, and one with neither.
     const labels = s.fixed.users.map((u) => u.label.replace(String(orgA), "A").replace(String(orgB), "B"));
     expect(labels).toHaveLength(8);
-    expect(new Set(labels.slice(0, 6))).toEqual(
-      new Set(["A", "B"].flatMap((o) => ["admin", "editor", "samesight-other"].map((r) => `(app_metadata.org_id=${o}, app_metadata.role=${r})`)).map((x) => expect.stringContaining(x))),
+    const claimsOf = (label: string | undefined) => (label ?? "").replace(/^u\d+ ?/, "");
+    expect(labels.slice(0, 6).map(claimsOf).sort()).toEqual(
+      ["A", "B"].flatMap((o) => ["admin", "editor", "samesight-other"].map((r) => `(app_metadata.org_id=${o}, app_metadata.role=${r})`)).sort(),
     );
-    expect(labels[6]?.replace(/^u\d+/, "")).toBe(labels[0]?.replace(/^u\d+/, ""));
+    expect(claimsOf(labels[6])).toBe(claimsOf(labels[0]));
     expect(labels[7]).toBe("u7");
     const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
     expect(tokens.get("u0")).toMatchObject({ app_metadata: { provider: "email", org_id: expect.stringMatching(/^5a3e5a3e-/) } });

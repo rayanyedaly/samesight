@@ -113,10 +113,14 @@ describe("claim discovery on the demo's catalog", () => {
       await client.query("create function public.samesight_test_tier() returns text language sql stable as $$ select auth.jwt() ->> 'tier' $$");
       await client.query("create function public.samesight_test_gold() returns boolean language sql stable return public.samesight_test_tier() = 'gold'");
       await client.query("create policy samesight_gold on public.todos for select to authenticated using (public.samesight_test_gold())");
+      // A helper in the extensions schema is read like any other.
+      await client.query("create function extensions.samesight_test_tier2() returns boolean language plpgsql stable as $$ begin return auth.jwt() ->> 'tier' = 'x'; end $$");
+      await client.query("create policy samesight_ext on public.todos for select to authenticated using (extensions.samesight_test_tier2())");
       return discover();
     });
     expect(plan.uses.find((u) => u.key === "app_metadata.role")).toMatchObject({ values: ["admin"], rules: ['policy "samesight_role" on lists (USING)'] });
     expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_check" on lists (USING)', reason: expect.stringMatching(/calls public\.samesight_test_check, which reads the token/) }));
+    expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_ext" on todos (USING)', reason: expect.stringMatching(/calls extensions\.samesight_test_tier2/) }));
     expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_gold" on todos (USING)', reason: expect.stringMatching(/calls public\.samesight_test_gold, which reads the token/) }));
     expect(plan.identityColumns).toEqual(["created_by", "owner_id"]);
   });

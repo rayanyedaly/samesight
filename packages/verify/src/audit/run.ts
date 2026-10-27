@@ -18,7 +18,7 @@ import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
 import { accessTokenHook, claimFindings, planClaims, policyFunctions, policyRules, type RuleSql, syncRules } from "./claims.ts";
 import { auditScope } from "samesight/compiler";
 import { parseSyncConfig, type SyncConfig } from "samesight/compiler";
-import { coverageFindings, coverageScope, untested } from "./coverage.ts";
+import { coverageFindings, coverageScope, coverageTitle, qualifyDifferential } from "./coverage.ts";
 import { checkWriteEscape } from "./writes.ts";
 
 export interface AuditOptions {
@@ -157,17 +157,8 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     o.log("generating datasets for the differential");
     const coverage = await coverageScope(client, scope.synced, config.streams, functions, config.kind, new Set(assignment.paths.map((p) => p.key)));
     const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
-    // An ok comparison of rules seen only one way passed without testing them: it says so.
-    const notBoth = untested(coverage);
-    const differentialFindings = result.findings.map((f) =>
-      f.status === "ok" && f.check === "differential" && notBoth ? { ...f, detail: `${f.detail}; ${notBoth} ${notBoth === 1 ? "rule was" : "rules were"} not tested both ways (see Coverage)` } : f,
-    );
-    section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, differentialFindings);
-    const cut = failed(result.findings) ? " before the failure" : result.stopped ? " before the time limit" : "";
-    section(
-      cut ? `Coverage of the ${coverage.datasets} datasets run${cut}` : "Coverage (per policy and per stream; OR branches and the queries of one stream are not told apart)",
-      coverageFindings(coverage, new Set(assignment.paths.map((p) => p.key)), assignment.partial),
-    );
+    section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, qualifyDifferential(result.findings, coverage));
+    section(coverageTitle(coverage, result), coverageFindings(coverage, new Set(assignment.paths.map((p) => p.key)), assignment.partial));
     o.log("writing as each user");
     const [world] = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 16 }), { numRuns: 1, seed: o.seed ?? 7 });
     section("Write path", world ? await checkWriteEscape(s, world, undefined, scope.reads) : [{ status: "fail", check: "write path", detail: "no dataset was generated" }]);

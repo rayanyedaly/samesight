@@ -134,7 +134,7 @@ jobs:
         run: >-
           timeout 300 bash scripts/ci/verify-coverage.sh examples/audit-todolist
           "2 of 2 RLS read policies on synced tables were seen both allowing and refusing a run user a row\. 2 of 2 stream/table pairs both sent and withheld a row\."
-          --project upstream --sync-config upstream/sync-config.yaml --runs 4
+          --project upstream --sync-config upstream/sync-config.yaml --runs 4 --seed 7
       - name: samesight-verify audit on a planted sync config
         working-directory: examples/audit-todolist
         run: timeout 420 pnpm run verify:planted
@@ -168,12 +168,13 @@ jobs:
       - run: pnpm --filter audit-roles stack:up
       # Claim discovery and the catalog on an app whose rules read app_metadata.
       - run: pnpm --filter @samesight/verify test:roles
-      # Every policy and stream, the role and org ones included, is seen both ways.
+      # Every policy and stream, the role and org ones included, is seen both ways (a fixed
+      # seed, so a change in the summary replays exactly).
       - name: samesight-verify audit
         run: >-
           timeout 300 bash scripts/ci/verify-coverage.sh examples/audit-roles
           "8 of 8 RLS read policies on synced tables were seen both allowing and refusing a run user a row\. 7 of 7 stream/table pairs both sent and withheld a row\."
-          --sync-config sync-config.yaml --runs 4
+          --sync-config sync-config.yaml --runs 4 --seed 7
       # Run users hold the roles the rules compare: a leak only editors see must be caught.
       - name: samesight-verify audit on a planted editor leak
         working-directory: examples/audit-roles

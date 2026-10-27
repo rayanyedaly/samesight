@@ -198,6 +198,12 @@ describe("claimReads on inputs a scan gets wrong without care", () => {
     ]);
     expect(claimReads("outer_fn()", "postgres", { functions }).unreadable).toEqual([{ text: "outer_fn", reason: "calls outer_fn, which reads the token in a way this cannot follow" }]);
     expect(claimReads("(visible = true) AND visible()", "postgres", { functions })).toEqual({ reads: [], unreadable: [] });
+    // A quoted function name with regex characters is matched as text, never compiled.
+    const odd = new Map([
+      ["f(", "select auth.jwt() ->> 'x'"],
+      ["g", 'select "f("()'],
+    ]);
+    expect(() => claimReads("(g() = 1)", "postgres", { functions: odd })).not.toThrow();
   });
 
   it("marks a column compared inside a subquery as that subquery's", () => {

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { DeviceRow } from "../differential/device.ts";
 import type { Run } from "../differential/run.ts";
 import type { Inserted } from "../differential/world.ts";
-import { type Coverage, coverageFindings, measure, pending, type ScopedPolicy, type StreamUnit, stateOf, streamUnits, untested } from "./coverage.ts";
+import { type Coverage, coverageFindings, coverageTitle, measure, qualifyDifferential, pending, type ScopedPolicy, type StreamUnit, stateOf, streamUnits, untested } from "./coverage.ts";
 
 const streams = (yaml: string) => parseSyncConfig(`config:\n  edition: 3\nstreams:\n${yaml}`).streams;
 
@@ -235,5 +235,25 @@ describe("measure, when a policy cannot be measured", () => {
     expect(policy.tally).toEqual({ allowed: 0, refused: 0, error: "must be owner of table docs" });
     expect(sent).toContain("rollback to savepoint samesight_policy");
     expect(sent.at(-1)).toBe("rollback");
+  });
+});
+
+describe("coverageTitle and qualifyDifferential", () => {
+  const unit = (allowed: number, refused: number) => ({ streams: ["s"], table: "t", sameForAll: false, claims: [], reachable: true, tally: { allowed, refused } });
+  const cov = (units: ReturnType<typeof unit>[]): Coverage => ({ policies: [], units, inserted: new Map(), datasets: 3, triggers: [], notes: [] });
+  const ok = { status: "ok" as const, check: "differential", detail: "4 generated datasets" };
+
+  it("says when coverage stops at a failure or the time limit", () => {
+    expect(coverageTitle(cov([]), { findings: [ok] })).toMatch(/^Coverage \(per policy and per stream;/);
+    expect(coverageTitle(cov([]), { findings: [{ ...ok, status: "fail" }] })).toBe("Coverage of the 3 datasets run before the failure");
+    expect(coverageTitle(cov([]), { findings: [ok], stopped: true })).toBe("Coverage of the 3 datasets run before the time limit");
+  });
+
+  it("owns up on the Differential line to rules not tested both ways, and leaves it alone otherwise", () => {
+    expect(qualifyDifferential([ok], cov([unit(1, 1)]))).toEqual([ok]);
+    expect(qualifyDifferential([ok, { ...ok, status: "warn" }], cov([unit(0, 2), unit(3, 0)]))).toEqual([
+      { ...ok, detail: "4 generated datasets; 2 rules were not tested both ways (see Coverage)" },
+      { ...ok, status: "warn" },
+    ]);
   });
 });

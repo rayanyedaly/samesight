@@ -453,3 +453,16 @@ export function untested(cov: Coverage): number {
   const policies = cov.triggers.length ? [] : cov.policies.filter((p) => !p.sameForAll);
   return [...policies, ...cov.units.filter((u) => !u.sameForAll)].filter((x) => x.tally.error !== undefined || stateOf(x.tally) !== "exercised").length;
 }
+
+/** The section's title: what it covers, and how much when a failure or the time limit cut the run short. */
+export function coverageTitle(cov: Coverage, result: { findings: Finding[]; stopped?: boolean }): string {
+  const cut = result.findings.some((f) => f.status === "fail") ? " before the failure" : result.stopped ? " before the time limit" : "";
+  return cut ? `Coverage of the ${cov.datasets} datasets run${cut}` : "Coverage (per policy and per stream; OR branches and the queries of one stream are not told apart)";
+}
+
+/** The Differential's ok line, owning up to the rules it passed without testing both ways. */
+export function qualifyDifferential(findings: Finding[], cov: Coverage): Finding[] {
+  const n = untested(cov);
+  if (!n) return findings;
+  return findings.map((f) => (f.status === "ok" && f.check === "differential" ? { ...f, detail: `${f.detail}; ${n} ${n === 1 ? "rule was" : "rules were"} not tested both ways (see Coverage)` } : f));
+}
