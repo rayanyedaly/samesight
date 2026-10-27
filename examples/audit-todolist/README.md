@@ -21,7 +21,7 @@ before `stack:down`, and delete `.env`:
 
 ```bash
 docker compose -p audit-todolist down -v
-docker exec -i supabase_db_react-supabase-todolist psql -U postgres <<'SQL'
+docker exec -i supabase_db_react-supabase-todolist psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
 select pg_drop_replication_slot(slot_name) from pg_replication_slots where not active and starts_with(slot_name, 'powersync');
 do $$ begin
   if exists (select from pg_roles where rolname = 'samesight_replication') then
