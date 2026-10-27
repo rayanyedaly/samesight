@@ -301,4 +301,13 @@ describe("claims compared with columns", () => {
     expect(assignClaims(short, fresh, model).paths[0]).toMatchObject({ pool: ["ss-a", "ss-b"], columns: [], skipped: ["orgs.code (character varying(3) takes none of the values)"] });
     expect([fitsType("ss-a", "character varying(4)"), fitsType("ss-a", "character varying(3)"), fitsType(3, "uuid"), fitsType("3", "integer"), fitsType("x", "text")]).toEqual([true, false, false, true, true]);
   });
+
+  it("keys rows only with the run's own uuids, never a rule's literal, so cleanup finds them", () => {
+    const literal = "11111111-2222-4333-8444-555555555555";
+    const plan = planClaims([on("documents", `(org_id = (${read("org_id")})::uuid)`), on("orgs", `((${read("org_id")})::uuid = '${literal}'::uuid)`)]);
+    const a = assignClaims(plan, fresh, model);
+    expect(a.paths[0]?.pool).toContain(literal);
+    expect(a.keyPools.get("orgs")?.values).not.toContain(literal);
+    expect(a.keyPools.get("orgs")?.values).toHaveLength(1);
+  });
 });

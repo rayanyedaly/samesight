@@ -32,7 +32,9 @@ describe("claimReads on Postgres policies", () => {
       "COALESCE((((auth.jwt() -> 'app_metadata'::text) ->> 'is_admin'::text))::boolean, false)",
       [{ path: "app_metadata.is_admin", compared: lit([true]), casts: ["boolean"], fallback: false }],
     ],
-    ["((((current_setting('request.jwt.claims'::text, true))::json -> 'app_metadata'::text) ->> 'team'::text) = team)", [{ path: "app_metadata.team", compared: col("team"), casts: ["json"] }]],
+    ["((((current_setting('request.jwt.claims'::text, true))::json -> 'app_metadata'::text) ->> 'team'::text) = team)", [{ path: "app_metadata.team", compared: col("team") }]],
+    // The ::jsonb is the whole token's; only the cast after the last key is the claim's.
+    ["(((((current_setting('request.jwt.claims'::text, true))::jsonb -> 'app_metadata'::text) ->> 'level'::text))::integer <> 3)", [{ path: "app_metadata.level", compared: lit([3], true), casts: ["integer"] }]],
     [
       "((((auth.jwt() -> 'app_metadata'::text) -> 'level'::text) = '3'::jsonb) AND ((auth.jwt() ->> 'aal'::text) = 'aal2'::text))",
       [
@@ -204,6 +206,23 @@ describe("claimReads on inputs a scan gets wrong without care", () => {
       ["g", 'select "f("()'],
     ]);
     expect(() => claimReads("(g() = 1)", "postgres", { functions: odd })).not.toThrow();
+  });
+
+  it("reads a helper with arguments that reads only the user id as the user id, not as something it cannot follow", () => {
+    const functions = new Map([
+      ["public.is_member", "SELECT EXISTS (SELECT 1 FROM public.members m WHERE m.org_id = o AND m.user_id = auth.uid())"],
+      ["public.role_in", "select auth.jwt() ->> 'role' = r"],
+    ]);
+    expect(claimReads("public.is_member(org_id)", "postgres", { functions })).toMatchObject({
+      reads: [{ path: ["sub"], compared: { kind: "other", text: "public.is_member(org_id)" } }],
+      unreadable: [],
+    });
+    expect(claimReads("public.role_in('a'::text)", "postgres", { functions }).unreadable).toHaveLength(1);
+  });
+
+  it("reads a BEGIN ATOMIC wrapper as Postgres prints it, with its column alias", () => {
+    expect(wrapperRead("BEGIN ATOMIC\n SELECT ((auth.jwt() ->> 'staff'::text))::boolean AS bool;\nEND")).toEqual({ path: ["staff"], casts: ["boolean"] });
+    expect(wrapperRead(" SELECT auth.uid() AS uid;")).toEqual({ path: ["sub"], casts: [] });
   });
 
   it("marks a column compared inside a subquery as that subquery's", () => {

@@ -204,6 +204,9 @@ describe("coverageFindings", () => {
       'warn policy "p" on docs: only refused rows seen (no run user holds the values it needs together)',
     );
     expect(lines(cov([policy("p", 0, 0)], []))).toContain('warn policy "p" on docs: no row seen either way (every row it kept from a user, another policy let through)');
+    expect(lines(cov([policy("p", 0, 3, { claims: ["is_anonymous"], reachable: false })], []))).toContain(
+      'warn policy "p" on docs: only refused rows seen (it reads is_anonymous, which every run user has alike (an aal1 password user); see Claims)',
+    );
     expect(lines(cov([policy("p", 1, 1, { tally: { allowed: 1, refused: 1, error: "invalid input syntax for type uuid" } })], []))).toContain(
       'warn policy "p" on docs: a read failed, so it was not measured (invalid input syntax for type uuid)',
     );
