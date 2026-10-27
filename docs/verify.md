@@ -67,6 +67,7 @@ Pass `--restart` if PowerSync is not restarted with `docker compose restart powe
 | `--mutate` | | Run the mutation test. |
 | `--mutate-datasets <n>` | 8 | Datasets to try on each mutant before calling it missed. |
 | `--restart <command>` | `docker compose restart powersync` | How to restart PowerSync. |
+| `--json` | | Write one JSON report to stdout, and the text to stderr; see [JSON report](#json-report). |
 
 The exit code is 0 when nothing failed, 1 when a check found something, and 2 when the run could not do its job: a flag it cannot read, a file it cannot find, a database or service it cannot reach, or a differential whose service broke down before it finished (a run that both found something and broke down exits 1). It is 141 when its output closed before the end (`| head`); a run whose output has gone still runs to its end (an audit whose own PowerSync is up stops there instead, and cleans up), then exits 141. Warnings do not fail a run. The summary line says `PASSED`, `FAILED: n failing`, or `INCOMPLETE: n could not run`.
 
@@ -103,7 +104,7 @@ The mutation test needs a policy to mutate, so audit mode does not run it.
 | `--keep-powersync` | | Leave the service audit started up; see [keeping the service](#keeping-the-service). |
 | `--publication <name>` | `powersync` | With `--powersync` or `--static`: the publication to check. The service audit starts always replicates `powersync`. |
 | `--compose <file>` | | With `--powersync` or `--static`: checks the version floor of the PowerSync service that compose file runs. |
-| `--static`, `--runs`, `--seed`, `--time-limit` | | As above. `--static` starts no PowerSync. |
+| `--static`, `--runs`, `--seed`, `--time-limit`, `--json` | | As above. `--static` starts no PowerSync. |
 
 Audit mode reads both forms of sync config: Edition 3 sync streams (`streams:`) and the earlier sync rules (`bucket_definitions:`). A bucket definition's parameter queries are read like a stream's CTEs and its data queries like stream queries. A stream or definition that reads client parameters (`request.parameters()`, `subscription.parameter()`, `connection.parameter()`) gets a warning: those values come from the client, so a device can ask for anything, and the run does not try what it could ask for. Streams that are not `auto_subscribe` are skipped with a warning, since no device here subscribes to them.
 
@@ -145,6 +146,26 @@ The PowerSync service is source-available under the [FSL-1.1-ALv2](https://githu
 
 [examples/audit-todolist](../examples/audit-todolist) runs audit mode on PowerSync's own Supabase to-do list demo: it passes as published, and `verify:planted` shows it failing once the lists query loses its owner filter. `verify:rules` does the same with the demo's rules written as sync rules. [examples/audit-roles](../examples/audit-roles) is an app whose RLS and streams read a role and an org from `app_metadata`; its `verify:planted` shows audit catching a leak only users holding the editor role see.
 
+## JSON report
+
+With `--json`, in either mode, stdout carries exactly one JSON document and everything else the run prints (sections, progress, the summary line) goes to stderr. The document is written on exits 0, 1 and 2, a flag it cannot read or a file it cannot find included; a run stopped by a signal or a closed output writes none. It follows [`schema/report.schema.json`](../packages/verify/schema/report.schema.json) (JSON Schema draft 2020-12), which the package ships and exports as `@samesight/verify/schema/report.schema.json`:
+
+```json
+{
+  "$schema": "https://unpkg.com/@samesight/verify@0.1.0/schema/report.schema.json",
+  "version": 1,
+  "tool": "samesight-verify",
+  "toolVersion": "0.1.0",
+  "mode": "audit",
+  "result": "failed",
+  "exitCode": 1,
+  "durationMs": 48210,
+  "sections": [{ "title": "Differential (4 users, 1 datasets)", "findings": [{ "status": "fail", "check": "differential", "detail": "devices and RLS disagree (seed 1842, ...)" }] }]
+}
+```
+
+`result` is `passed`, `failed` or `incomplete`, as the exit code is 0, 1 or 2. Each section holds its findings as the text prints them (`status`, `check`, `detail`, and `incomplete` on one that could not run); a differential finding adds `rows`, one bug report per row with the user, the row, the streams and queries that sent it, the policies and the likely fix the text shows. `seed` is the `--seed` the run was given, `replay` the command that replays a failure, and `error` the message of an error that stopped the run (a bad flag, a missing file, a database it could not reach). `version` goes up only when a change would break a reader.
+
 ## In CI
 
 The verifier is built to run in CI next to the stack. Fieldbook's job ([ci.yml](../.github/workflows/ci.yml)) starts Supabase and PowerSync, applies the migrations, and runs the full verifier with the mutation test under a five-minute limit:
@@ -154,6 +175,8 @@ The verifier is built to run in CI next to the stack. Fieldbook's job ([ci.yml](
 - run: docker compose up -d --wait
 - run: timeout 300 npx samesight-verify --mutate --runs 4
 ```
+
+To keep the findings as data, add `--json > verify.json` and upload the file as an artifact; the log still shows the text, and the exit code still fails the step.
 
 ## Using the checks in your own tests
 

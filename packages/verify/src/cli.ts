@@ -18,6 +18,7 @@
  * PowerSync containers and a replication role of its own.
  */
 
+import { Console } from "node:console";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -42,6 +43,7 @@ import { connectLocal } from "./db.ts";
 import { brokeDown, differential, setUp, stoppable } from "./differential/run.ts";
 import { policyTables } from "./differential/model.ts";
 import { worldArbitrary } from "./differential/world.ts";
+import { reportDocument, type Section } from "./json.ts";
 import { mutationTest } from "./mutate/run.ts";
 import { exitCode, failed, type Finding, formatFindings } from "./report.ts";
 import { replayCommand } from "./replay.ts";
@@ -56,8 +58,21 @@ import { checkWritePath } from "./writepath.ts";
 
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
-/** Colour and symbols in a terminal; plain when piped, in CI, or under NO_COLOR. Decided once, for every section. */
-const COLOR = useColor(process.stdout, process.env);
+const ARGV = process.argv.slice(2);
+const began = Date.now();
+/** With --json, stdout carries the report document alone: everything the run prints goes to stderr. */
+const JSON_OUT = ARGV.includes("--json");
+const textOut = JSON_OUT ? process.stderr : process.stdout;
+/** Colour and symbols in a terminal; plain when piped, in CI, or under NO_COLOR. Decided once, for every section, on the stream the text goes to. */
+const COLOR = useColor(textOut, process.env);
+if (JSON_OUT) globalThis.console = new Console({ stdout: process.stderr, stderr: process.stderr });
+/** Every section the run printed, for the document. */
+const sections: Section[] = [];
+/** Prints a section's findings under its title. */
+function printSection(title: string, f: Finding[]) {
+  sections.push({ title, findings: f });
+  textOut.write(`\n${title}\n${formatFindings(f, COLOR)}\n`);
+}
 
 const USAGE = `Usage: samesight-verify [options]
        samesight-verify audit [audit options]
@@ -73,6 +88,7 @@ Options:
   --mutate              also run the mutation test (rewrites the sync config and restarts PowerSync)
   --mutate-datasets <n> datasets to try per mutant before calling it missed (default: 8)
   --restart <command>   restarts PowerSync (default: docker compose restart powersync)
+  --json                write one JSON report to stdout (schema/report.schema.json), the text to stderr
 
 Audit options (a project with hand-written RLS and sync config, no policy file):
   --sync-config <file>  the PowerSync sync config (default: sync-config.yaml)
@@ -84,7 +100,7 @@ Audit options (a project with hand-written RLS and sync config, no policy file):
   --compose <file>      with --powersync or --static: the compose file that runs your PowerSync,
                         to check its version floor
   --publication <name>  with --powersync or --static: the publication to check (default: powersync)
-  --static, --runs, --seed, --time-limit   as above
+  --static, --runs, --seed, --time-limit, --json   as above
 
   -v, --version         print the version
   -h, --help            print this help
@@ -104,7 +120,7 @@ function int(name: string, v: string | undefined, fallback: number, min = 1): nu
 
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === "-v" || argv[0] === "--version") {
-    process.stdout.write(`${VERSION}\n`);
+    textOut.write(`${VERSION}\n`);
     return 0;
   }
   if (argv[0] === "audit") return auditMain(argv.slice(1));
@@ -121,11 +137,12 @@ async function main(argv: string[]): Promise<number> {
       mutate: { type: "boolean" },
       "mutate-datasets": { type: "string" },
       restart: { type: "string" },
+      json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
   if (values.help) {
-    process.stdout.write(USAGE);
+    textOut.write(USAGE);
     return 0;
   }
   const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
@@ -142,7 +159,7 @@ async function main(argv: string[]): Promise<number> {
   const section = (title: string, f: Finding[]) => {
     if (stopped()) return;
     findings.push(...f);
-    process.stdout.write(`\n${title}\n${formatFindings(f, COLOR)}\n`);
+    printSection(title, f);
   };
   const started = Date.now();
 
@@ -153,8 +170,7 @@ async function main(argv: string[]): Promise<number> {
   const snapshot = file(out.schemaSnapshot);
   const manifestText = file(out.manifest);
   if (!snapshot || !manifestText) {
-    process.stderr.write(`No ${snapshot ? out.manifest : out.schemaSnapshot} next to ${policyPath}; run samesight generate first.\n`);
-    return 2;
+    throw new Error(`no ${snapshot ? out.manifest : out.schemaSnapshot} next to ${policyPath}; run samesight generate first`);
   }
   const schema = JSON.parse(snapshot) as SchemaInfo;
   const ir = buildIR(policy, schema);
@@ -210,12 +226,12 @@ async function main(argv: string[]): Promise<number> {
     section("Database catalog", catalog);
     if (values.static) return report(findings, started);
     if (failed(findings)) {
-      process.stdout.write("\nSkipping the differential: fix the failures above first.\n");
+      textOut.write("\nSkipping the differential: fix the failures above first.\n");
       return report(findings, started);
     }
 
     // 3. Differential, and 4. mutation.
-    const log = (line: string) => process.stdout.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
+    const log = (line: string) => textOut.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
     // One teardown for the run, from here on: on Ctrl+C, SIGTERM or SIGHUP it removes the run's
     // users and rows (and with --mutate puts the sync config back).
     const run = signalTeardown(log, "policy");
@@ -242,7 +258,7 @@ async function main(argv: string[]): Promise<number> {
         const worlds = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 20 }), { numRuns: 6, seed: seed ?? 7 });
         section("Write path", (await checkWritePath(s, worlds)).findings);
         if (values.mutate) {
-          if (failed(findings)) process.stdout.write("\nSkipping the mutation test: fix the failures above first.\n");
+          if (failed(findings)) textOut.write("\nSkipping the mutation test: fix the failures above first.\n");
           else {
             const restart = (values.restart ?? "docker compose restart powersync").split(/\s+/).filter(Boolean);
             const m = await mutationTest(
@@ -286,11 +302,12 @@ async function auditMain(argv: string[]): Promise<number> {
       runs: { type: "string" },
       seed: { type: "string" },
       "time-limit": { type: "string" },
+      json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
   if (values.help) {
-    process.stdout.write(USAGE);
+    textOut.write(USAGE);
     return 0;
   }
   const ownService = values.powersync !== undefined;
@@ -307,8 +324,7 @@ async function auditMain(argv: string[]): Promise<number> {
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
   const syncPath = resolve(values["sync-config"] ?? "sync-config.yaml");
   if (!existsSync(syncPath)) {
-    process.stderr.write(`No sync config at ${syncPath}; pass --sync-config.\n`);
-    return 2;
+    throw new Error(`no sync config at ${syncPath}; pass --sync-config`);
   }
   const project = resolve(values.project ?? ".");
   const findings: Finding[] = [];
@@ -317,10 +333,10 @@ async function auditMain(argv: string[]): Promise<number> {
   const section = (title: string, f: Finding[]) => {
     if (stopped()) return;
     findings.push(...f);
-    process.stdout.write(`\n${title}\n${formatFindings(f, COLOR)}\n`);
+    printSection(title, f);
   };
   const startedAt = Date.now();
-  const log = (line: string) => process.stdout.write(`  ${((Date.now() - startedAt) / 1000).toFixed(0)}s  ${line}\n`);
+  const log = (line: string) => textOut.write(`  ${((Date.now() - startedAt) / 1000).toFixed(0)}s  ${line}\n`);
   const syncText = readFileSync(syncPath, "utf8");
   if (values.compose !== undefined) {
     const compose = existsSync(values.compose) ? readFileSync(values.compose, "utf8") : null;
@@ -424,7 +440,7 @@ function report(findings: Finding[], started: number): number {
   const notRun = incomplete ? `${incomplete} could not run` : "";
   const head = fails ? `FAILED: ${fails} failing${notRun ? `, ${notRun}` : ""}` : notRun ? `INCOMPLETE: ${notRun}` : "PASSED";
   const paint = !COLOR ? (s: string) => s : fails ? red : notRun ? yellow : green;
-  process.stdout.write(`\n${paint(head)}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
+  textOut.write(`\n${paint(head)}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
   return exitCode(findings);
 }
 
@@ -449,8 +465,17 @@ const exit = (code: number) => {
   process.stdout.write("", done);
   process.stderr.write("", done);
 };
+/** Writes the --json document, then exits. A signal exits before this, with no document. */
+const finish = (code: number, error?: string) => {
+  if (JSON_OUT) {
+    const doc = reportDocument({ toolVersion: VERSION, argv: ARGV, exitCode: code, durationMs: Date.now() - began, sections, ...(error !== undefined ? { error } : {}) });
+    process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
+  }
+  exit(code);
+};
 // An error (bad flags, a database or service it cannot reach) means it could not run: 2.
-main(process.argv.slice(2)).then(exit, (e) => {
-  process.stderr.write(`samesight-verify: ${(e as Error).message}\n`);
-  exit(2);
+main(ARGV).then(finish, (e) => {
+  const message = e instanceof Error ? e.message : String(e);
+  process.stderr.write(`samesight-verify: ${message}\n`);
+  finish(2, message);
 });
