@@ -115,17 +115,19 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
     process.exit(({ SIGTERM: 143, SIGHUP: 129, SIGBREAK: 149 } as Record<string, number>)[signal] ?? 130);
   };
   const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP", ...(process.platform === "win32" ? (["SIGBREAK"] as const) : [])];
-  // Put back once, by whichever comes first: the run's own putBack, or the teardown's step.
-  let back = false;
+  // Whether PowerSync has restarted on the original: then neither the run's putBack nor the
+  // teardown's step has anything left to do. Until then either may restart it, even while the
+  // other is under way (a Ctrl+C mid put-back can kill its restart).
+  let reloaded = false;
   if (teardown) {
     teardown.add(
       "the mutant streams PowerSync serves",
       async () => {
-        if (back) return;
-        back = true;
+        if (reloaded) return;
         restore();
         process.off("exit", restore);
         await restartAsync(ps, 60_000);
+        reloaded = true;
         rmSync(dir, { recursive: true, force: true });
       },
       `PowerSync serves them to every device until it restarts on the original sync config: the original is at ${backup}; copy it to ${ps.configPath} if it is not there, then restart PowerSync (${ps.restart.join(" ")})`,
@@ -136,13 +138,13 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
   // Puts the original back. A failed reload fails the run, unless an earlier error is
   // already on its way out.
   const putBack = async (strict: boolean) => {
-    if (back) return;
-    back = true;
+    if (reloaded) return;
     restore();
     for (const s of signals) process.off(s, onSignal);
     process.off("exit", restore);
     try {
       await reload(client, ps, false);
+      reloaded = true;
       rmSync(dir, { recursive: true, force: true });
     } catch (e) {
       const message = `restored ${ps.configPath} (a copy is at ${backup}), but PowerSync did not reload it and may still serve the mutants: ${(e as Error).message}`;

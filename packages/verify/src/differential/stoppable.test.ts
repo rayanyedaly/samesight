@@ -3,7 +3,7 @@ import type pg from "pg";
 import type { Stack } from "../stack.ts";
 import { LEFT_FOR_NEXT, leftForNext } from "../autostart/teardown.ts";
 import type { TableModel } from "./model.ts";
-import { cleanup, holdingLock, setUp, stoppable, tearDown } from "./run.ts";
+import { cleanup, holdingLock, setUp, setUpUsers, stoppable, tearDown } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
 const fresh = { sql: [] as string[], lock: true, ended: false };
@@ -192,5 +192,30 @@ describe("tearDown at a run's end", () => {
     }
     expect(sql).toContain("delete from public.teams where id::text like $1");
     expect(sql.at(-1)).toBe("select pg_advisory_unlock($1)");
+  });
+});
+
+describe("setUpUsers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("gives the run its cleanup scope, so its own tearDown looks there too", async () => {
+    const token = `x.${Buffer.from(JSON.stringify({ sub: "u", role: "authenticated" })).toString("base64url")}.y`;
+    let n = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        if (url.endsWith("/auth/v1/admin/users")) return new Response(JSON.stringify({ id: (JSON.parse(String(init.body)) as { id?: string }).id ?? `id-${++n}` }), { status: 200 });
+        return new Response(JSON.stringify({ access_token: token, expires_at: 2_000_000_000 }), { status: 200 });
+      }),
+    );
+    const client = {
+      on: vi.fn(),
+      query: async (text: string) => ({ rows: /pg_try_advisory_lock/.test(text) ? [{ locked: true }] : [] }),
+    } as unknown as pg.Client;
+    const run = await setUpUsers(client, { ...stack, api: "http://127.0.0.1:54321" }, { tables: [], synced: [], cleanup: ["teams"] });
+    holdingLock.delete(client);
+    expect(run.outside).toEqual(["teams"]);
   });
 });

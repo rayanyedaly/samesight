@@ -96,11 +96,25 @@ describe("withSyncConfig under the run's teardown", () => {
     const { ps, slots } = live(1);
     const lines: string[] = [];
     const t = new Teardown((l) => lines.push(l));
-    await withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {
-      expect(await t.run()).toEqual(["the mutant streams PowerSync serves"]);
-    }, t);
+    // The step cannot restart PowerSync, nor can the run's own put-back after it: the run fails, saying so.
+    await expect(
+      withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {
+        expect(await t.run()).toEqual(["the mutant streams PowerSync serves"]);
+      }, t),
+    ).rejects.toThrow(/PowerSync did not reload it and may still serve the mutants/);
     expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
     expect(lines).toEqual([expect.stringMatching(/^could not remove the mutant streams PowerSync serves: .*: exit code 1; PowerSync serves them to every device until it restarts on the original sync config: the original is at .*sync-config\.yaml; copy it to .* if it is not there, then restart PowerSync \(.*\)$/)]);
+  });
+
+  it("still restarts PowerSync as a step when the run's own put-back did not get it to reload", async () => {
+    // The first restart (loading the mutants) works; the put-back's fails, as a Ctrl+C that kills it would.
+    const { ps, slots, restarts } = live(1);
+    const t = new Teardown(() => {}, "policy");
+    await expect(withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {}, t)).rejects.toThrow(/did not reload/);
+    expect(restarts()).toBe(2);
+    await t.run();
+    expect(restarts()).toBe(3);
+    expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
   });
 
   it("refuses to begin once the teardown has", async () => {

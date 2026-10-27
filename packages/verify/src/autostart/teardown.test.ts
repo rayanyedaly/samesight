@@ -202,8 +202,10 @@ describe("onSignals", () => {
     // A step still running says what to do about what it was removing; one that ended, nothing.
     const cut = proc();
     const restoring = new Teardown(() => {}, "policy");
-    restoring.add("users", async () => {}, undefined);
+    // Ended before the cut: its remedy is not said. Added first, it runs last, so add it after.
     restoring.add("the mutant streams PowerSync serves", () => new Promise(() => {}), "restart PowerSync (docker compose restart powersync)");
+    restoring.add("the service", async () => {}, SERVICE_REMEDY);
+    restoring.service = true;
     const told: string[] = [];
     onSignals(restoring, (l) => told.push(l), cut.p, 20);
     cut.p.emit("SIGINT");

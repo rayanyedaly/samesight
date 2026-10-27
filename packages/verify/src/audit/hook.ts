@@ -7,7 +7,7 @@
  */
 
 import type pg from "pg";
-import { BODY_JOIN, callsIn, codeOnly } from "samesight/compiler";
+import { BODY_JOIN, callsIn, codeOnly, ident } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 
@@ -165,10 +165,13 @@ export function unfollowed(scans: DeepScan[], functions: ReadonlyMap<string, str
 /** A select of every column: select *, select t.*; not exists (select * ...), which reads none. */
 export const SELECTS_ALL = /(?<![A-Za-z0-9_$])(?<!exists\s*\(\s*)select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i;
 
-/** The tables a body selects every column of: those right after select * from, as schema.name. */
+/**
+ * The tables a body may select every column of, as schema.name: every table a statement with
+ * a select * reads (select * into r from t, a join, t.* of one of several), not those of its
+ * other statements.
+ */
 export function starredTables(body: string): string[] {
-  const from = new RegExp(String.raw`${SELECTS_ALL.source}\s+from\s+(?:only\s+)?${NAME}(?:\s*\.\s*${NAME})?`, "gi");
-  return [...new Set([...codeOnly(body).matchAll(from)].map((m) => (m[2] === undefined ? `public.${unquote(m[1] as string)}` : `${unquote(m[1] as string)}.${unquote(m[2])}`)))];
+  return [...new Set(codeOnly(body).split(";").filter((x) => SELECTS_ALL.test(x)).flatMap((x) => scanBody(x).reads))];
 }
 
 export interface HookPlan {
@@ -207,6 +210,8 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
     [parsed.schema, parsed.fn],
   );
   const qualified = `${parsed.schema}.${parsed.fn}(jsonb)`;
+  // As SQL: a name with capitals or other characters quoted.
+  const fnSql = `${ident(parsed.schema)}.${ident(parsed.fn)}(jsonb)`;
   if (!fn || fn.body === null) {
     const cannot = `it names no function ${qualified} in the database`;
     return { uri, tables: [], cannot, findings: [warn(`the access token hook ${shown} names no function ${qualified} in the database; its claims are not steered`)] };
@@ -231,7 +236,7 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
   if (callers.length) {
     findings.push(
       warn(
-        `${callers.map((r) => r.name).join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds; revoke it with revoke execute on function ${qualified} from public, anon, authenticated`,
+        `${callers.map((r) => r.name).join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds; as Supabase's guide does, grant execute on function ${fnSql} to supabase_auth_admin, then revoke execute on function ${fnSql} from public, anon, authenticated`,
       ),
     );
   }
