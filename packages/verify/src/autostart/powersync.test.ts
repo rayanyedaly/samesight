@@ -38,7 +38,7 @@ describe("startPowerSync", () => {
   it("runs the pinned image on the network, its port on 127.0.0.1 only, and waits for readiness", async () => {
     const port = await probe(2);
     const { docker, calls } = fake(port);
-    const ps = await startPowerSync(docker, { run: "a1b2c3d4", network: "supabase_network_todo", config: "port: 8080\n" });
+    const ps = await startPowerSync(docker, { run: "a1b2c3d4", project: "todo", network: "supabase_network_todo", config: "port: 8080\n" });
     expect(ps).toEqual({ container: "samesight-audit-a1b2c3d4-powersync", url: `http://127.0.0.1:${port}` });
     const run = calls[0];
     expect(run?.args).toEqual([
@@ -48,6 +48,8 @@ describe("startPowerSync", () => {
       "samesight-audit-a1b2c3d4-powersync",
       "--label",
       "dev.samesight.audit.run=a1b2c3d4",
+      "--label",
+      "dev.samesight.audit.project=todo",
       "--network",
       "supabase_network_todo",
       "--publish",
@@ -68,13 +70,13 @@ describe("startPowerSync", () => {
   it("stops waiting when the container exits, with its last log lines", async () => {
     const port = await probe(Number.POSITIVE_INFINITY);
     const { docker } = fake(port, () => false);
-    await expect(startPowerSync(docker, { run: "a1", network: "n", config: "" })).rejects.toThrow(/stopped while starting; its last log lines:\nError: could not connect to storage/);
+    await expect(startPowerSync(docker, { run: "a1", project: "todo", network: "n", config: "" })).rejects.toThrow(/stopped while starting; its last log lines:\nError: could not connect to storage/);
   });
 
   it("gives up after the timeout", async () => {
     const port = await probe(Number.POSITIVE_INFINITY);
     const { docker } = fake(port);
-    await expect(startPowerSync(docker, { run: "a1", network: "n", config: "", timeoutMs: 500 })).rejects.toThrow(/was not ready within 0.5s/);
+    await expect(startPowerSync(docker, { run: "a1", project: "todo", network: "n", config: "", timeoutMs: 500 })).rejects.toThrow(/was not ready within 0.5s/);
   });
 });
 
