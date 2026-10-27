@@ -1,7 +1,7 @@
 /**
  * A child process for autostart.audit.test.ts: auto-starts PowerSync on the to-do list
  * demo (keeping it with SAMESIGHT_KEEP=1), prints READY and its URL, then waits to be
- * killed. Not shipped (src/fixtures).
+ * killed, writing a line to stdout and stderr on SIGUSR2. Not shipped (src/fixtures).
  */
 
 import { readFileSync } from "node:fs";
@@ -25,4 +25,8 @@ const started = await autoStart({
   keep: process.env.SAMESIGHT_KEEP === "1",
 });
 process.stdout.write(`READY ${started.url}\n`);
+process.on("SIGUSR2", () => {
+  process.stdout.write("still here\n");
+  process.stderr.write("still here\n");
+});
 setInterval(() => {}, 60_000);

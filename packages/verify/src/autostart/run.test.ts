@@ -95,7 +95,7 @@ function docker(
 }
 
 /** A fake database connection: the advisory lock, the kept run's role and slot, recording statements and their parameters. */
-function db(o: { locked?: boolean; keptAlive?: boolean; hook?: (text: string) => void | Promise<void> } = {}) {
+function db(o: { locked?: boolean; keptAlive?: boolean; roles?: string[]; held?: string[]; hook?: (text: string) => void | Promise<void> } = {}) {
   const sql: string[] = [];
   const params: unknown[][] = [];
   return {
@@ -110,6 +110,10 @@ function db(o: { locked?: boolean; keptAlive?: boolean; hook?: (text: string) =>
       if (/pg_try_advisory_lock/.test(text)) return { rows: [{ ok: !o.locked }] };
       if (/system_identifier/.test(text)) return { rows: [{ id: "7700833229969797152" }] };
       if (/has_table_privilege/.test(text)) return { rows: [{ ok: o.keptAlive ?? false }] };
+      if (/as role from pg_roles/.test(text)) return { rows: (o.roles ?? []).map((role) => ({ role })) };
+      if (/as slot from pg_replication_slots where starts_with/.test(text)) {
+        return { rows: (o.held ?? []).filter((s) => s.startsWith(values[0] as string)).map((slot) => ({ slot })) };
+      }
       if (/exists \(select from pg_roles/.test(text)) return { rows: [{ exists: true }] };
       return { rows: [] };
     }) as never,
@@ -226,6 +230,28 @@ describe("autoStart", () => {
     expect(c.sql.findIndex((s) => /^drop role/.test(s))).toBeGreaterThan(lastGrant);
   });
 
+  it("on Ctrl+C during the sweep, pulls and starts nothing", async () => {
+    const p = proc();
+    const d = docker();
+    const c = db({ roles: ["samesight_audit_dead1"], hook: (text) => {
+        if (/as role from pg_roles/.test(text)) p.emit("SIGINT");
+      },
+    });
+    await expect(autoStart(options(d.docker, c, p))).rejects.toThrow(/stopped/);
+    expect(p.exits).toEqual([130]);
+    expect(d.calls.some((c) => c[0] === "image" || c[0] === "pull")).toBe(false);
+    expect(d.ran()).toEqual([]);
+  });
+
+  it("says which leftover role the sweep had to leave", async () => {
+    const lines: string[] = [];
+    const d = docker();
+    const c = db({ roles: ["samesight_audit_held1"], held: ["samesight_audit_held1_1_ab"] });
+    const started = await autoStart({ ...options(d.docker, c, proc()), log: (l: string) => lines.push(l) });
+    expect(lines).toContainEqual(expect.stringMatching(/could not remove samesight_audit_held1 yet: .*still in use; the next audit retries/));
+    await started.stop();
+  });
+
   it("masks the passwords it made in the log lines it hands out", async () => {
     const d = docker({ logs: (config) => `connecting with ${config}` });
     const started = await autoStart(options(d.docker, db(), proc()));
@@ -247,6 +273,7 @@ describe("autoStart", () => {
     const e = await autoStart(options(d.docker, db(), proc())).catch((e: Error) => e);
     expect(e).toBeInstanceOf(Error);
     expect((e as Error).message).toMatch(/bad config: \*\*\*/);
+    expect((e as Error).stack).not.toContain("super-secret-jwt");
   });
 
   it("refuses to start while another audit holds the database, before sweeping that audit's containers", async () => {

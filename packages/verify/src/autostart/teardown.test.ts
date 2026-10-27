@@ -98,6 +98,7 @@ describe("onSignals", () => {
   it("tears down and exits 141 when its output has gone (EPIPE), or 1 on another output error", async () => {
     for (const [errno, code] of [
       ["EPIPE", 141],
+      ["EIO", 141],
       ["ENOSPC", 1],
     ] as const) {
       const events: string[] = [];

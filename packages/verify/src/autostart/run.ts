@@ -195,6 +195,16 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
 }
 
 /**
+ * Whether a kept run's role ($1) exists, an active slot of it ($2, its prefix) is up, and
+ * the role can read every table ($3). The privilege check runs only once the role is
+ * known to exist: it fails on a missing one.
+ */
+export const KEPT_ALIVE = `select case when exists (select from pg_roles where rolname = $1)
+                     and exists (select from pg_replication_slots where active and starts_with(slot_name, $2))
+                then coalesce((select bool_and(has_table_privilege($1, format('public.%I', t), 'select')) from unnest($3::text[]) t), true)
+                else false end as ok`;
+
+/**
  * A kept service of this project serving the same fingerprint, running and ready, whose
  * role and replication slot are still in the database (a reset database has neither) and
  * whose role can still read the tables (a recreated table has lost its grant); null
@@ -214,14 +224,7 @@ async function keptRun(
   if (!run || !/^[0-9a-f]+$/.test(run)) return null;
   // Its storage must still be up too.
   if (!(await docker.containers([`name=^${containerName(run, "storage")}$`, "status=running"])).length) return null;
-  const { rows } = await client.query<{ ok: boolean }>(
-    // The privilege check runs only once the role is known to exist: it fails on a missing one.
-    `select case when exists (select from pg_roles where rolname = $1)
-                      and exists (select from pg_replication_slots where active and starts_with(slot_name, $2))
-                 then coalesce((select bool_and(has_table_privilege($1, format('public.%I', t), 'select')) from unnest($3::text[]) t), true)
-                 else false end as ok`,
-    [`${PREFIX}${run}`, `${PREFIX}${run}_`, tables],
-  );
+  const { rows } = await client.query<{ ok: boolean }>(KEPT_ALIVE, [`${PREFIX}${run}`, `${PREFIX}${run}_`, tables]);
   if (!rows[0]?.ok) return null;
   const url = await serviceUrl(docker, name).catch(() => null);
   if (!url || !(await isReady(url))) return null;
