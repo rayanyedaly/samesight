@@ -14,7 +14,9 @@ import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal, rolledBack } from "../db.ts";
 import { compareAll, differential, PREFIX, type Run, setUpUsers, tearDown, withWorld } from "../differential/run.ts";
+import { policyVerdicts } from "../differential/policies.ts";
 import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
+import { formatRow, type RowReport } from "../report.ts";
 import { type AutoStarted, autoStart } from "../autostart/run.ts";
 import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
@@ -450,5 +452,70 @@ describe("coverage on the demo", () => {
     });
     expect(cov.triggers).toEqual(["samesight_test_ddl (public.samesight_test_ddl)"]);
     expect(cov.notes).toContainEqual(expect.objectContaining({ status: "warn", detail: expect.stringMatching(/^policies not measured: .*event triggers would run on that \(samesight_test_ddl/) }));
+  });
+});
+
+describe("policy verdicts on the demo", () => {
+  // Committed, since the verdicts read in their own transaction; removed in finally.
+  const withList = async (name: string, owner: string, fn: (id: string) => Promise<void>) => {
+    const id = prefixedUuid(PREFIX);
+    await client.query("insert into public.lists (id, name, owner_id) values ($1, $2, $3)", [id, name, owner]);
+    try {
+      await fn(id);
+    } finally {
+      await client.query("delete from public.lists where id = $1", [id]);
+    }
+  };
+  const report = (kind: RowReport["kind"], user: string, id: string): RowReport => ({ kind, summary: "", user: { label: "u", id: user }, table: "lists", id, row: `lists ${id}`, sentBy: [] });
+  const claimsOf = (id: string) => s.sessions.get(id)?.claims;
+
+  it("names the owner policy that refuses another user's list, and lets its owner read it", async () => {
+    const [a, b] = s.fixed.users.map((u) => u.id) as [string, string];
+    await withList("plain", a, async (id) => {
+      const leak = report("leak", b, id);
+      const gap = report("gap", a, id);
+      await policyVerdicts(client, [leak, gap], claimsOf);
+      expect([leak.policies, leak.policiesNote]).toEqual([[{ name: "owned lists", permissive: true, verdict: "refuses" }], undefined]);
+      expect(formatRow(leak).slice(1)).toEqual(['  refused by policy "owned lists" on lists']);
+      expect([gap.policies, gap.policiesNote]).toEqual([[{ name: "owned lists", permissive: true, verdict: "allows" }], undefined]);
+      expect(formatRow(gap).slice(1)).toEqual(['  allowed by policy "owned lists" on lists']);
+    });
+  });
+
+  it("names a restrictive policy that refuses a row a permissive one allows", async () => {
+    const [a] = s.fixed.users.map((u) => u.id) as [string];
+    await client.query("drop policy if exists samesight_restrict on public.lists");
+    await client.query("create policy samesight_restrict on public.lists as restrictive for select to authenticated using (name <> 'secret')");
+    try {
+      await withList("secret", a, async (id) => {
+        const leak = report("leak", a, id);
+        await policyVerdicts(client, [leak], claimsOf);
+        expect(leak.policies).toEqual([
+          { name: "owned lists", permissive: true, verdict: "allows" },
+          { name: "samesight_restrict", permissive: false, verdict: "refuses" },
+        ]);
+        expect(formatRow(leak).slice(1)).toEqual(['  refused by restrictive policy "samesight_restrict" on lists']);
+      });
+    } finally {
+      await client.query("drop policy if exists samesight_restrict on public.lists");
+    }
+  });
+
+  it("evaluates none with an event trigger on DROP POLICY, and says why", async () => {
+    const [a, b] = s.fixed.users.map((u) => u.id) as [string, string];
+    await client.query("create or replace function public.samesight_test_ddl() returns event_trigger language plpgsql as $$ begin end $$");
+    await client.query("drop event trigger if exists samesight_test_ddl");
+    await client.query("create event trigger samesight_test_ddl on ddl_command_end execute function public.samesight_test_ddl()");
+    try {
+      await withList("plain", a, async (id) => {
+        const leak = report("leak", b, id);
+        await policyVerdicts(client, [leak], claimsOf);
+        expect(leak.policies).toBeUndefined();
+        expect(formatRow(leak).slice(1)).toEqual([expect.stringMatching(/^ {2}policies {3}not evaluated: .*event triggers would run on that \(samesight_test_ddl \(public\.samesight_test_ddl\)\)$/)]);
+      });
+    } finally {
+      await client.query("drop event trigger if exists samesight_test_ddl");
+      await client.query("drop function if exists public.samesight_test_ddl()");
+    }
   });
 });

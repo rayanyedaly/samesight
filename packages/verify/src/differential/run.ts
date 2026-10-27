@@ -16,6 +16,7 @@ import { show } from "../audit/assign.ts";
 import { claimKey } from "../audit/claims.ts";
 import { type Coverage, measure, pending } from "../audit/coverage.ts";
 import { sendingQueries } from "./attribute.ts";
+import { policyVerdicts } from "./policies.ts";
 import { compare, type Problem } from "./compare.ts";
 import { syncOnce } from "./device.ts";
 import { insertOrder, policyTables, readModel, type ScopeTable, type TableModel } from "./model.ts";
@@ -781,10 +782,12 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const crashed: Finding[] = x.crash === undefined ? [] : [{ status: "fail", check, detail: `then ${RUN_FAILED}${String(x.crash)}`, incomplete: true }];
   if (x.lastFailing) {
     const world = x.lastFailing;
-    // Put down to their queries while the rows are still in the database.
+    // Put down to their queries and policies while the rows are still in the database.
     const counterexample = await withWorld(s, world, async () => {
       const rows = reportRows(s, failing(await compareAll(s)));
-      if (options.streams) await sendingQueries(s.client, options.streams, rows, (id) => s.sessions.get(id)?.claims);
+      const claimsOf = (id: string) => s.sessions.get(id)?.claims;
+      if (options.streams) await sendingQueries(s.client, options.streams, rows, claimsOf);
+      await policyVerdicts(s.client, rows, claimsOf);
       return rows;
     });
     if (!counterexample.length) return fail(`a dataset failed (seed ${x.seed}) but passed when run again: devices may not have caught up${x.crash === undefined ? "" : ` (then ${RUN_FAILED}${String(x.crash)})`}`, x.datasets, true);

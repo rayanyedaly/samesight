@@ -75,6 +75,28 @@ const HARMLESS_TRIGGERS = new Set(["pgrst_ddl_watch:extensions.pgrst_ddl_watch",
 
 const READ_COMMANDS = new Set(["r", "*"]);
 
+/**
+ * Event triggers that would run on DROP POLICY, as "name (function)": dropping policies inside
+ * a rolled-back transaction would still run them. Supabase's own NOTIFY ones are left out.
+ */
+export async function dropPolicyTriggers(client: pg.Client): Promise<string[]> {
+  // Functions print schema-qualified (an empty search_path), so a look-alike elsewhere is not taken for PostgREST's.
+  // Only triggers that fire in a normal session: O (origin) and A (always), not R (replica) or D.
+  return (
+    await qualified(client, () =>
+      rows<{ name: string; fn: string }>(
+        client,
+        `select e.evtname as name, e.evtfoid::pg_catalog.regproc::text as fn from pg_catalog.pg_event_trigger e
+          where e.evtenabled in ('O', 'A') and e.evtevent in ('ddl_command_start', 'ddl_command_end', 'sql_drop')
+            and (e.evttags is null or 'DROP POLICY' = any(e.evttags))
+          order by 1`,
+      ),
+    )
+  )
+    .filter((t) => !HARMLESS_TRIGGERS.has(`${t.name}:${t.fn}`))
+    .map((t) => `${t.name} (${t.fn})`);
+}
+
 /** What coverage measures on these synced tables and streams, before any dataset. */
 export async function coverageScope(
   client: pg.Client,
@@ -99,21 +121,7 @@ export async function coverageScope(
       [synced],
     ),
   );
-  // Functions print schema-qualified (an empty search_path), so a look-alike elsewhere is not taken for PostgREST's.
-  // Only triggers that fire in a normal session: O (origin) and A (always), not R (replica) or D.
-  const triggers = (
-    await qualified(client, () =>
-      rows<{ name: string; fn: string }>(
-        client,
-        `select e.evtname as name, e.evtfoid::pg_catalog.regproc::text as fn from pg_catalog.pg_event_trigger e
-          where e.evtenabled in ('O', 'A') and e.evtevent in ('ddl_command_start', 'ddl_command_end', 'sql_drop')
-            and (e.evttags is null or 'DROP POLICY' = any(e.evttags))
-          order by 1`,
-      ),
-    )
-  )
-    .filter((t) => !HARMLESS_TRIGGERS.has(`${t.name}:${t.fn}`))
-    .map((t) => `${t.name} (${t.fn})`);
+  const triggers = await dropPolicyTriggers(client);
 
   const notes: Finding[] = [];
   const reads = policies.filter((p) => READ_COMMANDS.has(p.cmd) && p.qual !== null);
@@ -351,7 +359,7 @@ export async function measure(s: Run, cov: Coverage, inserted: Inserted[], devic
 }
 
 /** The ids of `ids` each reader's RLS returns, or the error its read raised. */
-async function readAll(client: pg.Client, table: string, ids: string[], readers: { claims: Record<string, unknown> }[]): Promise<(Set<string> | Error)[]> {
+export async function readAll(client: pg.Client, table: string, ids: string[], readers: { claims: Record<string, unknown> }[]): Promise<(Set<string> | Error)[]> {
   const out: (Set<string> | Error)[] = [];
   for (const r of readers) {
     await client.query("savepoint samesight_read");
