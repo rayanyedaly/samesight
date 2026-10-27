@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { type ClaimDialect, type ClaimRead, claimReads, classify, wrapperRead } from "./claims.ts";
+import { type ClaimDialect, type ClaimRead, callsIn, claimReads, classify, wrapperRead } from "./claims.ts";
 import { parseSyncConfig } from "./sync/config.ts";
 
 /** The reads of one rule as [path, compared] pairs, for compact expectations. */
@@ -288,5 +288,52 @@ describe("claimReads on the corpus", () => {
   it("finds the planted user_metadata scope compared with its column", () => {
     const found = rules(`${dir}planted/user-metadata-scope.yaml`).flatMap((r) => r.reads);
     expect(found).toContainEqual(expect.objectContaining({ path: ["user_metadata", "team_id"], compared: col("team_id") }));
+  });
+});
+
+describe("negations around a comparison, as Postgres prints them", () => {
+  const role = "((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text)";
+  it.each([
+    [`((${role} = 'admin'::text) = false)`, true],
+    [`((${role} = 'admin'::text) IS NOT TRUE)`, true],
+    [`(NOT ((${role} = 'admin'::text) IS FALSE))`, false],
+    [`((${role} <> 'admin'::text) <> true)`, false],
+    [`((${role} = 'admin'::text) = true)`, false],
+    [`((${role} = 'admin'::text) IS FALSE)`, true],
+    [`((${role} = 'admin'::text) IS NOT FALSE)`, false],
+    [`(((${role} = 'admin'::text) = false) = false)`, false],
+    [`(NOT (${role} = 'admin'::text))`, true],
+  ])("%s", (sql, negated) => {
+    expect(reads(sql, "postgres")).toEqual([{ path: "app_metadata.role", compared: lit(["admin"], negated) }]);
+  });
+
+  it("does not take a comparison of something else with a boolean for one of the condition", () => {
+    // = false here compares is_admin, not the role condition.
+    expect(reads(`((${role} = 'admin'::text) AND (is_admin = false))`, "postgres")).toEqual([{ path: "app_metadata.role", compared: lit(["admin"]) }]);
+  });
+
+  it("reads IN over a varchar cast, as Postgres prints it, as its literals", () => {
+    const sql = `(((${role})::character varying)::text = ANY ((ARRAY['a'::character varying, 'b'::character varying])::text[]))`;
+    expect(reads(sql, "postgres")).toEqual([{ path: "app_metadata.role", compared: lit(["a", "b"]), casts: ["character varying", "text"] }]);
+  });
+});
+
+describe("callsIn", () => {
+  it("names each call as Postgres resolves it: unquoted names folded, quoted ones kept, schemas kept", () => {
+    expect(callsIn('select public.Get_Org(x) and "getOrg"() and auth.jwt() ->> \'a\'').sort()).toEqual(["auth.jwt", "getOrg", "public.get_org"]);
+  });
+
+  it("scans a plpgsql body it cannot tokenize, ignoring calls in comments and strings", () => {
+    const body = "begin\n  -- skip_me(1)\n  v := Lookup(1); /* gone(2) */ raise notice 'not_a_call(3)';\n  return \"Keep\"();\nend";
+    expect(callsIn(body).sort()).toEqual(["Keep", "lookup"]);
+  });
+
+  it("never matches a function by case-insensitive or quote-less spelling of another", () => {
+    const functions = new Map([
+      ["org", "select auth.jwt() ->> 'org'"],
+      ["h", 'select "Org"() = 1'],
+    ]);
+    expect(claimReads("h(x)", "postgres", { functions }).unreadable).toEqual([]);
+    expect(claimReads("h(x)", "postgres", { functions: new Map([...functions, ["Org", "select 1"]]) }).unreadable).toEqual([]);
   });
 });

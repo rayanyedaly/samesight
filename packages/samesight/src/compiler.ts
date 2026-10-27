@@ -11,6 +11,7 @@ export {
   type ClaimReads,
   type ClaimValue,
   type Compared,
+  callsIn,
   claimReads,
   classify,
   type Unreadable,
