@@ -133,6 +133,13 @@ export async function policyFunctions(client: pg.Client): Promise<Map<string, st
 
 const valueKey = (v: ClaimValue) => JSON.stringify(v);
 
+/**
+ * A claim path as reports name it: app_metadata.role. A key that is not a plain name is
+ * quoted, so the top-level key "app_metadata.role" (auth.parameter('app_metadata.role'))
+ * is never taken for the role inside app_metadata.
+ */
+export const claimKey = (path: readonly string[]) => path.map((k) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : JSON.stringify(k))).join(".");
+
 /** What the rules read, by claim path. */
 export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, string> = new Map()): ClaimsPlan {
   const uses = new Map<string, ClaimUse>();
@@ -142,7 +149,7 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
     const found = claimReads(rule.sql, rule.dialect, { functions });
     for (const u of found.unreadable) unreadable.push({ where: rule.where, ...u });
     for (const read of found.reads) {
-      const key = read.path.join(".");
+      const key = claimKey(read.path);
       const use = uses.get(key) ?? { path: read.path, key, cls: classify(read.path), rules: [], values: [], columns: [], other: [], casts: [], negated: false };
       uses.set(key, use);
       if (!use.rules.includes(rule.where)) use.rules.push(rule.where);
@@ -215,10 +222,12 @@ export function claimFindings(
         const set = assignment?.paths.find((p) => p.key === u.key);
         const reason = assignment?.notSet.get(u.key);
         if (set) {
-          if (!tokens) add("ok", `${read}; a full run gives users ${set.pool.map(show).join(", ")}, and one user none of them (not run: --static)`);
+          // Values come from the literals only: a comparison with a column is not steered yet.
+          const columns = u.columns.length ? `; the comparison with ${u.columns.length === 1 ? "column" : "columns"} ${u.columns.join(", ")} gets no values of its own yet` : "";
+          if (!tokens) add(columns ? "warn" : "ok", `${read}; a full run gives users ${set.pool.map(show).join(", ")}, and one user none of them (not run: --static)${columns}`);
           else {
             const { line, all } = heldLine(tokens, set);
-            add(all ? "ok" : "warn", `${read}; held: ${line}`);
+            add(all && !columns ? "ok" : "warn", `${read}; held: ${line}${columns}`);
           }
           break;
         }

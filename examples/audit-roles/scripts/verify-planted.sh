@@ -22,7 +22,7 @@ if [ "$code" -eq 0 ]; then
   echo "verify-planted.sh: the audit passed on the planted sync config" >&2
   exit 1
 fi
-if ! grep -qE "u[0-9]+ \([^)]*app_metadata\.role=editor[,)].*received documents .*RLS returns no such row" "$log"; then
+if ! grep -qE "u[0-9]+ \([^)]*app_metadata\.role=editor[,)].*received documents .*\(stream editor\); RLS returns no such row" "$log"; then
   echo "verify-planted.sh: the audit failed, but not on an editor receiving a document RLS refuses" >&2
   exit 1
 fi

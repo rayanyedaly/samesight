@@ -30,10 +30,10 @@ async function auth(stack: Stack, path: string, init: RequestInit & { admin?: bo
     headers: { apikey: key, ...(init.admin ? { authorization: `Bearer ${key}` } : {}), "content-type": "application/json" },
   });
   const text = await res.text();
-  if (res.status === 429) {
+  if (res.status === 429 && path.startsWith("/token")) {
     throw new Error(
-      `Auth ${init.method ?? "GET"} ${path}: 429, Supabase Auth's rate limit. Every run signs each of its users in, more often in a long run; ` +
-        "raise [auth.rate_limit] sign_in_sign_ups in supabase/config.toml for the local stack, then restart it",
+      `Auth ${init.method ?? "GET"} ${path}: 429 ${text.slice(0, 200)}. That is Supabase Auth's sign-in rate limit: every run signs each of its users in, ` +
+        "again in a long run; raise [auth.rate_limit] sign_in_sign_ups in supabase/config.toml for the local stack, then restart it",
     );
   }
   if (!res.ok) throw new Error(`Auth ${init.method ?? "GET"} ${path}: ${res.status} ${text.slice(0, 300)}`);

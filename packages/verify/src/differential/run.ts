@@ -11,6 +11,8 @@ import { type IR, ident } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
+import { show } from "../audit/assign.ts";
+import { claimKey } from "../audit/claims.ts";
 import { type Coverage, measure, pending } from "../audit/coverage.ts";
 import { compare, type Problem } from "./compare.ts";
 import { syncOnce } from "./device.ts";
@@ -145,7 +147,7 @@ export function claimLabel(name: string, claims: Record<string, unknown>, paths:
   const held = paths.flatMap((path) => {
     let v: unknown = claims;
     for (const k of path) v = v !== null && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined;
-    return v === undefined || v === null ? [] : [`${path.join(".")}=${typeof v === "string" ? v : JSON.stringify(v)}`];
+    return v === undefined || v === null ? [] : [`${claimKey(path)}=${show(v)}`];
   });
   return held.length ? `${name} (${held.join(", ")})` : name;
 }
