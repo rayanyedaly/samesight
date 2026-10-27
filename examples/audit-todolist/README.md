@@ -16,8 +16,22 @@ rules (`bucket_definitions`), the form most PowerSync apps used before sync stre
 Only Supabase is started by hand. Each audit starts its own PowerSync service for the run
 (it needs Docker), on whichever sync config it is given, and removes it afterwards; see
 [what audit starts and removes](../../docs/verify.md#what-audit-starts-and-removes).
-If you ran this example when it still had a `docker-compose.yml`, remove that service once
-with `docker compose -p audit-todolist down -v` before `stack:down`.
+If you ran this example when it still had a `docker-compose.yml`, remove what that left once,
+before `stack:down`, and delete `.env`:
+
+```bash
+docker compose -p audit-todolist down -v
+docker exec -i supabase_db_react-supabase-todolist psql -U postgres <<'SQL'
+select pg_drop_replication_slot(slot_name) from pg_replication_slots where not active and starts_with(slot_name, 'powersync');
+do $$ begin
+  if exists (select from pg_roles where rolname = 'samesight_replication') then
+    revoke all on all tables in schema public from samesight_replication;
+    revoke all on schema public from samesight_replication;
+    drop role samesight_replication;
+  end if;
+end $$;
+SQL
+```
 
 ```bash
 pnpm --filter audit-todolist stack:up        # fetch, then supabase start

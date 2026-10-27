@@ -132,11 +132,11 @@ samesight-verify [--policy <file>] [--powersync <url>] [--compose <file>]
                  [--static] [--runs <n>] [--seed <n>] [--time-limit <s>]
                  [--mutate] [--mutate-datasets <n>] [--restart <command>]
 samesight-verify audit [--sync-config <file>] [--project <dir>] [--publication <name>]
-                       [--powersync <url> [--compose <file>] | --keep-powersync]
+                       [--powersync <url> | --keep-powersync] [--compose <file>]
                        [--static] [--runs <n>] [--seed <n>] [--time-limit <s>]
 ```
 
-In audit, `--publication` needs `--powersync` or `--static` (the PowerSync audit starts always replicates `powersync`), and `--keep-powersync` goes with neither.
+In audit, a `--publication` other than `powersync` needs `--powersync` or `--static` (the PowerSync audit starts always replicates `powersync`), as does `--compose`, and `--keep-powersync` goes with neither.
 
 ## Policy files and module types
 

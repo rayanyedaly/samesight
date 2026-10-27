@@ -8,7 +8,7 @@ npx samesight-verify --mutate   # and the mutation test
 npx samesight-verify audit ...  # a project with hand-written RLS and sync streams
 ```
 
-It needs the project's local stack running: Supabase (`supabase start`) and the PowerSync service (audit mode can start its own, with Docker). It creates users, writes and deletes rows, with `--mutate` restarts PowerSync, and in audit mode starts containers and a replication role of its own, so it refuses to run against anything that is not this machine. Every database and HTTP address must be `localhost`, `127.0.0.1` or `::1`, `NODE_ENV` must be `development` or `test`, and variables a hosting platform sets (`VERCEL`, `FLY_APP_NAME`, `KUBERNETES_SERVICE_HOST` and others) must be absent. A port forwarded to a remote database looks local, so never run it through one. Audit mode also checks that the Supabase database container it finds in Docker is the one publishing the database's local port.
+It needs the project's local stack running: Supabase (`supabase start`) and the PowerSync service (audit mode can start its own, with Docker). It creates users, writes and deletes rows, with `--mutate` restarts PowerSync, and in audit mode starts containers and a replication role of its own, so it refuses to run against anything that is not this machine. Every database and HTTP address must be `localhost`, `127.0.0.1` or `::1`, `NODE_ENV` must be `development` or `test`, and variables a hosting platform sets (`VERCEL`, `FLY_APP_NAME`, `KUBERNETES_SERVICE_HOST` and others) must be absent. A port forwarded to a remote database looks local, so never run it through one. Audit mode also checks that the Supabase database container it finds in Docker is the database it connects to (the same port, the same system identifier), so it never starts PowerSync on another machine's Docker.
 
 It reads the database URL and keys from `supabase status`, using the Supabase CLI in the nearest `node_modules/.bin` or on your PATH.
 
@@ -95,34 +95,43 @@ The mutation test needs a policy to mutate, so audit mode does not run it.
 | `--powersync <url>` | | Audit a PowerSync service you run yourself, instead of starting one. |
 | `--keep-powersync` | | Leave the service audit started up; see [keeping the service](#keeping-the-service). |
 | `--publication <name>` | `powersync` | With `--powersync` or `--static`: the publication to check. The service audit starts always replicates `powersync`. |
-| `--compose <file>` | | With `--powersync`: checks the version floor of the service it runs. |
+| `--compose <file>` | | With `--powersync` or `--static`: checks the version floor of the PowerSync service that compose file runs. |
 | `--static`, `--runs`, `--seed`, `--time-limit` | | As above. `--static` starts no PowerSync. |
 
 Audit mode reads both forms of sync config: Edition 3 sync streams (`streams:`) and the earlier sync rules (`bucket_definitions:`). A bucket definition's parameter queries are read like a stream's CTEs and its data queries like stream queries. A stream or definition that reads client parameters (`request.parameters()`, `subscription.parameter()`, `connection.parameter()`) gets a warning: those values come from the client, so a device can ask for anything, and the run does not try what it could ask for. Streams that are not `auto_subscribe` are skipped with a warning, since no device here subscribes to them.
 
 ### What audit starts and removes
 
-Without `--powersync`, once the sync config and catalog checks pass (so the project has a `powersync` publication that lists every synced table), audit finds the project's running Supabase containers by the labels the Supabase CLI puts on them, takes a lock on the database so no other audit starts PowerSync on it meanwhile, and, for this run only:
+Without `--powersync`, once the sync config and catalog checks pass (so the project has a `powersync` publication that lists every synced table), audit finds the project's running Supabase containers by the labels the Supabase CLI puts on them, takes a lock on the database so no other audit starts PowerSync on it meanwhile, reuses a service an earlier run kept (see below) or removes what a killed run left, pulls the images it needs, and, for this run only:
 
 1. creates a login role `samesight_audit_<run>` with `REPLICATION` and `BYPASSRLS` (PowerSync's first snapshot reads the tables under RLS) and `SELECT` on the tables the sync config reads. `REPLICATION` also lets it stream every change written to the database through the project's publication, so its password is random, never shown, and sent to Postgres only as a SCRAM verifier;
 2. starts a throwaway Postgres container for PowerSync's storage, on a tmpfs, so it leaves no volume;
 3. starts the PowerSync service ([`journeyapps/powersync-service`](https://hub.docker.com/r/journeyapps/powersync-service) 1.27.2, pinned by digest) on the Supabase network, its port published on 127.0.0.1 only. Tokens are checked against the project's JWKS when Auth has a signing key, or with its shared HS256 secret otherwise. Its replication slots are named `samesight_audit_<run>_...`, so nothing of a PowerSync you run yourself is touched. The project's publication is only read, never changed.
 
-When the run ends, by passing, failing, an error, Ctrl+C, SIGTERM or the terminal closing, it removes both containers, the replication slots and the role. If the run broke down with an error, it first prints the service's last log lines. A run killed outright (SIGKILL, a crash, a reboot) cannot clean up: its containers, role and replication slot (which holds the database's write-ahead log) stay until the next audit of the project that starts PowerSync removes them before it starts. To remove them by hand:
+When the run ends, by passing, failing, an error, Ctrl+C, SIGTERM or the terminal closing (even under `nohup`), it removes both containers, the replication slots and the role. If the run broke down with an error, it first prints the service's last log lines. A run killed outright (SIGKILL, a crash, a reboot) cannot clean up: its containers, role and replication slot (which holds the database's write-ahead log) stay until the next audit of the project that starts PowerSync removes them before it starts. To remove them by hand, while no audit of the project is running, with the project's `project_id` from `supabase/config.toml`:
 
 ```bash
-docker rm --force --volumes $(docker ps --all --quiet --filter label=dev.samesight.audit.run)
-psql "$(npx supabase status --output json | jq -r .DB_URL)" -c "select pg_drop_replication_slot(slot_name) from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')"
-# then, for each samesight_audit_ role: revoke all on all tables in schema public from it, revoke all on schema public from it, drop role
+project=my-project
+docker ps --all --quiet --filter "label=dev.samesight.audit.project=$project" | xargs -r docker rm --force --volumes
+docker exec -i "supabase_db_$project" psql -U postgres <<'SQL'
+select pg_drop_replication_slot(slot_name) from pg_replication_slots where not active and starts_with(slot_name, 'samesight_audit_');
+do $$ declare r text; begin
+  for r in select rolname from pg_roles where starts_with(rolname, 'samesight_audit_') loop
+    execute format('revoke all on all tables in schema public from %I', r);
+    execute format('revoke all on schema public from %I', r);
+    execute format('drop role %I', r);
+  end loop;
+end $$;
+SQL
 ```
 
-Passwords and the service config travel to the containers through Docker's environment, never on a command line; like any container's environment, they are visible to `docker inspect` while the containers exist.
+Passwords and the service config travel to the containers through Docker's environment, never on a command line; like any container's environment, they are visible to `docker inspect` while the containers exist. The errors and log lines audit prints have the run's passwords and the JWT secret masked.
 
 #### Keeping the service
 
-With `--keep-powersync`, the run leaves the service up: both containers, the role and its replication slot. The next audit of the project reuses it when the sync config, tables and token check are the same and its role and slot are still in the database, which saves the start-up; otherwise it removes it and starts afresh. An audit without the flag removes it when it ends, so run one when you are done: while the service is kept, its replication slot holds the database's write-ahead log.
+With `--keep-powersync`, the run leaves the service up: both containers, the role and its replication slot. The next audit of the project reuses it when the sync config, tables and token check are the same and its role and slot are still in the database, which saves the start-up; otherwise it removes it and starts afresh. The next audit that starts PowerSync without the flag removes it when it ends, so run one when you are done (an audit with `--static` or `--powersync`, or one stopped by the checks before the differential, leaves it): while the service is kept, its replication slot holds the database's write-ahead log.
 
-The PowerSync service is source-available under the [FSL-1.1-ALv2](https://github.com/powersync-ja/powersync-service/blob/main/LICENSE) license. Audit pulls the official image from Docker Hub the first time (it says so) and runs it on your machine; Samesight never bundles or redistributes it.
+The PowerSync service is source-available under the [FSL-1.1-ALv2](https://github.com/powersync-ja/powersync-service/blob/main/LICENSE) license. Audit pulls the official image from Docker Hub the first time (it says so), with `postgres:18.6` for its storage, and runs them on your machine; Samesight never bundles or redistributes it.
 
 [examples/audit-todolist](../examples/audit-todolist) runs audit mode on PowerSync's own Supabase to-do list demo: it passes as published, and `verify:planted` shows it failing once the lists query loses its owner filter. `verify:rules` does the same with the demo's rules written as sync rules.
 

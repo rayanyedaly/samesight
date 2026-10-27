@@ -142,6 +142,7 @@ jobs:
       # Every auto-started container, role and slot must be gone after the runs above, and
       # the demo's own publication untouched.
       - name: nothing left behind
+        if: ${{ !cancelled() }}
         run: |
           sql() { docker exec supabase_db_react-supabase-todolist psql -tA -U postgres -d postgres -c "$1"; }
           left=$(docker ps --all --quiet --filter label=dev.samesight.audit.run)
