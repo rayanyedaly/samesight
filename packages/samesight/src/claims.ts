@@ -55,11 +55,45 @@ export interface ClaimReads {
 
 export interface ClaimOptions {
   /**
-   * SQL functions to read through (one level): name as called (schema.name or name) to its
-   * body as Postgres prints it. A zero-argument function whose body is one claim read is
-   * read as that claim; any other listed function that reads the token is reported.
+   * SQL functions to read through (two levels): name as called (schema.name or name) to its
+   * body as Postgres prints it, for any number of arguments. Overloads are keyed beside it as
+   * name/min-max (max * for variadic), and a call is matched to them by its argument count.
+   * A zero-argument function whose body is one claim read (or a call of another such
+   * function) is read as that claim; any other listed function that reads the token is reported.
    */
   functions?: ReadonlyMap<string, string>;
+  /** How many wrappers deep this read is: 1 in a rule, 2 in a function it calls. */
+  depth?: number;
+}
+
+/** Wrappers read through: a rule's function, and one that function calls. */
+const WRAPPER_LEVELS = 2;
+
+/**
+ * The listed keys a call of fn with argc arguments may run: its overloads whose range takes
+ * argc when any are listed as name/min-max, else the name itself (any arity).
+ */
+function overloadsFor(fn: string, argc: number, functions: ReadonlyMap<string, string>): string[] {
+  const ranged = [...functions.keys()].filter((k) => k.startsWith(`${fn}/`));
+  if (!ranged.length) return functions.has(fn) ? [fn] : [];
+  return ranged.filter((k) => {
+    const [min, max] = k.slice(fn.length + 1).split("-");
+    return argc >= Number(min) && (max === "*" || argc <= Number(max));
+  });
+}
+
+/** Arguments in the call whose parenthesis opens at open: top-level commas, named ones included. */
+function argCount(t: Token[], open: number): number {
+  const close = closing(t, open);
+  if (close === open + 1) return 0;
+  let n = 1;
+  let depth = 0;
+  for (let i = open + 1; i < close; i++) {
+    if (sym(t[i], "(") || sym(t[i], "[")) depth++;
+    else if (sym(t[i], ")") || sym(t[i], "]")) depth--;
+    else if (depth === 0 && sym(t[i], ",")) n++;
+  }
+  return n;
 }
 
 /** Text that reads the token somewhere: for rules this cannot tokenize. */
@@ -279,18 +313,21 @@ function functionCall(t: Token[], i: number, options: ClaimOptions): Span | unde
   const fn = qualified ? `${name(t[i])}.${name(t[i + 2])}` : (name(t[i]) as string);
   const open = qualified ? i + 3 : i + 1;
   if (!sym(t[open], "(") || !sym(t[open + 1], ")")) return undefined;
-  const body = options.functions.get(fn);
+  const [key, ...more] = overloadsFor(fn, 0, options.functions);
+  const body = key === undefined || more.length ? undefined : options.functions.get(key);
   if (body === undefined) return undefined;
-  const inner = wrapperRead(body);
+  const depth = options.depth ?? 1;
+  const inner = wrapperRead(body, depth < WRAPPER_LEVELS ? options.functions : undefined, depth + 1);
   if (!inner) return undefined;
   return { start: i, end: open + 1, path: inner.path, casts: inner.casts, ...(inner.fallback !== undefined ? { fallback: inner.fallback } : {}) };
 }
 
 /**
  * The claim read a SQL function's body consists of, as Postgres prints it (select W;,
- * RETURN W, BEGIN ATOMIC SELECT W; END), or undefined when the body is anything else.
+ * RETURN W, BEGIN ATOMIC SELECT W; END), or undefined when the body is anything else. With
+ * `functions`, W may also be a call of a listed zero-argument function that is one read.
  */
-export function wrapperRead(body: string): { path: string[]; casts: string[]; fallback?: ClaimValue } | undefined {
+export function wrapperRead(body: string, functions?: ReadonlyMap<string, string>, depth = 1): { path: string[]; casts: string[]; fallback?: ClaimValue } | undefined {
   let t: Token[];
   try {
     t = tokenize(body, { dialect: "postgres" });
@@ -303,7 +340,7 @@ export function wrapperRead(body: string): { path: string[]; casts: string[]; fa
   // Postgres prints a BEGIN ATOMIC select list with its column alias: SELECT ... AS bool.
   if (word(t.at(-2), "as") && name(t.at(-1))) t = t.slice(0, -2);
   for (let i = 0; i < t.length; i++) {
-    const span = startAt(t, i, "postgres", {});
+    const span = startAt(t, i, "postgres", functions ? { functions, depth } : {});
     if (!span) continue;
     const read = extend(t, span, "postgres");
     return read.start === 0 && read.end === t.length - 1 && !read.unsupported
@@ -694,8 +731,13 @@ export function claimReads(sql: string, dialect: ClaimDialect, options: ClaimOpt
       if (called && options.functions) {
         const qualified = sym(t[i + 1], ".") && name(t[i + 2]) ? `${called}.${name(t[i + 2])}` : called;
         const open = qualified === called ? i + 1 : i + 3;
-        if (sym(t[open], "(") && readsTokenThrough(qualified, options.functions)) {
-          if (readsTokenThrough(qualified, options.functions, new Set(), READS_CLAIMS)) {
+        const run = sym(t[open], "(") ? overloadsFor(qualified, argCount(t, open), options.functions) : [];
+        const reading = run.filter((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>));
+        if (reading.length) {
+          if (run.length > 1) {
+            // Several overloads take this many arguments: which one runs is Postgres's choice by type.
+            unreadable.push({ text: qualified, reason: `calls ${qualified}, one of whose overloads reads the token` });
+          } else if (readsTokenThrough(run[0] as string, options.functions, new Set(), READS_CLAIMS)) {
             unreadable.push({ text: qualified, reason: `calls ${qualified}, which reads the token in a way this cannot follow` });
           } else {
             // A helper that reads only the user id (is_member(org_id) over auth.uid()): it tells
