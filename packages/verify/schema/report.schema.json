@@ -14,7 +14,7 @@
     "result": { "enum": ["passed", "failed", "incomplete"], "description": "The exit code in a word: 0 passed, 1 failed, 2 incomplete." },
     "exitCode": { "enum": [0, 1, 2], "description": "0 when nothing failed, 1 when a check found something, 2 when the run could not do its job." },
     "durationMs": { "type": "integer", "minimum": 0 },
-    "seed": { "type": "integer", "minimum": 0, "description": "The --seed the run was given." },
+    "seed": { "type": "integer", "minimum": 0, "maximum": 2147483644, "description": "The --seed the run was given." },
     "replay": { "type": "string", "description": "The command that replays the differential's failure, when it failed." },
     "sections": {
       "type": "array",

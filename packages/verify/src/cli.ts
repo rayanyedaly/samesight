@@ -84,7 +84,7 @@ Options:
   --compose <file>      the compose file that runs PowerSync (default: docker-compose.yml)
   --static              run the static and catalog checks only
   --runs <n>            generated datasets for the differential (default: 8)
-  --seed <n>            fast-check seed, to replay a run
+  --seed <n>            fast-check seed (0 to 2147483644), to replay a run
   --time-limit <s>      stop generating datasets after this many seconds (default: 120)
   --mutate              also run the mutation test (rewrites the sync config and restarts PowerSync)
   --mutate-datasets <n> datasets to try per mutant before calling it missed (default: 8)
@@ -112,13 +112,14 @@ its PowerSync service, and audit needs Docker unless given --powersync or --stat
 Docs: https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme
 `;
 
-/** A whole-number flag, checked before anything runs: a zero count would pass while testing nothing. */
+/** --seed, checked before anything runs. */
 function seedFlag(v: string): number {
   const n = readSeed(v);
   if (n === undefined) throw new Error(`--seed must be a whole number from 0 to ${MAX_SEED}, not "${v}"`);
   return n;
 }
 
+/** A whole-number flag, checked before anything runs: a zero count would pass while testing nothing. */
 function int(name: string, v: string | undefined, fallback: number, min = 1): number {
   if (v === undefined) return fallback;
   const n = Number(v);
