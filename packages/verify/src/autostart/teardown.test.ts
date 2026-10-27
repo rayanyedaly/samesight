@@ -126,11 +126,49 @@ describe("onSignals", () => {
     p.emit("SIGINT");
     p.emit("SIGTERM");
     p.emit("SIGHUP");
+    // Still listening: a lost listener would let a real process's next signal kill it.
+    expect(["SIGINT", "SIGTERM", "SIGHUP"].map((s) => p.listenerCount(s))).toEqual([1, 1, 1]);
     await new Promise((r) => setTimeout(r, 5));
     expect(events).toEqual([]);
     finish();
     await exited;
     expect(events).toEqual(["exit 141"]);
+  });
+
+  it("exits at once on the same signal twice, and when the teardown outlasts its grace", async () => {
+    const twice = proc();
+    const hung = new Teardown(() => {});
+    hung.add("hung", () => new Promise(() => {}));
+    onSignals(hung, () => {}, twice.p);
+    twice.p.emit("SIGTERM");
+    expect(twice.exits).toEqual([]);
+    twice.p.emit("SIGTERM");
+    expect(twice.exits).toEqual([143]);
+
+    const late = proc();
+    const slow = new Teardown(() => {});
+    slow.add("hung", () => new Promise(() => {}));
+    onSignals(slow, () => {}, late.p, 20);
+    late.p.emit("SIGHUP");
+    expect(await late.exited).toBe(129);
+  });
+
+  it("leaves a teardown the run began itself to finish and report; one Ctrl+C then only arms the exit", async () => {
+    const { p, exits } = proc();
+    const t = new Teardown(() => {});
+    let finish: () => void = () => {};
+    t.add("slow", () => new Promise<void>((r) => (finish = r)));
+    onSignals(t, () => {}, p);
+    const done = t.run();
+    p.emit("SIGINT");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(exits).toEqual([]);
+    finish();
+    await done;
+    await new Promise((r) => setTimeout(r, 5));
+    expect(exits).toEqual([]);
+    p.emit("SIGINT");
+    expect(exits).toEqual([130]);
   });
 
   it("exits at once on a second Ctrl+C, whatever began the teardown, and stops listening when told", async () => {

@@ -78,7 +78,10 @@ function docker(
     if (args[0] === "container" && args[1] === "inspect") {
       const name = args[2] as string;
       if (o.kept && name === `samesight-audit-${o.kept}-powersync`) {
-        const env = o.keptConfig ? [`POWERSYNC_CONFIG_B64=${Buffer.from(o.keptConfig).toString("base64")}`] : [];
+        const config =
+          o.keptConfig ??
+          `replication:\n  connections:\n    - uri: postgresql://samesight_audit_${o.kept}:kept-role-password-0123456789@db:5432/postgres\nstorage:\n  uri: postgresql://powersync_storage:kept-storage-password-0123@s:5432/x\n`;
+        const env = [`POWERSYNC_CONFIG_B64=${Buffer.from(config).toString("base64")}`];
         return out(JSON.stringify([{ Config: { Labels: { "dev.samesight.audit.run": o.kept }, Env: env } }]));
       }
       if (name in containers) return out(JSON.stringify([containers[name]]));
@@ -260,6 +263,37 @@ describe("autoStart", () => {
     expect(logs[0]).toMatch(/postgresql:\/\/samesight_audit_[0-9a-f]{8}:\*\*\*@/);
     expect(logs[0]).toMatch(/postgresql:\/\/powersync_storage:\*\*\*@/);
     expect(logs[0]).not.toMatch(/[0-9a-f]{48}/);
+  });
+
+  it("does not reuse a kept service whose passwords it cannot read, so it could not mask them", async () => {
+    const d = docker({ kept: "0a0b0c0d", keptFingerprint: await fingerprint(), keptConfig: "replication: {}\n" });
+    const started = await autoStart(options(d.docker, db({ keptAlive: true }), proc()));
+    expect(started.reused).toBe(false);
+    await started.stop();
+  });
+
+  it("masks the run's secrets in its own log lines", async () => {
+    const lines: string[] = [];
+    const d = docker({ failOn: /^rm /, failure: "Error: rm refused: super-secret-jwt-token-with-at-least-32-characters-long" });
+    const started = await autoStart({ ...options(d.docker, db(), proc()), log: (l: string) => lines.push(l) });
+    expect(await started.stop()).toEqual([expect.stringMatching(/^containers /)]);
+    expect(lines.some((l) => l.includes("rm refused: ***"))).toBe(true);
+    expect(lines.join("\n")).not.toContain("super-secret-jwt");
+  });
+
+  it("masks the secrets in a stack already read before the error reached it", async () => {
+    const c = db({
+      hook: (text) => {
+        if (/^create role/.test(text)) {
+          const e = new Error("bad: super-secret-jwt-token-with-at-least-32-characters-long");
+          void e.stack;
+          throw e;
+        }
+      },
+    });
+    const e = (await autoStart(options(docker().docker, c, proc())).catch((e: Error) => e)) as Error;
+    expect(e.message).toBe("bad: ***");
+    expect(e.stack).not.toContain("super-secret-jwt");
   });
 
   it("refuses a Docker whose database is not the one the audit connects to", async () => {

@@ -357,13 +357,22 @@ function report(findings: Finding[], started: number): number {
 // Output that has gone (| head, a closed terminal) is no reason to crash; while audit's
 // PowerSync is up, the teardown handles it (autostart/teardown.ts), and otherwise the run
 // ends as it would, exiting 141 as on SIGPIPE.
-let outputGone = false;
+let outputGone: number | undefined;
 for (const stream of [process.stdout, process.stderr]) {
-  stream.on("error", () => {
-    outputGone = true;
+  stream.on("error", (e: NodeJS.ErrnoException) => {
+    outputGone ??= e.code === "EPIPE" || e.code === "EIO" ? 141 : 1;
   });
 }
-const exit = (code: number) => process.stdout.write("", () => process.exit(outputGone ? 141 : code));
+// A failed write calls back before it emits 'error': the callbacks' own errors count too.
+const exit = (code: number) => {
+  let left = 2;
+  const done = (e?: Error | null) => {
+    if (e) outputGone ??= ["EPIPE", "EIO"].includes((e as NodeJS.ErrnoException).code ?? "") ? 141 : 1;
+    if (--left === 0) process.exit(outputGone ?? code);
+  };
+  process.stdout.write("", done);
+  process.stderr.write("", done);
+};
 main(process.argv.slice(2)).then(exit, (e) => {
   process.stderr.write(`samesight-verify: ${(e as Error).message}\n`);
   exit(1);
