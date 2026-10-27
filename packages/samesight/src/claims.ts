@@ -62,7 +62,10 @@ export interface ClaimOptions {
    * function) is read as that claim; any other listed function that reads the token is reported.
    */
   functions?: ReadonlyMap<string, string>;
-  /** How many wrappers deep this read is: 1 in a rule, 2 in a function it calls. */
+}
+
+/** Internal: how many wrappers deep a read is, 1 in a rule, 2 in a function it calls. */
+interface ReadOptions extends ClaimOptions {
   depth?: number;
 }
 
@@ -239,27 +242,71 @@ export function callsIn(body: string): string[] {
       const a = t[i];
       if (!a || (a.kind !== "word" && a.kind !== "quoted") || sym(t[i - 1], ".")) continue;
       if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], "(")) out.add(`${a.text}.${name(t[i + 2])}`);
-      else if (sym(t[i + 1], "(")) out.add(a.text);
+      else if (sym(t[i + 1], "(") && !(a.kind === "word" && NOT_CALLS.has(a.text))) out.add(a.text);
     }
     return [...out];
   }
-  const text = body
-    .replace(/--[^\n]*/g, " ")
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/'(?:[^']|'')*'/g, "''");
+  const text = codeOnly(body);
   const part = String.raw`("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
   const unquote = (x: string) => (x.startsWith('"') ? x.slice(1, -1).replace(/""/g, '"') : x.toLowerCase());
   for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
     out.add(m[2] === undefined ? unquote(m[1] as string) : `${unquote(m[1] as string)}.${unquote(m[2])}`);
   }
-  return [...out];
+  return [...out].filter((c) => !NOT_CALLS.has(c));
 }
 
-/** The listed functions a call names: schema.name exactly, a bare name any schema's. */
+
+/** Keywords Postgres writes before a parenthesis that are no function: EXISTS (...), IN (...). */
+const NOT_CALLS = new Set(["exists", "in", "any", "all", "some", "array", "values", "row", "filter", "over", "if", "elsif", "while", "and", "or", "not", "when", "then", "else", "case", "select", "from", "where", "on", "using", "return", "returning", "into", "as", "cast", "coalesce", "nullif", "greatest", "least"]);
+
+/**
+ * A plpgsql body with its comments and string literals blanked, in one pass, so a quote or
+ * comment marker inside one never hides code: '...' with '' escapes, E'...' with backslash
+ * escapes, -- and /* *\/ comments, and $tag$...$tag$ strings (SQL in one, run by EXECUTE, is
+ * dynamic SQL, which no reader of the body can follow).
+ */
+function codeOnly(body: string): string {
+  let out = "";
+  let i = 0;
+  while (i < body.length) {
+    const rest = body.slice(i);
+    if (rest.startsWith("--")) {
+      const end = body.indexOf("\n", i);
+      i = end === -1 ? body.length : end;
+      out += " ";
+    } else if (rest.startsWith("/*")) {
+      const end = body.indexOf("*/", i + 2);
+      i = end === -1 ? body.length : end + 2;
+      out += " ";
+    } else if (/^[eE]'/.test(rest) && !/[A-Za-z0-9_$]/.test(body[i - 1] ?? "")) {
+      let j = i + 2;
+      while (j < body.length && body[j] !== "'") j += body[j] === "\\" ? 2 : body[j + 1] === "'" && body[j] === "'" ? 2 : 1;
+      i = j + 1;
+      out += "''";
+    } else if (rest.startsWith("'")) {
+      let j = i + 1;
+      while (j < body.length && !(body[j] === "'" && body[j + 1] !== "'")) j += body[j] === "'" ? 2 : 1;
+      i = j + 1;
+      out += "''";
+    } else {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(rest);
+      if (tag && !/[A-Za-z0-9_]/.test(body[i - 1] ?? "")) {
+        const end = body.indexOf(tag[0], i + tag[0].length);
+        i = end === -1 ? body.length : end + tag[0].length;
+        out += "''";
+      } else {
+        out += body[i];
+        i++;
+      }
+    }
+  }
+  return out;
+}
+
+/** The listed functions a call may run: schema.name exactly; a bare name, any schema's (search_path decides). */
 function callees(call: string, functions: ReadonlyMap<string, string>): string[] {
-  if (functions.has(call)) return [call];
-  if (call.includes(".")) return [];
-  return [...functions.keys()].filter((k) => k.endsWith(`.${call}`));
+  if (call.includes(".")) return functions.has(call) ? [call] : [];
+  return [...functions.keys()].filter((k) => k === call || k.endsWith(`.${call}`));
 }
 
 /** Whether a listed function's body reads the token (or, with READS_CLAIMS, a claim other than the user id), itself or through other listed functions. */
@@ -272,7 +319,7 @@ function readsTokenThrough(fn: string, functions: ReadonlyMap<string, string>, s
 }
 
 /** The claim read starting at token i, before any keys or wrappers; undefined when none starts there. */
-function startAt(t: Token[], i: number, dialect: ClaimDialect, options: ClaimOptions): Span | undefined {
+function startAt(t: Token[], i: number, dialect: ClaimDialect, options: ReadOptions): Span | undefined {
   const call = (schema: string, fn: string) => word(t[i], schema) && sym(t[i + 1], ".") && word(t[i + 2], fn) && sym(t[i + 3], "(");
   const empty = (open: number) => sym(t[open + 1], ")");
   if (dialect === "postgres") {
@@ -307,7 +354,7 @@ function startAt(t: Token[], i: number, dialect: ClaimDialect, options: ClaimOpt
 }
 
 /** A call of a listed zero-argument function whose body is one claim read. */
-function functionCall(t: Token[], i: number, options: ClaimOptions): Span | undefined {
+function functionCall(t: Token[], i: number, options: ReadOptions): Span | undefined {
   if (!options.functions || !name(t[i])) return undefined;
   const qualified = sym(t[i + 1], ".") && name(t[i + 2]);
   const fn = qualified ? `${name(t[i])}.${name(t[i + 2])}` : (name(t[i]) as string);
@@ -625,6 +672,9 @@ function comparedWith(t: Token[], s: Span): Compared {
       if ((word(t[s.end + 2], "any") || word(t[s.end + 2], "all")) && sym(t[s.end + 3], "(")) {
         const close = closing(t, s.end + 3);
         const list = arrayList(t, s.end + 4, close);
+        // = ANY is IN and <> ALL is NOT IN; = ALL and <> ANY over several values are neither.
+        const inLike = (right.text === "=") === word(t[s.end + 2], "any");
+        if (list && !inLike) return other();
         if (list) {
           const values = rightEdge(t, close + 1) ? literalList(t.slice(list.from, list.to)) : undefined;
           return values ? flip({ kind: "literals", values, negated }, s.start, close) : other();
@@ -673,8 +723,30 @@ function negatedAround(t: Token[], from: number, to: number): boolean {
     }
     // Only a parenthesised condition: Postgres prints every comparison of one that way.
     if (!grouped) return negated;
+    const before = t[a - 1];
+    const lhs = t[a - 2];
+    // false = (read = 'x'): the boolean on the left.
+    if (before?.kind === "symbol" && ["=", "<>", "!="].includes(before.text) && (word(lhs, "true") || word(lhs, "false")) && !sym(t[a - 3], ".")) {
+      if ((before.text === "=") === word(lhs, "false")) negated = !negated;
+      a -= 2;
+      grouped = false;
+      continue;
+    }
     const op = t[b + 1];
     const v = t[b + 2];
+    // (read = 'x') IS [NOT] DISTINCT FROM true/false: a null-safe = / <>.
+    const distinct = word(op, "is") && (word(v, "distinct") || (word(v, "not") && word(t[b + 3], "distinct")));
+    if (distinct) {
+      const not = word(v, "not");
+      const at = b + (not ? 4 : 3);
+      const value = t[at + 1];
+      if (!word(t[at], "from") || !(word(value, "true") || word(value, "false"))) return negated;
+      // IS NOT DISTINCT FROM is =, IS DISTINCT FROM is <>.
+      if (not === word(value, "false")) negated = !negated;
+      b = at + 1;
+      grouped = false;
+      continue;
+    }
     if (op?.kind === "symbol" && ["=", "<>", "!="].includes(op.text) && (word(v, "true") || word(v, "false"))) {
       if ((op.text === "=") === word(v, "false")) negated = !negated;
       b += 2;
@@ -734,10 +806,11 @@ export function claimReads(sql: string, dialect: ClaimDialect, options: ClaimOpt
         const run = sym(t[open], "(") ? overloadsFor(qualified, argCount(t, open), options.functions) : [];
         const reading = run.filter((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>));
         if (reading.length) {
-          if (run.length > 1) {
+          const claims = reading.some((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>, new Set(), READS_CLAIMS));
+          if (claims && run.length > 1) {
             // Several overloads take this many arguments: which one runs is Postgres's choice by type.
             unreadable.push({ text: qualified, reason: `calls ${qualified}, one of whose overloads reads the token` });
-          } else if (readsTokenThrough(run[0] as string, options.functions, new Set(), READS_CLAIMS)) {
+          } else if (claims) {
             unreadable.push({ text: qualified, reason: `calls ${qualified}, which reads the token in a way this cannot follow` });
           } else {
             // A helper that reads only the user id (is_member(org_id) over auth.uid()): it tells

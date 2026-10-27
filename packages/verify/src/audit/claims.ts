@@ -149,7 +149,8 @@ export async function policyFunctions(client: pg.Client): Promise<Map<string, st
     if (f.body === null) continue;
     const range = `${f.args - f.defaults}-${f.variadic ? "*" : f.args}`;
     for (const name of f.schema === "public" ? [`${f.schema}.${f.name}`, f.name] : [`${f.schema}.${f.name}`]) {
-      out.set(`${name}/${range}`, f.body);
+      // Overloads that differ only by type take the same counts: their bodies go together.
+      add(`${name}/${range}`, f.body);
       add(name, f.body);
     }
   }
