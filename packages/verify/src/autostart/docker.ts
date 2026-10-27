@@ -69,7 +69,7 @@ export class Docker {
   async logs(container: string, tail: number): Promise<string> {
     try {
       const { stdout, stderr } = await this.exec(["logs", "--tail", String(tail), container]);
-      return `${stdout}${stderr}`.trim();
+      return [stdout.trim(), stderr.trim()].filter(Boolean).join("\n");
     } catch (e) {
       throw explain(["logs"], e);
     }

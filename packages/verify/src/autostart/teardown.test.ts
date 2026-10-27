@@ -62,13 +62,15 @@ function proc(events: string[] = []) {
     exited = r;
   });
   const p = Object.assign(emitter, {
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
     exit: (code: number) => {
       exits.push(code);
       events.push(`exit ${code}`);
       exited(code);
       return undefined as never;
     },
-  }) as unknown as Signals & EventEmitter;
+  }) as unknown as Signals & EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
   return { p, exits, exited: first };
 }
 
@@ -93,6 +95,23 @@ describe("onSignals", () => {
     }
   });
 
+  it("tears down and exits 141 when its output has gone (EPIPE), and ignores other stream errors", async () => {
+    const events: string[] = [];
+    const { p, exited } = proc(events);
+    const t = new Teardown(() => {});
+    t.add("x", async () => {
+      events.push("removed x");
+    });
+    onSignals(t, () => {}, p);
+    p.stdout.emit("error", Object.assign(new Error("write EBADF"), { code: "EBADF" }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(events).toEqual([]);
+    p.stderr.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+    p.stdout.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+    await exited;
+    expect(events).toEqual(["removed x", "exit 141"]);
+  });
+
   it("exits at once on a second Ctrl+C, and stops listening when told", async () => {
     const { p, exits } = proc();
     const t = new Teardown(() => {});
@@ -106,5 +125,6 @@ describe("onSignals", () => {
     const stop = onSignals(new Teardown(() => {}), () => {}, second.p);
     stop();
     expect(["SIGINT", "SIGTERM", "SIGHUP"].map((s) => second.p.listenerCount(s))).toEqual([0, 0, 0]);
+    expect([second.p.stdout.listenerCount("error"), second.p.stderr.listenerCount("error")]).toEqual([0, 0]);
   });
 });

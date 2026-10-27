@@ -38,14 +38,30 @@ const supabase = (name: string, image: string) => ({
 });
 
 /** A fake Docker with the demo's Supabase stack, optionally a kept run, recording calls. */
-function docker(o: { kept?: string; keptFingerprint?: string; keptConfig?: string; logs?: string; failOn?: RegExp; failure?: string; systemId?: string } = {}) {
+function docker(
+  o: {
+    kept?: string;
+    keptFingerprint?: string;
+    keptConfig?: string;
+    /** The logs docker hands out, or a function of the config the service was given. */
+    logs?: string | ((config: string) => string);
+    failOn?: RegExp;
+    failure?: string;
+    systemId?: string;
+    /** Called on every docker call, before it is answered. */
+    hook?: (args: string[]) => void;
+  } = {},
+) {
   const calls: string[][] = [];
+  let config = "";
   const containers: Record<string, unknown> = {
     supabase_db_todo: supabase("supabase_db_todo", "supabase/postgres:17"),
     supabase_kong_todo: supabase("supabase_kong_todo", "supabase/kong:2.8"),
   };
-  const exec: Exec = async (args) => {
+  const exec: Exec = async (args, env) => {
     calls.push(args);
+    if (env?.POWERSYNC_CONFIG_B64) config = Buffer.from(env.POWERSYNC_CONFIG_B64, "base64").toString();
+    o.hook?.(args);
     const line = args.join(" ");
     if (o.failOn?.test(line)) throw Object.assign(new Error("failed"), { stderr: o.failure ?? "Error: no space left on device" });
     const out = (stdout: string) => ({ stdout, stderr: "" });
@@ -72,24 +88,28 @@ function docker(o: { kept?: string; keptFingerprint?: string; keptConfig?: strin
     if (args[0] === "image") return out(JSON.stringify([{ Id: "sha256:1" }]));
     if (args[0] === "exec" && args.includes("psql")) return out(o.systemId ?? "7700833229969797152");
     if (args[0] === "port") return out(url.replace("http://", ""));
-    if (args[0] === "logs") return out(o.logs ?? "the last words");
+    if (args[0] === "logs") return out(typeof o.logs === "function" ? o.logs(config) : (o.logs ?? "the last words"));
     return out("");
   };
   return { docker: new Docker(exec), calls, ran: () => calls.filter((c) => c[0] === "run").map((c) => c[c.indexOf("--name") + 1]) };
 }
 
-/** A fake database connection: the advisory lock, the kept run's role and slot, recording statements. */
-function db(o: { locked?: boolean; keptAlive?: boolean } = {}) {
+/** A fake database connection: the advisory lock, the kept run's role and slot, recording statements and their parameters. */
+function db(o: { locked?: boolean; keptAlive?: boolean; hook?: (text: string) => void | Promise<void> } = {}) {
   const sql: string[] = [];
+  const params: unknown[][] = [];
   return {
     sql,
+    params,
     escapeIdentifier: (s: string) => `"${s}"`,
     escapeLiteral: (s: string) => `'${s}'`,
-    query: (async (text: string) => {
+    query: (async (text: string, values: unknown[] = []) => {
       sql.push(text);
+      params.push(values);
+      await o.hook?.(text);
       if (/pg_try_advisory_lock/.test(text)) return { rows: [{ ok: !o.locked }] };
       if (/system_identifier/.test(text)) return { rows: [{ id: "7700833229969797152" }] };
-      if (/as ok/.test(text)) return { rows: [{ ok: o.keptAlive ?? false }] };
+      if (/has_table_privilege/.test(text)) return { rows: [{ ok: o.keptAlive ?? false }] };
       if (/exists \(select from pg_roles/.test(text)) return { rows: [{ exists: true }] };
       return { rows: [] };
     }) as never,
@@ -101,12 +121,24 @@ async function fingerprint(o: Partial<ReturnType<typeof options>> = {}): Promise
   const d = docker();
   await autoStart({ ...options(d.docker, db(), proc(), true), ...o, docker: d.docker });
   const label = d.calls.flat().find((a) => a.startsWith(`${KEEP_LABEL}=`)) ?? "";
-  return label.slice(KEEP_LABEL.length + 1);
+  const fp = label.slice(KEEP_LABEL.length + 1);
+  expect(fp).toMatch(/^[0-9a-f]{16}$/);
+  return fp;
 }
 
-/** A process stand-in that only counts signal listeners. */
+/** A process stand-in: emits signals, records exits. */
 function proc() {
-  return Object.assign(new EventEmitter(), { exit: () => undefined as never }) as unknown as Signals & EventEmitter;
+  const exits: number[] = [];
+  const p = Object.assign(new EventEmitter(), {
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+    exits,
+    exit: (code: number) => {
+      exits.push(code);
+      return undefined as never;
+    },
+  });
+  return p as unknown as Signals & EventEmitter & { exits: number[] };
 }
 const listening = (p: EventEmitter) => ["SIGINT", "SIGTERM", "SIGHUP"].reduce((n, s) => n + p.listenerCount(s), 0);
 
@@ -154,6 +186,56 @@ describe("autoStart", () => {
     expect(listening(p)).toBe(0);
   });
 
+  it("on Ctrl+C while the storage starts, waits for that step, then removes it and the role and exits 130", async () => {
+    const p = proc();
+    let fired = false;
+    const d = docker({
+      failOn: /pg_isready/,
+      hook: (args) => {
+        if (args.includes("pg_isready") && !fired) {
+          fired = true;
+          p.emit("SIGINT");
+        }
+      },
+    });
+    const c = db();
+    await expect(autoStart(options(d.docker, c, p))).rejects.toThrow(/stopped while the storage started/);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(p.exits).toEqual([130]);
+    expect(d.ran()).toEqual([expect.stringMatching(/-storage$/)]);
+    expect(d.calls.find((c) => c[0] === "rm")?.slice(3)).toEqual([expect.stringMatching(/-storage$/), expect.stringMatching(/-powersync$/)]);
+    expect(c.sql.some((s) => /^drop role/.test(s))).toBe(true);
+  });
+
+  it("on Ctrl+C while the role is made, drops it only after its grants, and starts nothing", async () => {
+    const p = proc();
+    const d = docker();
+    // Slow grants: a teardown that did not wait would revoke and drop between them.
+    const c = db({
+      hook: async (text) => {
+        if (/^create role/.test(text)) p.emit("SIGINT");
+        if (/^grant/.test(text)) await new Promise((r) => setTimeout(r, 20));
+      },
+    });
+    await expect(autoStart(options(d.docker, c, p))).rejects.toThrow(/stopped/);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(p.exits).toEqual([130]);
+    expect(d.ran()).toEqual([]);
+    const lastGrant = c.sql.map((s) => /^grant/.test(s)).lastIndexOf(true);
+    expect(lastGrant).toBeGreaterThan(-1);
+    expect(c.sql.findIndex((s) => /^drop role/.test(s))).toBeGreaterThan(lastGrant);
+  });
+
+  it("masks the passwords it made in the log lines it hands out", async () => {
+    const d = docker({ logs: (config) => `connecting with ${config}` });
+    const started = await autoStart(options(d.docker, db(), proc()));
+    const logs: string[] = [];
+    await started.stop({ logs: (t) => logs.push(t) });
+    expect(logs[0]).toMatch(/postgresql:\/\/samesight_audit_[0-9a-f]{8}:\*\*\*@/);
+    expect(logs[0]).toMatch(/postgresql:\/\/powersync_storage:\*\*\*@/);
+    expect(logs[0]).not.toMatch(/[0-9a-f]{48}/);
+  });
+
   it("refuses a Docker whose database is not the one the audit connects to", async () => {
     const d = docker({ systemId: "1234" });
     await expect(autoStart(options(d.docker, db(), proc()))).rejects.toThrow(/supabase_db_todo is not the database the audit connects to/);
@@ -195,6 +277,8 @@ describe("autoStart", () => {
     const c = db({ keptAlive: true });
     const started = await autoStart(options(d.docker, c, proc()));
     expect(started).toMatchObject({ url, reused: true, slotPrefix: "samesight_audit_0a0b0c0d_" });
+    // The kept role must still read every table this run needs.
+    expect(c.params[c.sql.findIndex((s) => /has_table_privilege/.test(s))]).toEqual(["samesight_audit_0a0b0c0d", "samesight_audit_0a0b0c0d_", ["todos", "lists"]]);
     expect(d.ran()).toEqual([]);
     await started.stop();
     expect(d.calls.find((c) => c[0] === "rm")).toEqual(["rm", "--force", "--volumes", "samesight-audit-0a0b0c0d-storage", "samesight-audit-0a0b0c0d-powersync"]);

@@ -7,7 +7,9 @@ const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
 /** Runs the CLI; resolves with its exit code and stderr. */
 const cli = (args: string[]) =>
   new Promise<{ code: number; stderr: string }>((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { timeout: 20_000 }, (e, _stdout, stderr) => resolve({ code: (e?.code as number | undefined) ?? 0, stderr }));
+    execFile(process.execPath, [CLI, ...args], { timeout: 4_000 }, (e, _stdout, stderr) =>
+      resolve({ code: e ? (typeof e.code === "number" ? e.code : -1) : 0, stderr }),
+    );
   });
 
 describe("samesight-verify audit flags", () => {
@@ -20,5 +22,11 @@ describe("samesight-verify audit flags", () => {
     const { code, stderr } = await cli(["audit", ...args]);
     expect(code).toBe(1);
     expect(stderr).toMatch(message);
+  });
+
+  it("takes --compose with --static", async () => {
+    const { stderr } = await cli(["audit", "--static", "--compose", "docker-compose.yml", "--sync-config", "nowhere.yaml"]);
+    expect(stderr).not.toMatch(/--compose checks/);
+    expect(stderr).toMatch(/No sync config at/);
   });
 });
