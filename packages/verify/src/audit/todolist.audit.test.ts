@@ -20,7 +20,7 @@ import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
 import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
-import { planHook } from "./hook.ts";
+import { executeAdvice, planHook } from "./hook.ts";
 import { auditTables, cleanupScope } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
 
@@ -259,7 +259,7 @@ describe("an access token hook on the demo's catalog", () => {
     const p = await plan(deeper, false);
     expect(p.findings.map((f) => f.detail)).toEqual([
       "the access token hook pg-functions://postgres/public/samesight_test_hook calls public.samesight_test_deepest three or more calls deep, which audit does not read: it may read tables audit gives no rows",
-      "anon, authenticated can execute the access token hook pg-functions://postgres/public/samesight_test_hook (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds; as Supabase's guide does, grant execute on function public.samesight_test_hook(jsonb) to supabase_auth_admin, then revoke execute on function public.samesight_test_hook(jsonb) from public, anon, authenticated",
+      executeAdvice(["anon", "authenticated"], "pg-functions://postgres/public/samesight_test_hook", "public", "samesight_test_hook"),
       expect.stringMatching(/^supabase_auth_admin cannot read lists/),
     ]);
   });

@@ -6,11 +6,12 @@ import type { TableModel } from "./model.ts";
 import { cleanup, holdingLock, setUp, setUpUsers, stoppable, tearDown } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
-const fresh = { sql: [] as string[], lock: true, ended: false };
+const fresh = { sql: [] as string[], lock: true, ended: false, users: [] as string[] };
 const connect = vi.fn(async () => ({
   query: async (text: string) => {
     fresh.sql.push(text);
     if (/pg_try_advisory_lock/.test(text)) return { rows: [{ locked: fresh.lock }] };
+    if (/from auth\.users/.test(text)) return { rows: fresh.users.map((id) => ({ id })) };
     return { rows: [] };
   },
   end: async () => {
@@ -41,6 +42,7 @@ beforeEach(() => {
   fresh.sql = [];
   fresh.lock = true;
   fresh.ended = false;
+  fresh.users = [];
   connect.mockClear();
 });
 
@@ -100,6 +102,53 @@ describe("stoppable", () => {
     await ending;
     expect(connect.mock.calls.length).toBe(0);
     expect(client.sql.at(-1)).toBe("select pg_advisory_unlock($1)");
+  });
+
+  it("says a row the run may not delete blocks its users, and does not promise the next run removes them", async () => {
+    const client = runClient();
+    const lines: string[] = [];
+    const stop = await stoppable(client, { ...stack, api: "http://127.0.0.1:54321" }, [], (l) => lines.push(l));
+    holdingLock.add(client);
+    fresh.users = ["0b0b0b0b-0000-4000-8000-000000000001", "0b0b0b0b-0000-4000-8000-000000000002"];
+    // As Auth answers when a row still references the user (a table name long enough that a
+    // body cut at 300 characters would lose it), and, for the second user, something else.
+    const table = "organization_member_invitation_history";
+    const blocked = JSON.stringify({
+      code: "23503",
+      message: `update or delete on table "users" violates foreign key constraint "${table}_recipient_id_fkey" on table "${table}"`,
+      detail: `Key (id)=(0b0b0b0b-0000-4000-8000-000000000001) is still referenced from table "${table}".`,
+    });
+    let n = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => (n++ === 0 ? new Response(blocked, { status: 500 }) : new Response("upstream timeout", { status: 504 }))));
+    try {
+      await stop.step();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(lines).toEqual([
+      expect.stringMatching(
+        new RegExp(
+          `^could not remove the run's users and rows: could not delete 1 of 2 run users: rows in ${table} still reference them that are not the run's to delete .*remove or repoint them by hand, then, with no verify run going, delete the users .*on delete cascade.*The others failed otherwise, and the next run tries them again: .*504 upstream timeout$`,
+        ),
+      ),
+    ]);
+    expect(lines[0]).toContain("504 upstream timeout");
+    expect(lines[0]).not.toContain(LEFT_FOR_NEXT);
+  });
+
+  it("leaves users Auth would not delete for another reason to the next run, without blaming a row", async () => {
+    const client = runClient();
+    const lines: string[] = [];
+    const stop = await stoppable(client, { ...stack, api: "http://127.0.0.1:54321" }, [], (l) => lines.push(l));
+    holdingLock.add(client);
+    fresh.users = ["0b0b0b0b-0000-4000-8000-000000000001"];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("upstream timeout", { status: 504 })));
+    try {
+      await stop.step();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(lines).toEqual([`could not remove the run's users and rows: could not delete 1 run users: 0b0b0b0b-0000-4000-8000-000000000001: Auth DELETE /admin/users/0b0b0b0b-0000-4000-8000-000000000001: 504 upstream timeout; ${LEFT_FOR_NEXT}`]);
   });
 
   it("logs, never throws, when it cannot clean", async () => {
