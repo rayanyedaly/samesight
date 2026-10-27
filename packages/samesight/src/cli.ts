@@ -77,7 +77,7 @@ async function main(argv: string[]): Promise<number> {
   }
   if (values.help || !command) {
     process.stdout.write(USAGE);
-    return command || values.help ? 0 : 1;
+    return command || values.help ? 0 : 2;
   }
   // Lint needs no policy: it is for any PowerSync project.
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
@@ -93,7 +93,7 @@ async function main(argv: string[]): Promise<number> {
       const snapshot = join(root, outputPaths(policy).schemaSnapshot);
       if (!existsSync(snapshot)) {
         console.error(`No schema snapshot at ${snapshot}; run \`samesight generate\` first.`);
-        return 1;
+        return 2;
       }
       const ir = buildIR(policy, JSON.parse(readFileSync(snapshot, "utf8")) as SchemaInfo);
       process.stdout.write(explainPolicy(ir, values.table));
@@ -109,7 +109,7 @@ async function main(argv: string[]): Promise<number> {
       const snapshot = join(root, outputPaths(policy).schemaSnapshot);
       if (!existsSync(snapshot)) {
         console.error(`No schema snapshot at ${snapshot}; run \`samesight generate\` first.`);
-        return 1;
+        return 2;
       }
       return check(policy, JSON.parse(readFileSync(snapshot, "utf8")) as SchemaInfo, root);
     }
@@ -146,7 +146,7 @@ async function main(argv: string[]): Promise<number> {
     }
     default:
       console.error(`Unknown command "${command}".\n\n${USAGE}`);
-      return 1;
+      return 2;
   }
 }
 
@@ -250,7 +250,7 @@ async function init(given: string | undefined, db: string): Promise<number> {
   for (const p of [existing, path]) {
     if (p && existsSync(p)) {
       console.error(`${p} already exists.`);
-      return 1;
+      return 2;
     }
   }
   const dir = dirname(path);
@@ -280,12 +280,14 @@ async function init(given: string | undefined, db: string): Promise<number> {
 /** Where projects usually keep `supabase gen types` output, relative to the policy file. */
 const TYPES_FILES = ["supabase/types.ts", "src/types/supabase.ts", "types/supabase.ts", "database.types.ts", "src/database.types.ts", "lib/database.types.ts"];
 
+// 0 on a pass, 1 when a check found something (a policy that does not compile among them),
+// 2 when the command could not run: a flag, a file, a database it cannot reach.
 main(process.argv.slice(2)).then(
   (code) => {
     process.exitCode = code;
   },
   (error: unknown) => {
     console.error(error instanceof CompileError ? error.message : error instanceof Error ? error.message : error);
-    process.exitCode = 1;
+    process.exitCode = error instanceof CompileError ? 1 : 2;
   },
 );
