@@ -57,6 +57,12 @@ describe("hookDims and fixedRows", () => {
     expect(dims.map((d) => dimLabel(d, d.options[1]))).toEqual(["memberships.team_id=teams row 2", "memberships.role='member'"]);
   });
 
+  it("counts a column a function the hook calls names as read (planHook passes their bodies together)", () => {
+    const helper = "select role from public.memberships where user_id = u";
+    expect(hookDims(model, plan, "select public.role_of((event->>'user_id')::uuid)").map((d) => d.column)).toEqual(["team_id"]);
+    expect(hookDims(model, plan, `select public.role_of((event->>'user_id')::uuid)\n;\n${helper}`).map((d) => d.column)).toEqual(["team_id", "role"]);
+  });
+
   it("takes a column's literals only when the hook names it, and varies a table with nothing else by a row or none", () => {
     const flags: TableModel = { name: "flags", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("user_id", "uuid"), col("tier", "text", { hints: ["gold"] })], foreignKeys: [toUsers("user_id")] };
     const p = fixedPlan([flags], ["flags"]);

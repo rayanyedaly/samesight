@@ -98,5 +98,11 @@ describe("scanDeep", () => {
     expect(reads("select private.lead_of(uid)")).toEqual(["public.teams", "public.memberships"]);
     expect(reads("select team_of(uid)")).toEqual(["public.memberships"]);
     expect(reads("select private.deeper(uid)")).toEqual(["public.deepest"]);
+    // Each scan keeps its body and the calls that led to it: the columns a helper names count as read.
+    expect(scanDeep("select private.lead_of(uid)", functions).map((s) => [s.via, s.body])).toEqual([
+      [[], "select private.lead_of(uid)"],
+      [["private.lead_of"], "select public.team_of(u) from public.teams"],
+      [["private.lead_of", "public.team_of"], "select team_id from public.memberships where user_id = u"],
+    ]);
   });
 });

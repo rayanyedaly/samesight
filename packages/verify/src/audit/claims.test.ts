@@ -140,6 +140,16 @@ describe("claimFindings", () => {
     expect(all[1]).toMatch(/^warn every run user's token carries the same app_role, although audit gave them different memberships rows; the hook may not read them$/);
   });
 
+  it("never prints an HTTP hook's user, password, path or query, in any Claims line", () => {
+    const uri = "https://u:pw@hooks.example.com/hook/secret-path?key=k1";
+    const hookPlan = { uri, tables: [], cannot: "it is an HTTP hook, which runs off this database", findings: [] };
+    const text = details(claimFindings(plan, { uri }, new Map([["u0", { app_role: "ADMIN" }]]), undefined, hookPlan)).join("\n");
+    expect(text).toContain("https://hooks.example.com/...");
+    for (const secret of ["pw", "secret-path", "k1"]) expect(text).not.toContain(secret);
+    // A hook claim with no plan and no tokens: added by the hook, values not chosen.
+    expect(details(claimFindings(plan, { uri })).find((l) => l.includes("app_role"))).toMatch(/added by the access token hook https:\/\/hooks\.example\.com\/\.\.\., whose values audit does not choose$/);
+  });
+
   it("warns about a hook that runs off this machine, printed without its secrets", () => {
     expect(details(claimFindings(plan, { uri: "https://hooks.example.com/claims" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/\.\.\. is not on this machine/);
     expect(details(claimFindings(plan, { uri: "https://u:pw@hooks.example.com/claims?key=k" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/\.\.\. is not/);
