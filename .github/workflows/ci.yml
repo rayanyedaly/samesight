@@ -168,6 +168,10 @@ jobs:
       - name: samesight-verify audit
         working-directory: examples/audit-roles
         run: timeout 300 pnpm run verify --runs 4
+      # Run users hold the roles the rules compare: a leak only editors see must be caught.
+      - name: samesight-verify audit on a planted editor leak
+        working-directory: examples/audit-roles
+        run: timeout 420 pnpm run verify:planted
       - name: nothing left behind
         if: ${{ !cancelled() }}
         run: bash scripts/ci/left-behind.sh supabase_db_samesight-audit-roles powersync

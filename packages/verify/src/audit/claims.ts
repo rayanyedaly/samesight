@@ -11,6 +11,7 @@ import type pg from "pg";
 import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
+import { type Assignment, type SetPath, show as plain } from "./assign.ts";
 
 /** One rule's SQL: a policy's USING or WITH CHECK, or a stream or bucket query. */
 export interface RuleSql {
@@ -178,10 +179,16 @@ const show = (v: ClaimValue) => (typeof v === "string" ? `'${v}'` : String(v));
 const rulesOf = (u: ClaimUse) => (u.rules.length === 1 ? (u.rules[0] as string) : `${u.rules.length} rules (${u.rules.join("; ")})`);
 
 /**
- * The Claims section. `tokens` are the run users' decoded token claims, by label, when
- * users have signed in; without them (--static) nothing is said about what tokens carry.
+ * The Claims section. `tokens` are the run users' decoded token claims, by label (u0, u1),
+ * in user order, when users have signed in; without them (--static) nothing is said about
+ * what tokens carry. `assignment` is what the run gives users in their metadata.
  */
-export function claimFindings(plan: ClaimsPlan, hook: { uri: string } | undefined, tokens?: Map<string, Record<string, unknown>>): Finding[] {
+export function claimFindings(
+  plan: ClaimsPlan,
+  hook: { uri: string } | undefined,
+  tokens?: Map<string, Record<string, unknown>>,
+  assignment?: Assignment,
+): Finding[] {
   const out: Finding[] = [];
   const add = (status: Finding["status"], detail: string) => out.push({ status, check: "claims", detail });
   if (hook && remoteHook(hook.uri)) add("warn", `the access token hook ${hook.uri} is not on this machine: every sign-in of a run user calls it`);
@@ -205,6 +212,20 @@ export function claimFindings(plan: ClaimsPlan, hook: { uri: string } | undefine
         break;
       case "app_metadata":
       case "user_metadata": {
+        const set = assignment?.paths.find((p) => p.key === u.key);
+        const reason = assignment?.notSet.get(u.key);
+        if (set) {
+          if (!tokens) add("ok", `${read}; a full run gives users ${set.pool.map(show).join(", ")}, and one user none of them (not run: --static)`);
+          else {
+            const { line, all } = heldLine(tokens, set);
+            add(all ? "ok" : "warn", `${read}; held: ${line}`);
+          }
+          break;
+        }
+        if (reason) {
+          add("warn", `${read}; not set: ${reason}`);
+          break;
+        }
         const values = tokens ? heldBy(tokens, u.path) : undefined;
         add("warn", values ? `${read}; the run users' tokens carry it, though audit did not set it${values}` : `${read}; run users do not carry ${u.key}, so every user reads it as null`);
         break;
@@ -217,9 +238,44 @@ export function claimFindings(plan: ClaimsPlan, hook: { uri: string } | undefine
         break;
     }
   }
+  if (assignment) {
+    out.push(...assignment.findings);
+    if (tokens) out.push(...mismatches(assignment, tokens));
+  }
   for (const x of plan.unreadable) add("warn", `${x.where} ${x.reason}: ${x.text}; audit cannot tell which claim or value it needs`);
   if (out.length === 0) add("ok", "no rule reads a token claim other than the user id");
   return out;
+}
+
+/** admin u0 u3, editor u1, samesight-other u2, none u4: who holds each value, from the tokens. */
+function heldLine(tokens: Map<string, Record<string, unknown>>, set: SetPath): { line: string; all: boolean } {
+  const by = new Map<string, string[]>(set.pool.map((v) => [JSON.stringify(v), []]));
+  const none: string[] = [];
+  for (const [label, claims] of tokens) {
+    const v = at(claims, set.path);
+    if (v === undefined || v === null) none.push(label);
+    else {
+      const key = JSON.stringify(v);
+      by.set(key, [...(by.get(key) ?? []), label]);
+    }
+  }
+  const parts = [...by].map(([v, labels]) => `${plain(JSON.parse(v))} ${labels.length ? labels.join(" ") : "(nobody)"}`);
+  if (none.length) parts.push(`none ${none.join(" ")}`);
+  return { line: parts.join(", "), all: set.pool.every((v) => (by.get(JSON.stringify(v)) ?? []).length > 0) };
+}
+
+/** A warning for each user whose token does not carry the value audit gave it. */
+function mismatches(assignment: Assignment, tokens: Map<string, Record<string, unknown>>): Finding[] {
+  const labels = [...tokens];
+  return assignment.users.flatMap((values, i) => {
+    const [label, claims] = labels[i] ?? [`u${i}`, {}];
+    return assignment.paths.flatMap((p) => {
+      const given = values.get(p.key) ?? null;
+      const carried = at(claims, p.path) ?? null;
+      if (JSON.stringify(given) === JSON.stringify(carried)) return [];
+      return [{ status: "warn" as const, check: "claims", detail: `${label} was given ${p.key}=${JSON.stringify(given)}, but its token carries ${JSON.stringify(carried)} (an auth.users trigger or the access token hook changed it); it is labelled and tested by what the token carries` }];
+    });
+  });
 }
 
 /** Auth-state claims that differ per user, or that no run user has. */
