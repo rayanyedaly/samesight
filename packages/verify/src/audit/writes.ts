@@ -55,7 +55,9 @@ export async function checkWriteEscape(s: Run, world: World, prepare?: (client: 
     if (prepare) await prepare(s.client);
     // Generated rows may point at rows kept for the run (the access token hook's teams).
     const generated = await insertWorld(s.client, s.tables, world, s.fixed, s.existing);
-    // Rows kept for the run are copied too: a user writing themselves a membership changes what the hook gives them.
+    // Rows kept for the run (the access token hook's) are copied too: one a user could write but
+    // not read back is planted data like any other. (What the hook would make of it at the
+    // next sign-in is not checked: no one signs in again.)
     const fixedRows = s.fixedRows ?? [];
     const inserted = [...generated, ...fixedRows];
     const tables = [...s.tables, ...s.model.filter((t) => !s.tables.includes(t) && fixedRows.some((r) => r.table === t.name))];

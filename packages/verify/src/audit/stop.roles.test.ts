@@ -48,7 +48,9 @@ describe("a roles audit stopped by Ctrl+C mid-differential", () => {
       });
     });
     const count = async (sql: string) => Number((await client.query<{ n: string }>(sql)).rows[0]?.n);
+    // The hook's rows are in before the differential; generated rows may or may not be at this moment.
     expect(await count(`select count(*) as n from public.memberships where id::text like '${PREFIX}%'`)).toBeGreaterThan(0);
+    expect(await count(`select count(*) as n from public.teams where id::text like '${PREFIX}%'`)).toBeGreaterThan(0);
     child.kill("SIGINT");
     expect(await exit, out).toBe(130);
     expect(await count("select count(*) as n from auth.users where email like '%@verify.samesight.test'")).toBe(0);

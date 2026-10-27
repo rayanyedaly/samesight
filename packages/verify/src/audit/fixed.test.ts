@@ -4,6 +4,7 @@ import { deleteRows } from "../differential/world.ts";
 import { assignClaims } from "./assign.ts";
 import { planClaims } from "./claims.ts";
 import { dimLabel, fixedPlan, fixedRows, hookDims } from "./fixed.ts";
+import { hookKeysHeld } from "./run.ts";
 
 const col = (name: string, type: string, more: Partial<ColumnModel> = {}): ColumnModel => ({ name, type, nullable: false, hasDefault: false, computed: false, hints: [], ...more });
 const toUsers = (column: string) => ({ columns: [column], schema: "auth", table: "users", references: ["id"] });
@@ -83,6 +84,56 @@ describe("hookDims and fixedRows", () => {
   });
 });
 
+describe("fixed rows across keys", () => {
+  let n = 0;
+  const mint = () => `5a3e5a3e-0000-4000-8000-${String(++n).padStart(12, "0")}`;
+
+  it("points every key to auth.users at run users, and a per-user row at the same user's row in another per-user table", () => {
+    const owned: TableModel = { ...teams, columns: [...teams.columns, col("created_by", "uuid"), col("parent_id", "uuid", { nullable: true })], foreignKeys: [toUsers("created_by"), to("parent_id", "teams")] };
+    const grants: TableModel = {
+      name: "grants",
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [col("id", "uuid"), col("user_id", "uuid"), col("membership_id", "uuid"), col("granted_by", "uuid")],
+      foreignKeys: [toUsers("user_id"), toUsers("granted_by"), to("membership_id", "memberships")],
+    };
+    const m = [owned, memberships, grants];
+    const plan = fixedPlan(m, ["memberships", "grants"]);
+    expect(plan).toMatchObject({ tables: ["teams", "memberships", "grants"], perUser: ["memberships", "grants"] });
+    const dims = hookDims(m, plan, "select team_id, role, membership_id from memberships join grants using (user_id)");
+    // No dim for the self-key on teams, or for grants.membership_id (the user's own membership).
+    expect(dims.map((d) => `${d.table}.${d.column}`)).toEqual(["memberships.team_id", "memberships.role", "grants.null"]);
+    const rows = fixedRows(m, plan, dims, [[0, 0, 0], [1, 1, 1], [0, 1, 0]], ["u0-id", "u1-id", "u2-id"], mint);
+    const teamRows = rows.filter((r) => r.table === "teams");
+    expect(teamRows.map((r) => [r.row.created_by, r.row.parent_id])).toEqual([
+      ["u0-id", undefined],
+      ["u1-id", undefined],
+    ]);
+    const ms = rows.filter((r) => r.table === "memberships");
+    const gs = rows.filter((r) => r.table === "grants");
+    // Users 0 and 2 have grants (the presence dim's option 0), each on their own membership, granted by themselves.
+    expect(gs.map((g) => [g.user, g.row.membership_id === ms.find((x) => x.user === g.user)?.row.id, g.row.granted_by])).toEqual([
+      [0, true, "u0-id"],
+      [2, true, "u2-id"],
+    ]);
+  });
+
+  it("leaves a table a hook row may point at with null generated, and refuses tables that point at each other", () => {
+    const loose: TableModel = { ...memberships, columns: memberships.columns.map((c) => (c.name === "team_id" ? { ...c, nullable: true } : c)) };
+    expect(fixedPlan([teams, loose], ["memberships"])).toMatchObject({ tables: ["memberships"], perUser: ["memberships"] });
+    const circular: TableModel = { ...teams, columns: [...teams.columns, col("lead_id", "uuid")], foreignKeys: [to("lead_id", "memberships")] };
+    expect(fixedPlan([circular, memberships], ["memberships"]).refusal).toMatch(/point at each other in a cycle$/);
+  });
+
+  it("varies a CHECK list only when the hook reads the column, and gives parent rows the values run users hold in a claim", () => {
+    const plan = fixedPlan(model, ["memberships"]);
+    expect(hookDims(model, plan, "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
+    expect(hookDims(model, plan, "select m.* from public.memberships m").map((d) => d.column)).toEqual(["team_id", "role"]);
+    const rows = fixedRows(model, plan, [], [], [], mint, undefined, undefined, (t) => (t === "teams" ? new Map([["name", ["red", "blue"]]]) : undefined));
+    expect(rows.map((r) => r.row.name)).toEqual(["red", "blue"]);
+  });
+});
+
 describe("assignClaims with the hook's dims", () => {
   const read = (key: string) => `(auth.jwt() -> 'app_metadata'::text) ->> '${key}'::text`;
   const plan = planClaims([{ where: 'policy "p" on docs (USING)', sql: `(${read("role")}) = 'admin'::text`, dialect: "postgres", table: "docs" }]);
@@ -118,5 +169,17 @@ describe("deleteRows on a table found by its user column alone", () => {
       ['delete from public.memberships where id::text like $1 or user_id = any($2::uuid[])', ["5a3e5a3e%", ["u0"]]],
       ['delete from public.user_roles where user_id = any($1::uuid[])', [["u0"]]],
     ]);
+  });
+});
+
+describe("hookKeysHeld", () => {
+  it("counts a hook claim as held when every value the rules compare it with is held, and another", () => {
+    const plan = planClaims([{ where: 'policy "p" on docs (USING)', sql: "((auth.jwt() ->> 'team_role'::text) = 'lead'::text)", dialect: "postgres", table: "docs" }]);
+    const tokens = (...roles: (string | undefined)[]) => new Map(roles.map((r, i) => [`u${i}`, r === undefined ? {} : { team_role: r }]));
+    expect(hookKeysHeld(plan, tokens("lead", "member", undefined))).toEqual(["team_role"]);
+    expect(hookKeysHeld(plan, tokens("lead", undefined))).toEqual(["team_role"]);
+    // Every lead row refused: member and none are two values, but no one holds the one the rule needs.
+    expect(hookKeysHeld(plan, tokens("member", undefined))).toEqual([]);
+    expect(hookKeysHeld(plan, tokens("lead", "lead"))).toEqual([]);
   });
 });

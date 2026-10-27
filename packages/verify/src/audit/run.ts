@@ -219,7 +219,7 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
   const mint = () => prefixedUuid(PREFIX);
   // A uuid none of the rules name is one of the run's own (its prefix), so cleanup finds it.
   const assignment = assignClaims(claims, mint, model, userIds, dims);
-  const rowsGiven = fixed ? fixedRows(model, fixed, dims, assignment.hookPicks, userIds, mint, undefined, (t) => assignment.keyPools.get(t)) : [];
+  const rowsGiven = fixed ? fixedRows(model, fixed, dims, assignment.hookPicks, userIds, mint, undefined, (t) => assignment.keyPools.get(t), (t) => assignment.claimValues.get(t)) : [];
   const names = new Map<string, string>();
   if (fixed) {
     for (const t of fixed.tables.filter((x) => !fixed?.perUser.includes(x))) {
@@ -249,7 +249,21 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
         tables: scopeTables,
         synced: scope.synced,
         deviceTables: scope.deviceTables,
-        ...(fixed ? { fixed: { tables: fixed.tables, rows: rowsGiven, ...(hook ? { hook: hook.uri } : {}), names } } : {}),
+        ...(fixed
+          ? {
+              fixed: {
+                tables: fixed.tables,
+                rows: rowsGiven,
+                // Rows a trigger made for a new user (a default role) would stand beside, or block, the ones audit gives.
+                clear: fixed.perUser.flatMap((t) => {
+                  const column = model.find((m) => m.name === t)?.foreignKeys.find((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1)?.columns[0];
+                  return column ? [{ table: t, column }] : [];
+                }),
+                ...(hook ? { hook: hook.uri } : {}),
+                names,
+              },
+            }
+          : {}),
       },
       claims: {
         metadata: assignment.users.map((values) => metadataOf(assignment.paths, values)),
@@ -269,10 +283,16 @@ function steerSummary(hookPlan: HookPlan, fixed: FixedPlan, dims: Dim[], picks: 
   return `the access token hook ${showUri(hookPlan.uri)} reads ${fixed.perUser.join(", ")}: ${each}${parents.length ? `; ${parents.join(", ")}` : ""}`;
 }
 
-/** Hook claims run users' tokens carry at least two values of (none counting as one): their rules can go both ways. */
+/**
+ * Hook claims run users hold as their rules need: every value a rule compares it with, and at
+ * least two values in all (none counting as one), so their rules can go both ways.
+ */
 export function hookKeysHeld(claims: ClaimsPlan, tokens: Map<string, Record<string, unknown>>): string[] {
   return claims.uses
     .filter((u) => u.cls === "hook")
-    .filter((u) => new Set([...tokens.values()].map((t) => JSON.stringify(at(t, u.path) ?? null))).size >= 2)
+    .filter((u) => {
+      const carried = new Set([...tokens.values()].map((t) => JSON.stringify(at(t, u.path) ?? null)));
+      return carried.size >= 2 && u.values.every((v) => carried.has(JSON.stringify(v)));
+    })
     .map((u) => u.key);
 }
