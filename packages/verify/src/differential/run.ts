@@ -11,6 +11,7 @@ import { type IR, ident } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
+import { type Coverage, measure, pending } from "../audit/coverage.ts";
 import { compare, type Problem } from "./compare.ts";
 import { syncOnce } from "./device.ts";
 import { insertOrder, policyTables, readModel, type ScopeTable, type TableModel } from "./model.ts";
@@ -460,7 +461,15 @@ export async function explore<W>(
   return out;
 }
 
-export async function differential(s: Run, options: { runs: number; seed?: number; timeLimitMs: number }): Promise<DifferentialResult> {
+export interface DifferentialOptions {
+  runs: number;
+  seed?: number;
+  timeLimitMs: number;
+  /** Audit only: counts which rules each passing dataset exercised, until the first failure. */
+  coverage?: Coverage;
+}
+
+export async function differential(s: Run, options: DifferentialOptions): Promise<DifferentialResult> {
   const check = "differential";
   lastInsertError.clear();
   // What the run actually compared: a dataset whose rows all fail to insert, that nobody may
@@ -493,15 +502,22 @@ export async function differential(s: Run, options: { runs: number; seed?: numbe
   };
   const fail = (detail: string, runs: number) => ({ runs, findings: withGaps([{ status: "fail" as const, check, detail }]) });
 
+  // Coverage counts datasets up to the first failure: shrinking replays variations of that one.
+  let failedOnce = false;
   const evaluate = async (world: World) => {
-    const failures = await withWorld(s, world, (rowsIn) => {
+    const ok = await withWorld(s, world, async (rowsIn) => {
       for (const r of rowsIn) inserted.set(r.table, (inserted.get(r.table) ?? 0) + 1);
-      return compareAll(s, { tally: visible, received });
+      const devices = await syncAll(s);
+      const passed = failing(await compareAll(s, { devices, tally: visible, received })).length === 0;
+      if (passed && !failedOnce && options.coverage) await measure(s, options.coverage, rowsIn, devices);
+      return passed;
     });
-    return failing(failures).length === 0;
+    failedOnce ||= !ok;
+    return ok;
   };
   const untestedTables = () =>
-    s.tables.filter((t) => s.synced.includes(t.name) && !(inserted.get(t.name) && visible.get(t.name) && received.get(t.name))).length > 0;
+    s.tables.filter((t) => s.synced.includes(t.name) && !(inserted.get(t.name) && visible.get(t.name) && received.get(t.name))).length > 0 ||
+    (options.coverage !== undefined && pending(options.coverage));
   // Small random datasets can leave a table deep in the foreign keys with no row a user
   // reads (its rows all landed in the tenant nobody in the run belongs to). More datasets
   // are tried, within the time limit, until every synced table was compared.
