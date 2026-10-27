@@ -11,6 +11,7 @@ import type { ClaimValue } from "samesight/compiler";
 import { type ColumnModel, insertOrder, type TableModel } from "../differential/model.ts";
 import { sampleValue } from "../differential/world.ts";
 import { fitsType } from "./assign.ts";
+import { SELECTS_ALL } from "./hook.ts";
 
 /** What the run does with the hook's tables. */
 export interface FixedPlan {
@@ -101,11 +102,12 @@ export const PARENT_ROWS = 2;
  * CHECK or enum list, else the literals rules compare the column with (its hints and claim
  * values, when the hook names the column). A table with none varies by having a row or not.
  */
-export function hookDims(model: TableModel[], plan: FixedPlan, body: string, own: string, parentRows: (table: string) => number = () => PARENT_ROWS): Dim[] {
+export function hookDims(model: TableModel[], plan: FixedPlan, body: string, own: string, starred: readonly string[] = [], parentRows: (table: string) => number = () => PARENT_ROWS): Dim[] {
   const out: Dim[] = [];
-  // A column the hook reads: named in `body` (its own and its helpers'), or any, when its own body selects *.
-  const star = /(?<![A-Za-z0-9_$])select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i.test(own);
-  const named = (c: string) => star || new RegExp(`(?<![A-Za-z0-9_$])${c.replace(/[$]/g, "\\$")}(?![A-Za-z0-9_$])`, "i").test(body);
+  // A column the hook reads: named in `body` (its own and its helpers'), or any, when its own
+  // body selects *, or a helper selects * from the column's table.
+  const star = SELECTS_ALL.test(own);
+  const named = (table: string, c: string) => star || starred.includes(table) || new RegExp(`(?<![A-Za-z0-9_$])${c.replace(/[$]/g, "\\$")}(?![A-Za-z0-9_$])`, "i").test(body);
   for (const name of plan.perUser) {
     const t = model.find((m) => m.name === name) as TableModel;
     const user = userColumn(t);
@@ -120,11 +122,11 @@ export function hookDims(model: TableModel[], plan: FixedPlan, body: string, own
       }
       if (t.foreignKeys.some((k) => k.columns.includes(c.name))) continue;
       if (c.values?.length) {
-        if (named(c.name)) own.push({ table: name, column: c.name, options: [...c.values] });
+        if (named(name, c.name)) own.push({ table: name, column: c.name, options: [...c.values] });
         continue;
       }
       const literals = [...new Set([...c.hints, ...(c.claimValues ?? [])])].filter((v) => fitsType(v as ClaimValue, c.type));
-      if (literals.length && named(c.name)) own.push({ table: name, column: c.name, options: literals });
+      if (literals.length && named(name, c.name)) own.push({ table: name, column: c.name, options: literals });
     }
     out.push(...(own.length ? own : [{ table: name, column: null, options: [true, false] }]));
   }

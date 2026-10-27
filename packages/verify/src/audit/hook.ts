@@ -154,10 +154,24 @@ export function scanDeep(body: string, functions: ReadonlyMap<string, string>, l
   return out;
 }
 
+/** The calls the deepest bodies scanned make to functions with bodies of their own: scanDeep does not follow them. */
+export function unfollowed(scans: DeepScan[], functions: ReadonlyMap<string, string>, levels = 2): string[] {
+  const followed = new Set(scans.flatMap((s) => s.via));
+  const deepest = scans.filter((s) => s.via.length === levels).flatMap((s) => s.calls);
+  return [...new Set(deepest.filter((c) => !followed.has(c) && bodiesOf(c, functions).length > 0))];
+}
+
+/** A select of every column: select *, select t.*. */
+export const SELECTS_ALL = /(?<![A-Za-z0-9_$])select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i;
+
 export interface HookPlan {
   uri: string;
-  /** The function, when the URI names one that exists; `read`, its body and those of the functions it calls, as scanned. */
-  fn?: { schema: string; name: string; body: string; read: string };
+  /**
+   * The function, when the URI names one that exists; `read`, its body and those of the
+   * functions it calls, as scanned; `starred`, the public tables a function it calls reads
+   * with select *, every column of which it reads.
+   */
+  fn?: { schema: string; name: string; body: string; read: string; starred: string[] };
   /** The role its body runs as: its owner when SECURITY DEFINER, else supabase_auth_admin. */
   role?: string;
   /** The public tables it reads, as the database names them. */
@@ -199,6 +213,21 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
   if (outside.length) findings.push(warn(`the access token hook ${shown} calls ${outside.join(", ")}: each run user's sign-in runs it`));
   const sets = [...new Set(scans.flatMap((s) => s.metadataWrites))];
   if (sets.length) findings.push(warn(`the access token hook ${shown} sets ${sets.join(", ")} in the token, over what audit gives run users`));
+  const deeper = unfollowed(scans, functions);
+  if (deeper.length) findings.push(warn(`the access token hook ${shown} calls ${deeper.join(", ")} three or more calls deep, which audit does not read: ${deeper.length === 1 ? "it" : "they"} may read tables audit gives no rows`));
+  // Who else may run it: Postgres grants EXECUTE on a new function to PUBLIC, and Supabase to its API roles.
+  const callers = await rows<{ name: string }>(
+    client,
+    "select r.rolname as name from pg_roles r where r.rolname in ('anon', 'authenticated') and has_function_privilege(r.oid, $1::oid, 'execute') order by 1",
+    [fn.oid],
+  );
+  if (callers.length) {
+    findings.push(
+      warn(
+        `${callers.map((r) => r.name).join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they can run it for any user id and read the claims it adds`,
+      ),
+    );
+  }
 
   const [depends] = await rows<{ tables: string[] }>(
     client,
@@ -236,7 +265,9 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
   const definer = (call: string) => definers.some((d) => (call.includes(".") ? d.name === call : d.bare === call));
   const asHook = new Set([...(depends?.tables ?? []), ...scans.filter((x) => !x.via.some(definer)).flatMap((x) => x.reads)]);
   findings.push(...(await hookAccess(client, role, tables.filter((t) => asHook.has(`public.${t}`)), shown)));
-  const plan: HookPlan = { uri, fn: { schema: parsed.schema, name: parsed.fn, body: fn.body, read: scans.map((x) => x.body).join(BODY_JOIN) }, role, tables, findings };
+  // The hook's own select * reads every column of every table it reads (hookDims); a helper's, those of its own tables.
+  const starred = [...new Set(scans.filter((x) => x.via.length > 0 && SELECTS_ALL.test(codeOnly(x.body))).flatMap((x) => x.reads))].filter((t) => t.startsWith("public.")).map((t) => t.slice("public.".length));
+  const plan: HookPlan = { uri, fn: { schema: parsed.schema, name: parsed.fn, body: fn.body, read: scans.map((x) => x.body).join(BODY_JOIN), starred }, role, tables, findings };
   if (!tables.length) plan.cannot = views.length ? `it reads no public table, only ${views.join(", ")}` : "its body reads no public table";
   return plan;
 }

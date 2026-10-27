@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseHookUri, scanBody, scanDeep, showUri } from "./hook.ts";
+import { parseHookUri, scanBody, scanDeep, showUri, unfollowed } from "./hook.ts";
 
 describe("parseHookUri", () => {
   it("reads a pg-functions URI, and tells an HTTP hook from one audit does not read", () => {
@@ -104,5 +104,19 @@ describe("scanDeep", () => {
       [["private.lead_of"], "select public.team_of(u) from public.teams"],
       [["private.lead_of", "public.team_of"], "select team_id from public.memberships where user_id = u"],
     ]);
+  });
+
+  it("lists the calls past the last level that run a body of their own, and only those", () => {
+    const functions = new Map([
+      ["public.team_of", "select team_id from public.memberships where user_id = u"],
+      ["private.lead_of", "select public.team_of(u) from public.teams"],
+      ["private.deep", "select private.lead_of(u), now() from public.deepest"],
+      ["private.deeper", "select private.deep(u)"],
+    ]);
+    expect(unfollowed(scanDeep("select private.deeper(uid)", functions), functions)).toEqual(["private.lead_of"]);
+    // team_of is two levels down, and calls nothing with a body.
+    expect(unfollowed(scanDeep("select private.lead_of(uid)", functions), functions)).toEqual([]);
+    // A call already followed nearer the hook is no deeper read.
+    expect(unfollowed(scanDeep("select private.deeper(uid), private.lead_of(uid)", functions), functions)).toEqual([]);
   });
 });

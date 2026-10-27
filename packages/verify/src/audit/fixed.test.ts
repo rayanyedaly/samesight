@@ -137,6 +137,8 @@ describe("fixed rows across keys", () => {
     expect(hookDims(model, plan, "select m.* from public.memberships m", "select m.* from public.memberships m").map((d) => d.column)).toEqual(["team_id", "role"]);
     // A helper's select * reads its own table, not every column of the hook's.
     expect(hookDims(model, plan, "select team_id from public.memberships\n;\nselect * from settings", "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
+    // A helper's select * from a per-user table reads every column of it.
+    expect(hookDims(model, plan, "select public.team_of(u)\n;\nselect * from public.memberships", "select public.team_of(u)", ["memberships"]).map((d) => d.column)).toEqual(["team_id", "role"]);
     const rows = fixedRows(model, plan, [], [], [], mint, undefined, undefined, (t) => (t === "teams" ? new Map([["name", ["red", "blue"]]]) : undefined));
     expect(rows.map((r) => r.row.name)).toEqual(["red", "blue"]);
   });
