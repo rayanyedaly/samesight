@@ -36,6 +36,7 @@ import {
 } from "samesight/compiler";
 import { audit } from "./audit/run.ts";
 import { type AutoStarted, autoStart } from "./autostart/run.ts";
+import { onSignals, Teardown } from "./autostart/teardown.ts";
 import { connectLocal } from "./db.ts";
 import { differential, setUp, tearDown } from "./differential/run.ts";
 import { worldArbitrary } from "./differential/world.ts";
@@ -298,6 +299,10 @@ async function auditMain(argv: string[]): Promise<number> {
   }
   const stack = readStack(project, values.powersync ?? "http://127.0.0.1");
   const db = await connectLocal(stack.db);
+  // One teardown for the run, from here on: on Ctrl+C, SIGTERM or SIGHUP it removes the run's
+  // users and rows, and the PowerSync service audit started.
+  const teardown = new Teardown(log);
+  const stopListening = onSignals(teardown, log);
   // Without --powersync, a service of the run's own, on a connection of its own, once the checks before the differential pass.
   let client: pg.Client | undefined;
   let started: AutoStarted | undefined;
@@ -314,6 +319,7 @@ async function auditMain(argv: string[]): Promise<number> {
       tables,
       log,
       keep: values["keep-powersync"] === true,
+      teardown,
     });
     const how = started.reused ? "kept by an earlier audit and reused" : "started by audit for this run";
     section("PowerSync", [{ status: "ok", check: "powersync version", detail: `${started.version}, ${how} (pinned; at least the 1.20.1 security floor)` }]);
@@ -331,13 +337,15 @@ async function auditMain(argv: string[]): Promise<number> {
       log,
       projectDir: project,
       ...(ownService ? {} : { startPowerSync }),
+      teardown,
     });
   } catch (e) {
     threw = true;
     throw e;
   } finally {
     // A run that broke down shows the service's last words before they are removed.
-    const left = (await started?.stop(threw ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? [];
+    const left = (await started?.stop(threw ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? (await teardown.run());
+    stopListening();
     if (left.length) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit that starts PowerSync removes it` })));
     await client?.end();
     await db.end();
@@ -355,9 +363,9 @@ function report(findings: Finding[], started: number): number {
 
 // PowerSync's worker threads can keep the process alive, so it exits explicitly, once the
 // report has been written out.
-// Output that has gone (| head, a closed terminal) is no reason to crash; while audit's
-// PowerSync is up, the teardown handles it (autostart/teardown.ts), and otherwise the run
-// ends as it would, exiting 141 as on SIGPIPE.
+// Output that has gone (| head, a closed terminal) is no reason to crash; during an audit,
+// its teardown handles it (autostart/teardown.ts), and otherwise the run ends as it would,
+// exiting 141 as on SIGPIPE.
 let outputGone: number | undefined;
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (e: NodeJS.ErrnoException) => {

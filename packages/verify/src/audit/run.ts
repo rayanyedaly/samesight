@@ -9,7 +9,8 @@ import fc from "fast-check";
 import type pg from "pg";
 import { rows } from "../db.ts";
 import { readModel, sqlHints } from "../differential/model.ts";
-import { differential, PREFIX, type Run, runUserIds, setUpUsers, tearDown } from "../differential/run.ts";
+import type { Teardown } from "../autostart/teardown.ts";
+import { differential, PREFIX, type Run, runUserIds, setUpUsers, stoppable } from "../differential/run.ts";
 import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
 import { assignClaims, MAX_USERS, metadataOf } from "./assign.ts";
 import { failed, type Finding } from "../report.ts";
@@ -40,6 +41,8 @@ export interface AuditOptions {
    * Without it, the stack's own service is used.
    */
   startPowerSync?: (tables: string[]) => Promise<Pick<Stack, "powersync" | "slotPrefix">>;
+  /** What a signal runs (see autostart/teardown.ts): given, a stopped run removes its users and rows. */
+  teardown?: Teardown;
 }
 
 /**
@@ -134,21 +137,28 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   // Only the tables that exist: a query can read from a function (json_each) too.
   const stack = o.startPowerSync ? { ...given, ...(await o.startPowerSync(named.filter((t) => tables.includes(t)).sort())) } : given;
   o.log(`signing up users; generating rows for ${tables.join(", ")}`);
+  const scopeTables = tables.map((name) => {
+    const pool = assignment.keyPools.get(name);
+    return { name, hints, userColumns, claimValues: assignment.claimValues.get(name) ?? new Map(), ...(pool ? { keyPool: pool } : {}) };
+  });
+  // Added before any user exists, so a run stopped at any point after removes what it made.
+  const stop = await stoppable(client, stack, scopeTables, o.log);
+  o.teardown?.add("the run's users and rows", stop.step);
   let s: Run;
   try {
-    s = await setUpUsers(
-      client,
-      stack,
-      {
-        tables: tables.map((name) => {
-          const pool = assignment.keyPools.get(name);
-          return { name, hints, userColumns, claimValues: assignment.claimValues.get(name) ?? new Map(), ...(pool ? { keyPool: pool } : {}) };
-        }),
-        synced: scope.synced,
-        deviceTables: scope.deviceTables,
-      },
-      { metadata: assignment.users.map((values) => metadataOf(assignment.paths, values)), paths: assignment.paths.map((p) => p.path), ids: userIds },
-    );
+    const setUp = () =>
+      setUpUsers(
+        client,
+        stack,
+        {
+          tables: scopeTables,
+          synced: scope.synced,
+          deviceTables: scope.deviceTables,
+        },
+        { metadata: assignment.users.map((values) => metadataOf(assignment.paths, values)), paths: assignment.paths.map((p) => p.path), ids: userIds },
+      );
+    // Users are made over HTTP, which ending the connection does not stop: a signal waits for this.
+    s = await (o.teardown ? o.teardown.step(setUp) : setUp());
   } catch (e) {
     // Users could not sign in (a rate limit, say): the claims are still worth showing.
     section("Claims", claimFindings(claims, hook, undefined, assignment));
@@ -166,7 +176,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     const [world] = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 16 }), { numRuns: 1, seed: o.seed ?? 7 });
     section("Write path", world ? await checkWriteEscape(s, world, undefined, scope.reads) : [{ status: "fail", check: "write path", detail: "no dataset was generated" }]);
   } finally {
-    await tearDown(s);
+    await stop.tearDown(s);
   }
   return findings;
 }

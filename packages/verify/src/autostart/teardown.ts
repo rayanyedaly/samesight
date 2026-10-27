@@ -104,7 +104,7 @@ export function onSignals(
     }
     code = exitCode;
     try {
-      log(`${why}: removing what this run started (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next audit that starts PowerSync)`);
+      log(`${why}: removing what this run made (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next audit)`);
     } catch {}
     setTimeout(() => proc.exit(exitCode), graceMs).unref();
     // A teardown the run began itself finishes and reports on its own.

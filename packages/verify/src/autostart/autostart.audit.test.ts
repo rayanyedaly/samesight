@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal } from "../db.ts";
+import { PREFIX } from "../differential/run.ts";
 import { readStack } from "../stack.ts";
 import { Docker } from "./docker.ts";
 import { KEPT_ALIVE } from "./run.ts";
@@ -17,6 +18,7 @@ import { sweep } from "./sweep.ts";
 
 const DEMO = fileURLToPath(new URL("../../../../examples/audit-todolist/upstream/", import.meta.url));
 const CHILD = fileURLToPath(new URL("../fixtures/autostart-child.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("../cli.ts", import.meta.url));
 const PROJECT = "react-supabase-todolist";
 
 let client: pg.Client;
@@ -73,6 +75,42 @@ async function leftovers(): Promise<string[]> {
   expect(pub.rows).toEqual([{ all: true }]);
   return [...(await docker.containers([`label=${PROJECT_LABEL}=${PROJECT}`])), ...roles.rows.map((r) => r.name), ...slots.rows.map((r) => r.name)];
 }
+
+describe("a full audit stopped by Ctrl+C mid-differential", () => {
+  it("removes its users and rows, its PowerSync, and lets the next run take the lock", async () => {
+    const child = spawn(process.execPath, [CLI, "audit", "--project", DEMO, "--sync-config", `${DEMO}sync-config.yaml`, "--runs", "200"], { stdio: ["ignore", "pipe", "pipe"] });
+    children.add(child);
+    let out = "";
+    child.stderr?.on("data", (d: Buffer) => {
+      out += d.toString();
+    });
+    const exit = exited(child);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no differential within 200s:\n${out}`)), 200_000);
+      child.stdout?.on("data", (d: Buffer) => {
+        out += d.toString();
+        if (out.includes("generating datasets for the differential")) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`the audit exited (${code}) before its differential:\n${out}`));
+      });
+    });
+    const count = async (sql: string) => Number((await client.query<{ n: string }>(sql)).rows[0]?.n);
+    expect(await count("select count(*) as n from auth.users where email like '%@verify.samesight.test'")).toBeGreaterThan(0);
+    child.kill("SIGINT");
+    expect(await exit, out).toBe(130);
+    expect(await count("select count(*) as n from auth.users where email like '%@verify.samesight.test'")).toBe(0);
+    for (const table of ["lists", "todos"]) expect(await count(`select count(*) as n from public.${table} where id::text like '${PREFIX}%'`), table).toBe(0);
+    expect(await leftovers()).toEqual([]);
+    const lock = Number.parseInt(PREFIX, 16);
+    expect((await client.query<{ ok: boolean }>("select pg_try_advisory_lock($1) as ok", [lock])).rows).toEqual([{ ok: true }]);
+    await client.query("select pg_advisory_unlock($1)", [lock]);
+  }, 240_000);
+});
 
 describe("the kept-run check, on the real database", () => {
   it("is false, not an error, for a role that is gone", async () => {

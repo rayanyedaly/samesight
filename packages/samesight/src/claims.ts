@@ -247,7 +247,7 @@ export function callsIn(body: string): string[] {
     return [...out];
   }
   const text = codeOnly(body);
-  const part = String.raw`("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
+  const part = `("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
   const unquote = (x: string) => (x.startsWith('"') ? x.slice(1, -1).replace(/""/g, '"') : x.toLowerCase());
   for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
     // A keyword before a parenthesis is no call; a quoted name ("if") is one.
