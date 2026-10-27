@@ -299,7 +299,9 @@ describe("claims compared with columns", () => {
     const sub = planClaims([{ where: "w", sql: `(EXISTS ( SELECT 1 FROM public.orgs o WHERE (o.id = (${read("org_id")})::uuid)))`, dialect: "postgres" }]);
     expect(assignClaims(sub, fresh, model).keyPools).toEqual(new Map());
     const short = planClaims([on("orgs", `(code = ${read("code")})`)]);
-    expect(assignClaims(short, fresh, model).paths[0]).toMatchObject({ pool: ["ss-a", "ss-b"], columns: [], skipped: ["orgs.code (character varying(3) takes none of the values)"] });
+    expect(assignClaims(short, fresh, model).notSet.get("app_metadata.code")).toBe(
+      "it is compared only with column code, and no generated row can hold its values: orgs.code (character varying(3) takes none of the values)",
+    );
     expect([fitsType("ss-a", "character varying(4)"), fitsType("ss-a", "character varying(3)"), fitsType(3, "uuid"), fitsType("3", "integer"), fitsType("x", "text")]).toEqual([true, false, false, true, true]);
   });
 
@@ -344,5 +346,44 @@ describe("claims compared with columns", () => {
     const plan = planClaims([on("documents", `(org_id = (${read("org_id")})::uuid)`), on("orgs", `((${read("org_id")})::uuid = '${literal}'::uuid)`)]);
     expect(assignClaims(plan, fresh, model).paths[0]?.skipped).toEqual([`orgs.id for ${literal} (a key takes only fresh run uuids, so cleanup finds its rows)`]);
     expect([fitsType(1.5, "integer"), fitsType(2, "integer"), fitsType(1.5, "numeric"), fitsType("ss-a", "jsonb")]).toEqual([false, true, true, false]);
+  });
+
+  it("takes only numbers a column stores exactly", () => {
+    expect([fitsType("1.0", "integer"), fitsType(32768, "smallint"), fitsType(-32768, "smallint"), fitsType("9223372036854775807", "bigint"), fitsType("9223372036854775808", "bigint")]).toEqual([false, false, true, true, false]);
+    expect([fitsType(1.5, "numeric(3,1)"), fitsType(1.55, "numeric(3,1)"), fitsType(100.5, "numeric(3,1)"), fitsType(Number.NaN, "numeric"), fitsType(Number.POSITIVE_INFINITY, "real")]).toEqual([true, false, false, false, false]);
+    expect(otherValue([32767], ["smallint"], fresh)).toBe(32766);
+    expect(otherValue([5], ["integer"], fresh)).toBe(6);
+  });
+
+  it("keeps values a column's CHECK pattern refuses out, and skips one JavaScript cannot run", () => {
+    const patterned: TableModel[] = [
+      { name: "tags", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("slug", "text", { pattern: "^[a-z]+$" }), col("odd", "text", { pattern: "(" })], foreignKeys: [] },
+    ];
+    const a = assignClaims(planClaims([on("tags", `(slug = ${read("tag")})`), on("tags", `(odd = ${read("tag")})`)]), fresh, patterned);
+    expect(a.paths).toEqual([]);
+    expect(a.notSet.get("app_metadata.tag")).toBe(
+      "it is compared only with columns slug, odd, and no generated row can hold its values: tags.odd (a CHECK pattern audit cannot read); tags.slug (its CHECK pattern takes none of the values)",
+    );
+  });
+
+  it("names a text key by itself, and still gives the claim's values to the other columns", () => {
+    const keyed: TableModel[] = [
+      { name: "plans", primaryKey: ["code"], unique: ["code"], columns: [col("code", "text"), col("label", "text")], foreignKeys: [] },
+    ];
+    const plan = planClaims([on("plans", `(code = ${read("plan")})`), on("plans", `(label = ${read("plan")})`)]);
+    const [path] = assignClaims(plan, fresh, keyed).paths;
+    expect(path).toMatchObject({ pool: ["ss-a", "ss-b"], columns: ["plans.label"], skipped: ["plans.code (a text key: keys take only fresh run uuids)"] });
+  });
+
+  it("notes once, by name, a primary key no rule names the table of", () => {
+    const sub = planClaims([
+      { where: "w", sql: `(EXISTS ( SELECT 1 FROM public.orgs o WHERE (o.id = (${read("org_id")})::uuid)))`, dialect: "postgres" },
+      on("documents", `(org_id = (${read("org_id")})::uuid)`),
+    ]);
+    const a = assignClaims(sub, fresh, model);
+    expect(a.paths[0]?.unkeyed).toEqual(["id (the primary key of orgs, documents; no rule comparing it names its table, so none is keyed)"]);
+    // The values went into orgs.id through documents.org_id, so the line is ok, with the note.
+    const [line] = claimFindings(sub, undefined, undefined, a);
+    expect(line).toMatchObject({ status: "ok", detail: expect.stringMatching(/generated rows take them in orgs\.id; not in id \(the primary key of orgs, documents;/) });
   });
 });

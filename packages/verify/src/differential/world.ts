@@ -65,7 +65,14 @@ function scalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
 function baseScalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
   const t = c.type;
   if (c.values?.length) return fc.constantFrom(...new Set([...c.values, ...c.hints]));
-  if (c.pattern !== undefined) return fc.stringMatching(new RegExp(c.pattern));
+  if (c.pattern !== undefined) {
+    // A Postgres pattern JavaScript cannot run (a POSIX class, say) leaves the column to plain strings.
+    try {
+      return fc.stringMatching(new RegExp(c.pattern));
+    } catch {
+      return fc.string({ maxLength: 12 });
+    }
+  }
   const hinted = (arb: fc.Arbitrary<unknown>) => (c.hints.length ? fc.oneof(fc.constantFrom(...c.hints), arb) : arb);
   if (t === "uuid") return fc.uuid({ version: 4 });
   if (t === "text" || t.startsWith("character")) return hinted(fc.string({ maxLength: 12 }));

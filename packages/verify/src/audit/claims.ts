@@ -264,8 +264,10 @@ export function claimFindings(
         if (set) {
           // Generated rows hold the values in the columns compared with the claim, where they can.
           const placed = set.columns.length ? `; generated rows take them in ${set.columns.join(", ")}` : "";
-          const columns = `${placed}${set.skipped.length ? `; not in ${set.skipped.join("; ")}` : ""}`;
-          const steered = set.skipped.length === 0;
+          const notIn = [...set.skipped, ...set.unkeyed];
+          const columns = `${placed}${notIn.length ? `; not in ${notIn.join("; ")}` : ""}`;
+          // An unkeyed primary key is only a note when the values went into some column.
+          const steered = set.skipped.length === 0 && (set.unkeyed.length === 0 || set.columns.length > 0);
           if (!tokens) add(steered ? "ok" : "warn", `${read}; a full run gives users ${set.pool.map(show).join(", ")}, and one user none of them (not run: --static)${columns}`);
           else {
             const { line, all } = heldLine(tokens, set);
