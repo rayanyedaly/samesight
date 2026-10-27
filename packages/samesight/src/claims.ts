@@ -187,20 +187,54 @@ interface Span {
 /** Token reads other than the user id: a helper that reads only auth.uid() tells users apart by id alone. */
 const READS_CLAIMS = /auth\s*\.\s*(jwt|role|email|parameters?)\s*\(|request\s*\.\s*jwt\s*\(|token_parameters\s*\.|current_setting\s*\(\s*'request\.jwt/i;
 
+/**
+ * The functions a body calls, as Postgres resolves names: an unquoted name folded to lower
+ * case, a quoted one kept as written, schema.name when qualified. A body that does not
+ * tokenize (plpgsql's := and the like) is scanned with its comments and strings removed.
+ */
+export function callsIn(body: string): string[] {
+  const out = new Set<string>();
+  let t: Token[] | undefined;
+  try {
+    t = tokenize(body, { dialect: "postgres" });
+  } catch {
+    t = undefined;
+  }
+  if (t) {
+    for (let i = 0; i < t.length; i++) {
+      const a = t[i];
+      if (!a || (a.kind !== "word" && a.kind !== "quoted") || sym(t[i - 1], ".")) continue;
+      if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], "(")) out.add(`${a.text}.${name(t[i + 2])}`);
+      else if (sym(t[i + 1], "(")) out.add(a.text);
+    }
+    return [...out];
+  }
+  const text = body
+    .replace(/--[^\n]*/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/'(?:[^']|'')*'/g, "''");
+  const part = String.raw`("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
+  const unquote = (x: string) => (x.startsWith('"') ? x.slice(1, -1).replace(/""/g, '"') : x.toLowerCase());
+  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
+    out.add(m[2] === undefined ? unquote(m[1] as string) : `${unquote(m[1] as string)}.${unquote(m[2])}`);
+  }
+  return [...out];
+}
+
+/** The listed functions a call names: schema.name exactly, a bare name any schema's. */
+function callees(call: string, functions: ReadonlyMap<string, string>): string[] {
+  if (functions.has(call)) return [call];
+  if (call.includes(".")) return [];
+  return [...functions.keys()].filter((k) => k.endsWith(`.${call}`));
+}
+
 /** Whether a listed function's body reads the token (or, with READS_CLAIMS, a claim other than the user id), itself or through other listed functions. */
 function readsTokenThrough(fn: string, functions: ReadonlyMap<string, string>, seen = new Set<string>(), reads = READS_TOKEN): boolean {
   const body = functions.get(fn);
   if (body === undefined || seen.has(fn)) return false;
   seen.add(fn);
   if (reads.test(body)) return true;
-  for (const other of functions.keys()) {
-    const bare = other.split(".").at(-1) as string;
-    // Any name, quoted ones with regex characters included, is matched as text.
-    const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // Quoted or not: f( and "f"( both call it.
-    if (other !== fn && new RegExp(`(^|[^A-Za-z0-9_$])"?${escaped}"?\\s*\\(`, "i").test(body) && readsTokenThrough(other, functions, seen, reads)) return true;
-  }
-  return false;
+  return callsIn(body).some((call) => callees(call, functions).some((other) => readsTokenThrough(other, functions, seen, reads)));
 }
 
 /** The claim read starting at token i, before any keys or wrappers; undefined when none starts there. */
@@ -475,6 +509,34 @@ function literalList(items: Token[]): ClaimValue[] | undefined {
   return current.length && !flush() ? undefined : values;
 }
 
+/**
+ * The elements of ARRAY[...] filling t[from..close), as Postgres prints IN: ARRAY['a'::text],
+ * or, for a cast list, (ARRAY['a'::character varying])::text[]. Undefined for anything else.
+ */
+function arrayList(t: Token[], from: number, close: number): { from: number; to: number } | undefined {
+  let a = from;
+  let b = close - 1;
+  // (ARRAY[...])::type[]: drop the cast after the parentheses, then the parentheses.
+  if (sym(t[a], "(") && closing(t, a) < b) {
+    const end = closing(t, a);
+    if (!sym(t[end + 1], "::")) return undefined;
+    const type = typeAt(t, end + 2);
+    if (!type || type.end !== b) return undefined;
+    a += 1;
+    b = end - 1;
+  } else if (sym(t[a], "(") && closing(t, a) === b) {
+    a += 1;
+    b -= 1;
+  }
+  if (!word(t[a], "array") || !sym(t[a + 1], "[") || !sym(t[b], "]")) return undefined;
+  let depth = 0;
+  for (let i = a + 1; i <= b; i++) {
+    if (sym(t[i], "[")) depth++;
+    if (sym(t[i], "]") && --depth === 0 && i !== b) return undefined;
+  }
+  return { from: a + 2, to: b };
+}
+
 /** What one side of a comparison is. */
 function classifySide(side: Token[], negated: boolean): Compared {
   const b = bare(side);
@@ -499,10 +561,7 @@ function comparedWith(t: Token[], s: Span): Compared {
   const right = t[s.end + 1];
   const left = t[s.start - 1];
   const other = (): Compared => ({ kind: "other", text: condition(t, s.start, s.end) });
-  /** NOT before the condition from..to: NOT read = 'x', or Postgres's (NOT (read = 'x')). */
-  const notBefore = (from: number, to: number) =>
-    word(t[from - 1], "not") || (sym(t[from - 1], "(") && word(t[from - 2], "not") && closing(t, from - 1) === to + 1);
-  const flip = (c: Compared, from: number, to: number): Compared => (c.kind !== "other" && notBefore(from, to) ? { ...c, negated: !c.negated } : c);
+  const flip = (c: Compared, from: number, to: number): Compared => (c.kind !== "other" && negatedAround(t, from, to) ? { ...c, negated: !c.negated } : c);
 
   if (leftEdge(t, s.start - 1)) {
     // read IS [NOT] NULL / TRUE / FALSE
@@ -526,15 +585,13 @@ function comparedWith(t: Token[], s: Span): Compared {
     if (right?.kind === "symbol" && COMPARE.has(right.text)) {
       const negated = right.text !== "=";
       // = ANY (ARRAY[...]) / <> ALL (ARRAY[...]): how Postgres prints IN and NOT IN.
-      if ((word(t[s.end + 2], "any") || word(t[s.end + 2], "all")) && sym(t[s.end + 3], "(") && word(t[s.end + 4], "array") && sym(t[s.end + 5], "[")) {
+      if ((word(t[s.end + 2], "any") || word(t[s.end + 2], "all")) && sym(t[s.end + 3], "(")) {
         const close = closing(t, s.end + 3);
-        let end = s.end + 5;
-        for (let depth = 0; end < close; end++) {
-          if (sym(t[end], "[")) depth++;
-          if (sym(t[end], "]") && --depth === 0) break;
+        const list = arrayList(t, s.end + 4, close);
+        if (list) {
+          const values = rightEdge(t, close + 1) ? literalList(t.slice(list.from, list.to)) : undefined;
+          return values ? flip({ kind: "literals", values, negated }, s.start, close) : other();
         }
-        const values = rightEdge(t, close + 1) ? literalList(t.slice(s.end + 6, end)) : undefined;
-        return values ? flip({ kind: "literals", values, negated }, s.start, close) : other();
       }
       const side = operand(t, s.end + 2, 1);
       if (!rightEdge(t, s.end + 2 + side.length)) return other();
@@ -548,8 +605,51 @@ function comparedWith(t: Token[], s: Span): Compared {
     return flip(classifySide(side, left.text !== "="), from, s.end);
   }
   // The read alone as a condition: true when it holds.
-  if (leftEdge(t, s.start - 1) && rightEdge(t, s.end + 1)) return { kind: "literals", values: [true], negated: notBefore(s.start, s.end) };
+  if (leftEdge(t, s.start - 1) && rightEdge(t, s.end + 1)) return { kind: "literals", values: [true], negated: negatedAround(t, s.start, s.end) };
   return other();
+}
+
+/**
+ * Whether what wraps the condition t[from..to] negates it, walking outwards: NOT before it,
+ * parentheses around it, and a parenthesised condition compared with a boolean, as Postgres
+ * prints them: ((read = 'x') = false), ((read = 'x') IS NOT TRUE), (NOT ((read = 'x') IS FALSE)).
+ * Negations compose. IS NOT TRUE and IS NOT FALSE also hold when the read is null, which the
+ * run's user without the claim covers.
+ */
+function negatedAround(t: Token[], from: number, to: number): boolean {
+  let negated = false;
+  let a = from;
+  let b = to;
+  let grouped = false;
+  for (;;) {
+    if (word(t[a - 1], "not")) {
+      negated = !negated;
+      a -= 1;
+      grouped = false;
+      continue;
+    }
+    if (sym(t[a - 1], "(") && closing(t, a - 1) === b + 1 && !callParen(t, a - 1)) {
+      a -= 1;
+      b += 1;
+      grouped = true;
+      continue;
+    }
+    // Only a parenthesised condition: Postgres prints every comparison of one that way.
+    if (!grouped) return negated;
+    const op = t[b + 1];
+    const v = t[b + 2];
+    if (op?.kind === "symbol" && ["=", "<>", "!="].includes(op.text) && (word(v, "true") || word(v, "false"))) {
+      if ((op.text === "=") === word(v, "false")) negated = !negated;
+      b += 2;
+    } else if (word(op, "is") && (word(v, "true") || word(v, "false"))) {
+      if (word(v, "false")) negated = !negated;
+      b += 2;
+    } else if (word(op, "is") && word(v, "not") && (word(t[b + 3], "true") || word(t[b + 3], "false"))) {
+      if (word(t[b + 3], "true")) negated = !negated;
+      b += 3;
+    } else return negated;
+    grouped = false;
+  }
 }
 
 /** Every claim read in one rule's SQL. */
