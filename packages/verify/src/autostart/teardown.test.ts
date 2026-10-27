@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { onSignals, type Signals, Teardown } from "./teardown.ts";
+import { LEFT_FOR_NEXT, onSignals, type Signals, Teardown } from "./teardown.ts";
 
 describe("Teardown", () => {
   it("runs steps last first, once, and goes on past a failing one", async () => {
@@ -154,9 +154,12 @@ describe("onSignals", () => {
     const late = proc();
     const slow = new Teardown(() => {});
     slow.add("hung", () => new Promise(() => {}));
-    onSignals(slow, () => {}, late.p, 20);
+    const lines: string[] = [];
+    onSignals(slow, (l) => lines.push(l), late.p, 20);
     late.p.emit("SIGHUP");
     expect(await late.exited).toBe(129);
+    // What is left may hold privileged run users: said, with how to remove them now.
+    expect(lines.at(-1)).toBe(`stopped before the clean-up finished: the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`);
 
     // Begun by the run itself (its end): the grace starts with the signal.
     const own = proc();
@@ -192,11 +195,14 @@ describe("onSignals", () => {
     const { p, exits } = proc();
     const t = new Teardown(() => {});
     t.add("slow", () => new Promise(() => {}));
-    onSignals(t, () => {}, p, 120_000, clock);
+    const lines: string[] = [];
+    onSignals(t, (l) => lines.push(l), p, 120_000, clock);
     p.emit("SIGINT");
     time = 1000;
     p.emit("SIGINT");
     expect(exits).toEqual([130]);
+    // Cut short: what is left is said.
+    expect(lines.at(-1)).toMatch(/^stopped before the clean-up finished: /);
 
     const after = proc();
     const slow = new Teardown(() => {});
@@ -208,6 +214,18 @@ describe("onSignals", () => {
     time = 2500;
     after.p.emit("SIGINT");
     expect(after.exits).toEqual([143]);
+
+    // A teardown that has finished says nothing is left, however the exit comes.
+    const done = proc();
+    const quick = new Teardown(() => {});
+    const quiet: string[] = [];
+    onSignals(quick, (l) => quiet.push(l), done.p, 120_000, clock);
+    await quick.run();
+    time = 4000;
+    done.p.emit("SIGINT");
+    time = 5500;
+    done.p.emit("SIGINT");
+    expect(quiet.some((l) => l.startsWith("stopped before the clean-up finished"))).toBe(false);
 
     const second = proc();
     const stop = onSignals(new Teardown(() => {}), () => {}, second.p);

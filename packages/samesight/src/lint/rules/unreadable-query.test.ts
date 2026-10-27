@@ -11,9 +11,17 @@ describe("unreadable-query", () => {
     expect(lint(stream("  s:\n    query: SELECT * FROM todos JOIN lists ON todos.list_id = lists.id\n"))).toEqual([
       ["warning", 5, "stream s, query cannot be checked by audit: it selects * across a join; name the table, as in t.*"],
     ]);
-    expect(lint(stream("  s:\n    query: SELECT * FROM lists AS mine\n")).map((f) => f[2])).toEqual([expect.stringMatching(/calls lists mine, which may rename it/)]);
     expect(lint(stream("  s:\n    query: SELECT todos.* FROM todos LEFT JOIN lists ON todos.list_id = lists.id\n")).map((f) => f[2])).toEqual([
       expect.stringMatching(/only \[INNER\] JOIN/),
+    ]);
+  });
+
+  it("warns when one device table name would hold two tables' rows, in either order and across streams", () => {
+    expect(lint(stream("  a:\n    query: SELECT * FROM todos AS lists\n  b:\n    query: SELECT * FROM lists\n"))).toEqual([
+      ["warning", 7, "stream b, query cannot be checked by audit: it sends lists rows as lists, a name devices already hold todos rows under; rows of the two could not be told apart"],
+    ]);
+    expect(lint(stream("  a:\n    query: SELECT * FROM lists\n  b:\n    query: SELECT * FROM todos AS lists\n")).map((f) => f[2])).toEqual([
+      expect.stringMatching(/^stream b, query cannot be checked by audit: it sends todos rows as lists, a name devices already hold lists rows under/),
     ]);
   });
 
@@ -25,6 +33,9 @@ describe("unreadable-query", () => {
 
   it("accepts the shapes audit reads", () => {
     expect(lint(stream("  s:\n    query: SELECT todos.* FROM todos JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()\n"))).toEqual([]);
+    // An alias renames the table on the device; audit maps it back.
+    expect(lint(stream("  s:\n    query: SELECT * FROM lists AS mine\n"))).toEqual([]);
+    expect(lint(stream("  s:\n    query: SELECT t.* FROM todos t JOIN lists l ON t.list_id = l.id\n"))).toEqual([]);
     expect(lint("bucket_definitions:\n  b:\n    parameters: SELECT request.user_id() AS user_id\n    data: [SELECT * FROM lists WHERE owner_id = bucket.user_id]\n")).toEqual([]);
   });
 

@@ -71,7 +71,7 @@ describe("claimFindings", () => {
   it("says what each claim means for the run, and warns on every read it cannot give or follow", () => {
     const lines = details(claimFindings(plan, undefined));
     expect(lines).toEqual([
-      expect.stringMatching(/^warn aal: read by policy "mfa" on docs \(USING\), compared with 'aal2'; every run user is a password user at aal1/),
+      expect.stringMatching(/^warn aal: read by policy "mfa" on docs \(USING\), compared with 'aal2'; every run user's token carries the same aal \(aal1: a password sign-in, no second factor\)/),
       expect.stringMatching(/^warn app_metadata\.org_id: read by policy "org" on docs \(USING\), compared with column org_id; run users do not carry app_metadata\.org_id, so every user reads it as null$/),
       expect.stringMatching(/^warn app_metadata\.role: read by 3 rules \(.*\), compared with 'admin', 'editor'; run users do not carry/),
       expect.stringMatching(/^warn app_role: .*no Supabase token carries it unless an access token hook adds it, and supabase\/config\.toml enables none$/),
@@ -87,7 +87,7 @@ describe("claimFindings", () => {
       ["u1", {}],
     ]);
     expect(details(claimFindings(plan, hook, same)).find((l) => l.includes("app_role"))).toMatch(
-      /added by the access token hook pg-functions:\/\/postgres\/public\/custom_access_token_hook; users signed in before any rows were generated, so every token carries the same value \(u0: null, u1: null\)\. Rules that read it are tested for that value only; steering hook claims is planned \(B3b\)$/,
+      /added by the access token hook pg-functions:\/\/postgres\/public\/custom_access_token_hook; every token carries the same value \(u0: null, u1: null\)\. Rules that read it are tested for that value only$/,
     );
     const none = details(claimFindings(plan, undefined, same)).find((l) => l.includes("app_role"));
     expect(none).toMatch(/no run user's token carries it \(and supabase\/config\.toml enables no access token hook\), so every user reads it as null$/);
@@ -104,11 +104,55 @@ describe("claimFindings", () => {
     const meta = details(claimFindings(plan, undefined, new Map([["u0", { app_metadata: { role: "member" } }], ["u1", {}]]))).find((l) => l.includes("app_metadata.role"));
     expect(meta).toMatch(/; the run users' tokens carry it, though audit did not set it \(u0: "member", u1: null\)$/);
     const email = details(claimFindings(planClaims([policy("e", "(auth.email() = owner_email)")]), undefined));
-    expect(email).toEqual([expect.stringMatching(/^warn email: .*compared with column owner_email; each run user has its own email, which audit does not put in generated rows/)]);
+    expect(email).toEqual([expect.stringMatching(/^warn email: .*compared with column owner_email; each run user has its own email \(an address at verify\.samesight\.test\), which audit does not choose or put in generated rows/)]);
   });
 
-  it("warns about a hook that runs off this machine", () => {
-    expect(details(claimFindings(plan, { uri: "https://hooks.example.com/claims" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/claims is not on this machine/);
+  it("says why audit cannot steer a hook claim, and what the tokens carry, with the hook's own warnings first", () => {
+    const hook = { uri: "pg-functions://postgres/public/custom_access_token_hook" };
+    const hookPlan = { uri: hook.uri, tables: [], cannot: "its body reads no public table", findings: [{ status: "warn" as const, check: "access token hook", detail: "the hook warns" }] };
+    const tokens = new Map([
+      ["u0", { app_role: "ADMIN" }],
+      ["u1", { app_role: "ADMIN" }],
+      ["u2", {}],
+    ]);
+    const lines = details(claimFindings(plan, hook, tokens, undefined, hookPlan));
+    expect(lines[0]).toBe("warn the hook warns");
+    expect(lines.find((l) => l.includes("app_role"))).toMatch(
+      /; added by the access token hook pg-functions:\/\/postgres\/public\/custom_access_token_hook, which audit cannot give rows to \(its body reads no public table\); held: ADMIN u0 u1, none u2\. Rules that read it are tested for these values only$/,
+    );
+    expect(details(claimFindings(plan, hook, undefined, undefined, hookPlan)).find((l) => l.includes("app_role"))).toMatch(
+      /which audit cannot give rows to \(its body reads no public table\)\. Rules that read it are tested only for the values run users' tokens carry$/,
+    );
+  });
+
+  it("says who holds a claim the hook adds from rows audit gave, ok only when every value compared and another are held", () => {
+    const hook = { uri: "pg-functions://postgres/public/custom_access_token_hook" };
+    const hookPlan = { uri: hook.uri, tables: ["memberships"], findings: [], steer: { perUser: ["memberships"], summary: "the access token hook reads memberships: rows" } };
+    const line = (tokens?: Map<string, Record<string, unknown>>) => claimFindings(plan, hook, tokens, undefined, hookPlan).find((f) => f.detail.startsWith("app_role"));
+    expect(line()).toMatchObject({ status: "ok", detail: expect.stringMatching(/which reads memberships; a full run gives run users rows there before they sign in \(not run: --static\)$/) });
+    const held = line(new Map([["u0", { app_role: "ADMIN" }], ["u1", { app_role: "VIEWER" }], ["u2", {}]]));
+    expect(held).toMatchObject({ status: "ok", detail: expect.stringMatching(/from rows audit gives each run user in memberships before signing in; held: ADMIN u0, VIEWER u1, none u2$/) });
+    const missing = line(new Map([["u0", { app_role: "VIEWER" }], ["u1", {}]]));
+    expect(missing).toMatchObject({ status: "warn", detail: expect.stringMatching(/held: VIEWER u0, none u1; no token carries 'ADMIN'$/) });
+    // The summary first, then a warning when rows differ and tokens do not.
+    const all = details(claimFindings(plan, hook, new Map([["u0", {}], ["u1", {}]]), undefined, hookPlan));
+    expect(all[0]).toBe("ok the access token hook reads memberships: rows");
+    expect(all[1]).toMatch(/^warn every run user's token carries the same app_role, although audit gave them different memberships rows; the hook may not read them$/);
+  });
+
+  it("never prints an HTTP hook's user, password, path or query, in any Claims line", () => {
+    const uri = "https://u:pw@hooks.example.com/hook/secret-path?key=k1";
+    const hookPlan = { uri, tables: [], cannot: "it is an HTTP hook, which runs off this database", findings: [] };
+    const text = details(claimFindings(plan, { uri }, new Map([["u0", { app_role: "ADMIN" }]]), undefined, hookPlan)).join("\n");
+    expect(text).toContain("https://hooks.example.com/...");
+    for (const secret of ["pw", "secret-path", "k1"]) expect(text).not.toContain(secret);
+    // A hook claim with no plan and no tokens: added by the hook, values not chosen.
+    expect(details(claimFindings(plan, { uri })).find((l) => l.includes("app_role"))).toMatch(/added by the access token hook https:\/\/hooks\.example\.com\/\.\.\., whose values audit does not choose$/);
+  });
+
+  it("warns about a hook that runs off this machine, printed without its secrets", () => {
+    expect(details(claimFindings(plan, { uri: "https://hooks.example.com/claims" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/\.\.\. is not on this machine/);
+    expect(details(claimFindings(plan, { uri: "https://u:pw@hooks.example.com/claims?key=k" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/\.\.\. is not/);
     expect(remoteHook("http://127.0.0.1:3000/hook")).toBe(false);
     expect(remoteHook("http://[::1]:3000/hook")).toBe(false);
     expect(remoteHook("https://[2001:db8::1]/hook")).toBe(true);

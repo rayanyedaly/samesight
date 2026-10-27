@@ -55,11 +55,48 @@ export interface ClaimReads {
 
 export interface ClaimOptions {
   /**
-   * SQL functions to read through (one level): name as called (schema.name or name) to its
-   * body as Postgres prints it. A zero-argument function whose body is one claim read is
-   * read as that claim; any other listed function that reads the token is reported.
+   * SQL functions to read through (two levels): name as called (schema.name or name) to its
+   * body as Postgres prints it, for any number of arguments. Overloads are keyed beside it as
+   * name/min-max (max * for variadic), and a call is matched to them by its argument count.
+   * A zero-argument function whose body is one claim read (or a call of another such
+   * function) is read as that claim; any other listed function that reads the token is reported.
    */
   functions?: ReadonlyMap<string, string>;
+}
+
+/** Internal: how many wrappers deep a read is, 1 in a rule, 2 in a function it calls. */
+interface ReadOptions extends ClaimOptions {
+  depth?: number;
+}
+
+/** Wrappers read through: a rule's function, and one that function calls. */
+const WRAPPER_LEVELS = 2;
+
+/**
+ * The listed keys a call of fn with argc arguments may run: its overloads whose range takes
+ * argc when any are listed as name/min-max, else the name itself (any arity).
+ */
+function overloadsFor(fn: string, argc: number, functions: ReadonlyMap<string, string>): string[] {
+  const ranged = [...functions.keys()].filter((k) => k.startsWith(`${fn}/`));
+  if (!ranged.length) return functions.has(fn) ? [fn] : [];
+  return ranged.filter((k) => {
+    const [min, max] = k.slice(fn.length + 1).split("-");
+    return argc >= Number(min) && (max === "*" || argc <= Number(max));
+  });
+}
+
+/** Arguments in the call whose parenthesis opens at open: top-level commas, named ones included. */
+function argCount(t: Token[], open: number): number {
+  const close = closing(t, open);
+  if (close === open + 1) return 0;
+  let n = 1;
+  let depth = 0;
+  for (let i = open + 1; i < close; i++) {
+    if (sym(t[i], "(") || sym(t[i], "[")) depth++;
+    else if (sym(t[i], ")") || sym(t[i], "]")) depth--;
+    else if (depth === 0 && sym(t[i], ",")) n++;
+  }
+  return n;
 }
 
 /** Text that reads the token somewhere: for rules this cannot tokenize. */
@@ -187,24 +224,111 @@ interface Span {
 /** Token reads other than the user id: a helper that reads only auth.uid() tells users apart by id alone. */
 const READS_CLAIMS = /auth\s*\.\s*(jwt|role|email|parameters?)\s*\(|request\s*\.\s*jwt\s*\(|token_parameters\s*\.|current_setting\s*\(\s*'request\.jwt/i;
 
+/**
+ * The functions a body calls, as Postgres resolves names: an unquoted name folded to lower
+ * case, a quoted one kept as written, schema.name when qualified. A body that does not
+ * tokenize (plpgsql's := and the like) is scanned with its comments and strings removed.
+ */
+export function callsIn(body: string): string[] {
+  const out = new Set<string>();
+  let t: Token[] | undefined;
+  try {
+    t = tokenize(body, { dialect: "postgres" });
+  } catch {
+    t = undefined;
+  }
+  if (t) {
+    for (let i = 0; i < t.length; i++) {
+      const a = t[i];
+      if (!a || (a.kind !== "word" && a.kind !== "quoted") || sym(t[i - 1], ".")) continue;
+      if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], "(")) out.add(`${a.text}.${name(t[i + 2])}`);
+      else if (sym(t[i + 1], "(") && !(a.kind === "word" && NOT_CALLS.has(a.text))) out.add(a.text);
+    }
+    return [...out];
+  }
+  const text = codeOnly(body);
+  const part = `("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
+  const unquote = (x: string) => (x.startsWith('"') ? x.slice(1, -1).replace(/""/g, '"') : x.toLowerCase());
+  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
+    // A keyword before a parenthesis is no call; a quoted name ("if") is one.
+    if (m[2] === undefined && !(m[1] as string).startsWith('"') && NOT_CALLS.has((m[1] as string).toLowerCase())) continue;
+    out.add(m[2] === undefined ? unquote(m[1] as string) : `${unquote(m[1] as string)}.${unquote(m[2])}`);
+  }
+  return [...out];
+}
+
+
+/** Keywords Postgres writes before a parenthesis that are no function: EXISTS (...), IN (...). */
+const NOT_CALLS = new Set(["exists", "lateral", "in", "any", "all", "some", "array", "values", "row", "filter", "over", "if", "elsif", "while", "and", "or", "not", "when", "then", "else", "case", "select", "from", "where", "on", "using", "return", "returning", "into", "as", "cast", "coalesce", "nullif", "greatest", "least"]);
+
+/**
+ * A plpgsql body with its comments and string literals blanked, in one pass, so a quote or
+ * comment marker inside one never hides code: '...' with '' escapes, E'...' with backslash
+ * escapes, -- and /* *\/ comments, and $tag$...$tag$ strings (SQL in one, run by EXECUTE, is
+ * dynamic SQL, which no reader of the body can follow).
+ */
+export function codeOnly(body: string): string {
+  let out = "";
+  let i = 0;
+  while (i < body.length) {
+    const rest = body.slice(i);
+    if (rest.startsWith("--")) {
+      const end = body.indexOf("\n", i);
+      i = end === -1 ? body.length : end;
+      out += " ";
+    } else if (rest.startsWith("/*")) {
+      const end = body.indexOf("*/", i + 2);
+      i = end === -1 ? body.length : end + 2;
+      out += " ";
+    } else if (/^[eE]'/.test(rest) && !/[A-Za-z0-9_$]/.test(body[i - 1] ?? "")) {
+      // E'...': a backslash escapes the next character, and '' is a quote too.
+      let j = i + 2;
+      while (j < body.length && !(body[j] === "'" && body[j + 1] !== "'")) j += body[j] === "\\" || body[j] === "'" ? 2 : 1;
+      i = j + 1;
+      out += "''";
+    } else if (rest.startsWith('"')) {
+      // A quoted name stays as written ("getOrg"), and a quote or -- inside it starts nothing.
+      let j = i + 1;
+      while (j < body.length && !(body[j] === '"' && body[j + 1] !== '"')) j += body[j] === '"' ? 2 : 1;
+      out += body.slice(i, j + 1);
+      i = j + 1;
+    } else if (rest.startsWith("'")) {
+      let j = i + 1;
+      while (j < body.length && !(body[j] === "'" && body[j + 1] !== "'")) j += body[j] === "'" ? 2 : 1;
+      i = j + 1;
+      out += "''";
+    } else {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(rest);
+      if (tag && !/[A-Za-z0-9_]/.test(body[i - 1] ?? "")) {
+        const end = body.indexOf(tag[0], i + tag[0].length);
+        i = end === -1 ? body.length : end + tag[0].length;
+        out += "''";
+      } else {
+        out += body[i];
+        i++;
+      }
+    }
+  }
+  return out;
+}
+
+/** The listed functions a call may run: schema.name exactly; a bare name, any schema's (search_path decides). */
+function callees(call: string, functions: ReadonlyMap<string, string>): string[] {
+  if (call.includes(".")) return functions.has(call) ? [call] : [];
+  return [...functions.keys()].filter((k) => k === call || k.endsWith(`.${call}`));
+}
+
 /** Whether a listed function's body reads the token (or, with READS_CLAIMS, a claim other than the user id), itself or through other listed functions. */
 function readsTokenThrough(fn: string, functions: ReadonlyMap<string, string>, seen = new Set<string>(), reads = READS_TOKEN): boolean {
   const body = functions.get(fn);
   if (body === undefined || seen.has(fn)) return false;
   seen.add(fn);
   if (reads.test(body)) return true;
-  for (const other of functions.keys()) {
-    const bare = other.split(".").at(-1) as string;
-    // Any name, quoted ones with regex characters included, is matched as text.
-    const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // Quoted or not: f( and "f"( both call it.
-    if (other !== fn && new RegExp(`(^|[^A-Za-z0-9_$])"?${escaped}"?\\s*\\(`, "i").test(body) && readsTokenThrough(other, functions, seen, reads)) return true;
-  }
-  return false;
+  return callsIn(body).some((call) => callees(call, functions).some((other) => readsTokenThrough(other, functions, seen, reads)));
 }
 
 /** The claim read starting at token i, before any keys or wrappers; undefined when none starts there. */
-function startAt(t: Token[], i: number, dialect: ClaimDialect, options: ClaimOptions): Span | undefined {
+function startAt(t: Token[], i: number, dialect: ClaimDialect, options: ReadOptions): Span | undefined {
   const call = (schema: string, fn: string) => word(t[i], schema) && sym(t[i + 1], ".") && word(t[i + 2], fn) && sym(t[i + 3], "(");
   const empty = (open: number) => sym(t[open + 1], ")");
   if (dialect === "postgres") {
@@ -239,24 +363,27 @@ function startAt(t: Token[], i: number, dialect: ClaimDialect, options: ClaimOpt
 }
 
 /** A call of a listed zero-argument function whose body is one claim read. */
-function functionCall(t: Token[], i: number, options: ClaimOptions): Span | undefined {
+function functionCall(t: Token[], i: number, options: ReadOptions): Span | undefined {
   if (!options.functions || !name(t[i])) return undefined;
   const qualified = sym(t[i + 1], ".") && name(t[i + 2]);
   const fn = qualified ? `${name(t[i])}.${name(t[i + 2])}` : (name(t[i]) as string);
   const open = qualified ? i + 3 : i + 1;
   if (!sym(t[open], "(") || !sym(t[open + 1], ")")) return undefined;
-  const body = options.functions.get(fn);
+  const [key, ...more] = overloadsFor(fn, 0, options.functions);
+  const body = key === undefined || more.length ? undefined : options.functions.get(key);
   if (body === undefined) return undefined;
-  const inner = wrapperRead(body);
+  const depth = options.depth ?? 1;
+  const inner = wrapperRead(body, depth < WRAPPER_LEVELS ? options.functions : undefined, depth + 1);
   if (!inner) return undefined;
   return { start: i, end: open + 1, path: inner.path, casts: inner.casts, ...(inner.fallback !== undefined ? { fallback: inner.fallback } : {}) };
 }
 
 /**
  * The claim read a SQL function's body consists of, as Postgres prints it (select W;,
- * RETURN W, BEGIN ATOMIC SELECT W; END), or undefined when the body is anything else.
+ * RETURN W, BEGIN ATOMIC SELECT W; END), or undefined when the body is anything else. With
+ * `functions`, W may also be a call of a listed zero-argument function that is one read.
  */
-export function wrapperRead(body: string): { path: string[]; casts: string[]; fallback?: ClaimValue } | undefined {
+export function wrapperRead(body: string, functions?: ReadonlyMap<string, string>, depth = 1): { path: string[]; casts: string[]; fallback?: ClaimValue } | undefined {
   let t: Token[];
   try {
     t = tokenize(body, { dialect: "postgres" });
@@ -269,7 +396,7 @@ export function wrapperRead(body: string): { path: string[]; casts: string[]; fa
   // Postgres prints a BEGIN ATOMIC select list with its column alias: SELECT ... AS bool.
   if (word(t.at(-2), "as") && name(t.at(-1))) t = t.slice(0, -2);
   for (let i = 0; i < t.length; i++) {
-    const span = startAt(t, i, "postgres", {});
+    const span = startAt(t, i, "postgres", functions ? { functions, depth } : {});
     if (!span) continue;
     const read = extend(t, span, "postgres");
     return read.start === 0 && read.end === t.length - 1 && !read.unsupported
@@ -475,6 +602,34 @@ function literalList(items: Token[]): ClaimValue[] | undefined {
   return current.length && !flush() ? undefined : values;
 }
 
+/**
+ * The elements of ARRAY[...] filling t[from..close), as Postgres prints IN: ARRAY['a'::text],
+ * or, for a cast list, (ARRAY['a'::character varying])::text[]. Undefined for anything else.
+ */
+function arrayList(t: Token[], from: number, close: number): { from: number; to: number } | undefined {
+  let a = from;
+  let b = close - 1;
+  // (ARRAY[...])::type[]: drop the cast after the parentheses, then the parentheses.
+  if (sym(t[a], "(") && closing(t, a) < b) {
+    const end = closing(t, a);
+    if (!sym(t[end + 1], "::")) return undefined;
+    const type = typeAt(t, end + 2);
+    if (!type || type.end !== b) return undefined;
+    a += 1;
+    b = end - 1;
+  } else if (sym(t[a], "(") && closing(t, a) === b) {
+    a += 1;
+    b -= 1;
+  }
+  if (!word(t[a], "array") || !sym(t[a + 1], "[") || !sym(t[b], "]")) return undefined;
+  let depth = 0;
+  for (let i = a + 1; i <= b; i++) {
+    if (sym(t[i], "[")) depth++;
+    if (sym(t[i], "]") && --depth === 0 && i !== b) return undefined;
+  }
+  return { from: a + 2, to: b };
+}
+
 /** What one side of a comparison is. */
 function classifySide(side: Token[], negated: boolean): Compared {
   const b = bare(side);
@@ -499,10 +654,7 @@ function comparedWith(t: Token[], s: Span): Compared {
   const right = t[s.end + 1];
   const left = t[s.start - 1];
   const other = (): Compared => ({ kind: "other", text: condition(t, s.start, s.end) });
-  /** NOT before the condition from..to: NOT read = 'x', or Postgres's (NOT (read = 'x')). */
-  const notBefore = (from: number, to: number) =>
-    word(t[from - 1], "not") || (sym(t[from - 1], "(") && word(t[from - 2], "not") && closing(t, from - 1) === to + 1);
-  const flip = (c: Compared, from: number, to: number): Compared => (c.kind !== "other" && notBefore(from, to) ? { ...c, negated: !c.negated } : c);
+  const flip = (c: Compared, from: number, to: number): Compared => (c.kind !== "other" && negatedAround(t, from, to) ? { ...c, negated: !c.negated } : c);
 
   if (leftEdge(t, s.start - 1)) {
     // read IS [NOT] NULL / TRUE / FALSE
@@ -526,15 +678,16 @@ function comparedWith(t: Token[], s: Span): Compared {
     if (right?.kind === "symbol" && COMPARE.has(right.text)) {
       const negated = right.text !== "=";
       // = ANY (ARRAY[...]) / <> ALL (ARRAY[...]): how Postgres prints IN and NOT IN.
-      if ((word(t[s.end + 2], "any") || word(t[s.end + 2], "all")) && sym(t[s.end + 3], "(") && word(t[s.end + 4], "array") && sym(t[s.end + 5], "[")) {
+      if ((word(t[s.end + 2], "any") || word(t[s.end + 2], "all")) && sym(t[s.end + 3], "(")) {
         const close = closing(t, s.end + 3);
-        let end = s.end + 5;
-        for (let depth = 0; end < close; end++) {
-          if (sym(t[end], "[")) depth++;
-          if (sym(t[end], "]") && --depth === 0) break;
+        const list = arrayList(t, s.end + 4, close);
+        // = ANY is IN and <> ALL is NOT IN; = ALL and <> ANY over several values are neither.
+        const inLike = (right.text === "=") === word(t[s.end + 2], "any");
+        if (list && !inLike) return other();
+        if (list) {
+          const values = rightEdge(t, close + 1) ? literalList(t.slice(list.from, list.to)) : undefined;
+          return values ? flip({ kind: "literals", values, negated }, s.start, close) : other();
         }
-        const values = rightEdge(t, close + 1) ? literalList(t.slice(s.end + 6, end)) : undefined;
-        return values ? flip({ kind: "literals", values, negated }, s.start, close) : other();
       }
       const side = operand(t, s.end + 2, 1);
       if (!rightEdge(t, s.end + 2 + side.length)) return other();
@@ -548,8 +701,74 @@ function comparedWith(t: Token[], s: Span): Compared {
     return flip(classifySide(side, left.text !== "="), from, s.end);
   }
   // The read alone as a condition: true when it holds.
-  if (leftEdge(t, s.start - 1) && rightEdge(t, s.end + 1)) return { kind: "literals", values: [true], negated: notBefore(s.start, s.end) };
+  if (leftEdge(t, s.start - 1) && rightEdge(t, s.end + 1)) return { kind: "literals", values: [true], negated: negatedAround(t, s.start, s.end) };
   return other();
+}
+
+/**
+ * Whether what wraps the condition t[from..to] negates it, walking outwards: NOT before it,
+ * parentheses around it, and a parenthesised condition compared with a boolean, as Postgres
+ * prints them: ((read = 'x') = false), ((read = 'x') IS NOT TRUE), (NOT ((read = 'x') IS FALSE)).
+ * Negations compose. IS NOT TRUE and IS NOT FALSE also hold when the read is null, which the
+ * run's user without the claim covers.
+ */
+function negatedAround(t: Token[], from: number, to: number): boolean {
+  let negated = false;
+  let a = from;
+  let b = to;
+  let grouped = false;
+  for (;;) {
+    if (word(t[a - 1], "not")) {
+      negated = !negated;
+      a -= 1;
+      grouped = false;
+      continue;
+    }
+    if (sym(t[a - 1], "(") && closing(t, a - 1) === b + 1 && !callParen(t, a - 1)) {
+      a -= 1;
+      b += 1;
+      grouped = true;
+      continue;
+    }
+    // Only a parenthesised condition: Postgres prints every comparison of one that way.
+    if (!grouped) return negated;
+    const before = t[a - 1];
+    const lhs = t[a - 2];
+    // false = (read = 'x'): the boolean on the left.
+    // Not x IS false = (...), which compares (x IS FALSE) with the condition.
+    if (before?.kind === "symbol" && ["=", "<>", "!="].includes(before.text) && (word(lhs, "true") || word(lhs, "false")) && !sym(t[a - 3], ".") && !word(t[a - 3], "is") && !word(t[a - 3], "not")) {
+      if ((before.text === "=") === word(lhs, "false")) negated = !negated;
+      a -= 2;
+      grouped = false;
+      continue;
+    }
+    const op = t[b + 1];
+    const v = t[b + 2];
+    // (read = 'x') IS [NOT] DISTINCT FROM true/false: a null-safe = / <>.
+    const distinct = word(op, "is") && (word(v, "distinct") || (word(v, "not") && word(t[b + 3], "distinct")));
+    if (distinct) {
+      const not = word(v, "not");
+      const at = b + (not ? 4 : 3);
+      const value = t[at + 1];
+      if (!word(t[at], "from") || !(word(value, "true") || word(value, "false"))) return negated;
+      // IS NOT DISTINCT FROM is =, IS DISTINCT FROM is <>.
+      if (not === word(value, "false")) negated = !negated;
+      b = at + 1;
+      grouped = false;
+      continue;
+    }
+    if (op?.kind === "symbol" && ["=", "<>", "!="].includes(op.text) && (word(v, "true") || word(v, "false"))) {
+      if ((op.text === "=") === word(v, "false")) negated = !negated;
+      b += 2;
+    } else if (word(op, "is") && (word(v, "true") || word(v, "false"))) {
+      if (word(v, "false")) negated = !negated;
+      b += 2;
+    } else if (word(op, "is") && word(v, "not") && (word(t[b + 3], "true") || word(t[b + 3], "false"))) {
+      if (word(t[b + 3], "true")) negated = !negated;
+      b += 3;
+    } else return negated;
+    grouped = false;
+  }
 }
 
 /** Every claim read in one rule's SQL. */
@@ -594,8 +813,14 @@ export function claimReads(sql: string, dialect: ClaimDialect, options: ClaimOpt
       if (called && options.functions) {
         const qualified = sym(t[i + 1], ".") && name(t[i + 2]) ? `${called}.${name(t[i + 2])}` : called;
         const open = qualified === called ? i + 1 : i + 3;
-        if (sym(t[open], "(") && readsTokenThrough(qualified, options.functions)) {
-          if (readsTokenThrough(qualified, options.functions, new Set(), READS_CLAIMS)) {
+        const run = sym(t[open], "(") ? overloadsFor(qualified, argCount(t, open), options.functions) : [];
+        const reading = run.filter((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>));
+        if (reading.length) {
+          const claims = reading.some((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>, new Set(), READS_CLAIMS));
+          if (claims && run.length > 1) {
+            // Several overloads take this many arguments: which one runs is Postgres's choice by type.
+            unreadable.push({ text: qualified, reason: `calls ${qualified}, one of whose overloads reads the token` });
+          } else if (claims) {
             unreadable.push({ text: qualified, reason: `calls ${qualified}, which reads the token in a way this cannot follow` });
           } else {
             // A helper that reads only the user id (is_member(org_id) over auth.uid()): it tells
@@ -636,6 +861,16 @@ const SHARED = new Set(["role", "aud", "iss"]);
 const AUTH_STATE = new Set(["aal", "amr", "is_anonymous", "session_id", "email", "phone", "exp", "iat", "nbf", "jti"]);
 const AUTH_APP = new Set(["provider", "providers"]);
 const AUTH_USER = new Set(["email", "email_verified", "phone_verified", "sub"]);
+
+/** Every claim key classify calls auth-state: what Supabase Auth sets about a sign-in. */
+export const AUTH_STATE_KEYS: readonly string[] = [...AUTH_STATE, ...[...AUTH_APP].map((k) => `app_metadata.${k}`), ...[...AUTH_USER].map((k) => `user_metadata.${k}`)];
+
+/** The auth-state key a path reads: its top key, or metadata.key; undefined when it is no auth-state read. */
+export function authStateKey(path: readonly string[]): string | undefined {
+  if (classify(path) !== "auth-state") return undefined;
+  const [top, key] = path;
+  return top === "app_metadata" || top === "user_metadata" ? `${top}.${key}` : top;
+}
 
 /**
  * Who puts a claim in the token, and so whether audit can give it to its users:

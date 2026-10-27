@@ -46,10 +46,27 @@ export const isReady = (url: string) =>
     () => false,
   );
 
-/** Starts the service with this config and waits for its readiness probe, or until `aborted`. */
+/**
+ * Starts the service with this config and waits for its readiness probe, then, given
+ * `replicating`, until that says it replicates: a service that refuses its sync config is
+ * ready for a few seconds before it stops, having made no replication slot. Gives up when
+ * `aborted`, or with its last log lines when the container stops or the time is up.
+ */
 export async function startPowerSync(
   docker: Docker,
-  o: { run: string; project: string; network: string; config: string; labels?: string[]; timeoutMs?: number; aborted?: () => boolean },
+  o: {
+    run: string;
+    project: string;
+    network: string;
+    config: string;
+    labels?: string[];
+    timeoutMs?: number;
+    aborted?: () => boolean;
+    /** Whether the service's replication slot is up. */
+    replicating?: () => Promise<boolean>;
+    /** For tests: how long to wait between checks. */
+    pollMs?: number;
+  },
 ): Promise<PowerSync> {
   const container = containerName(o.run, "powersync");
   await docker.run(
@@ -84,12 +101,16 @@ export async function startPowerSync(
     const logs = await docker.logs(container, 30).catch(() => "");
     return new Error(`the PowerSync service ${why}${logs ? `; its last log lines:\n${logs}` : ""}`);
   };
+  let ready = false;
   for (;;) {
-    if (await isReady(url)) return { container, url };
+    ready ||= await isReady(url);
+    if (ready && (!o.replicating || (await o.replicating()))) return { container, url };
     if (o.aborted?.()) throw new Error("stopped while PowerSync started");
     const state = await docker.inspect<{ State: { Running: boolean } }>("container", container);
-    if (!state?.State.Running) throw await failure("stopped while starting");
-    if (Date.now() > deadline) throw await failure(`was not ready within ${timeoutMs / 1000}s`);
-    await sleep(1000);
+    if (!state?.State.Running) {
+      throw await failure(ready ? "stopped before it began replicating (as one that refuses its sync config does)" : "stopped while starting");
+    }
+    if (Date.now() > deadline) throw await failure(ready ? `did not begin replicating within ${timeoutMs / 1000}s (its first snapshot of the tables may still be running)` : `was not ready within ${timeoutMs / 1000}s`);
+    await sleep(o.pollMs ?? 1000);
   }
 }

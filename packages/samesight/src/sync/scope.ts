@@ -59,8 +59,11 @@ function topLevel(tokens: Token[], match: (t: Token, i: number) => boolean, from
   return -1;
 }
 
-/** The table one stream query's rows land in on the device, and every table it reads. */
-export function outputTable(sql: string): { table: string; reads: string[]; aliases: Record<string, string> } {
+/**
+ * The table one stream query's rows come from, the table they land in on the device (PowerSync
+ * names it after an alias: `FROM documents d` sends rows of type d), and every table it reads.
+ */
+export function outputTable(sql: string): { table: string; deviceTable: string; reads: string[]; aliases: Record<string, string> } {
   const tokens = tokenize(sql);
   if (!isWord(tokens[0], "select")) throw new Error("does not start with SELECT");
   const from = topLevel(tokens, (t) => isWord(t, "from"), 1);
@@ -102,9 +105,7 @@ export function outputTable(sql: string): { table: string; reads: string[]; alia
     );
     if (bare) throw new Error(`selects ${bare.text} without its table in a join; qualify it, as in ${out.alias}.${bare.text}`);
   }
-  // PowerSync may name the device table after an alias; audit mode compares by source table.
-  if (out.alias !== out.table) throw new Error(`calls ${out.table} ${out.alias}, which may rename it on the device; audit mode does not map renamed tables yet`);
-  return { table: out.table, reads: [...new Set(refs.map((r) => r.table))], aliases: Object.fromEntries(refs.map((r) => [r.alias, r.table])) };
+  return { table: out.table, deviceTable: out.alias, reads: [...new Set(refs.map((r) => r.table))], aliases: Object.fromEntries(refs.map((r) => [r.alias, r.table])) };
 }
 
 /** Every public table a query names after FROM or JOIN, at any depth (subqueries included). */
@@ -122,6 +123,18 @@ export function tablesNamed(sql: string): string[] {
   return [...out];
 }
 
+/**
+ * Records that devices hold `table` rows under `deviceTable` in `names` (device name to source
+ * table); throws when that name already holds another table's rows, which no one could tell apart.
+ */
+export function holdAs(names: Map<string, string>, o: { table: string; deviceTable: string }): void {
+  const known = names.get(o.deviceTable);
+  if (known !== undefined && known !== o.table) {
+    throw new Error(`sends ${o.table} rows as ${o.deviceTable}, a name devices already hold ${known} rows under; rows of the two could not be told apart`);
+  }
+  names.set(o.deviceTable, o.table);
+}
+
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 export interface AuditScope {
@@ -129,6 +142,8 @@ export interface AuditScope {
   synced: string[];
   /** Tables the stream queries read, synced or not. */
   reads: string[];
+  /** Each table name devices hold, with the synced table its rows come from (the same name unless aliased). */
+  deviceTables: Record<string, string>;
   findings: Finding[];
 }
 
@@ -140,6 +155,7 @@ export function auditScope(streams: Stream[], kind: "streams" | "bucket definiti
   const check = kind === "streams" ? "streams" : "sync rules";
   const synced = new Set<string>();
   const reads = new Set<string>();
+  const deviceTables = new Map<string, string>();
   const findings: Finding[] = [];
   let queries = 0;
   for (const s of streams) {
@@ -159,6 +175,7 @@ export function auditScope(streams: Stream[], kind: "streams" | "bucket definiti
     for (const q of s.queries) {
       try {
         const o = outputTable(q.sql);
+        holdAs(deviceTables, o);
         synced.add(o.table);
         for (const r of [...o.reads, ...tablesNamed(q.sql)]) reads.add(r);
         queries++;
@@ -171,5 +188,5 @@ export function auditScope(streams: Stream[], kind: "streams" | "bucket definiti
     findings.push({ status: "ok", check, detail: `${count(streams.length, kind === "streams" ? "stream" : "bucket definition")}, ${count(queries, "query", "queries")}, sending ${[...synced].sort().join(", ") || "nothing"}` });
   }
   if (!synced.size && !findings.some((f) => f.status === "fail")) findings.push({ status: "fail", check, detail: `no ${kind === "streams" ? "stream" : "bucket definition"} sends any table` });
-  return { synced: [...synced].sort(), reads: [...reads].sort(), findings };
+  return { synced: [...synced].sort(), reads: [...reads].sort(), deviceTables: Object.fromEntries([...deviceTables].sort()), findings };
 }

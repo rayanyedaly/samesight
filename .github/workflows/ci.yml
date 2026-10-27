@@ -113,7 +113,7 @@ jobs:
   audit:
     name: audit mode on the to-do list demo
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -155,7 +155,7 @@ jobs:
   roles:
     name: audit mode on the roles app
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -166,19 +166,27 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Supabase only; each audit below starts its own PowerSync (auto-start) and removes it.
       - run: pnpm --filter audit-roles stack:up
-      # Claim discovery and the catalog on an app whose rules read app_metadata.
+      # Claim discovery, the catalog and the access token hook's rows on an app whose rules
+      # read app_metadata and claims the hook adds.
       - run: pnpm --filter @samesight/verify test:roles
-      # Every policy and stream, the role and org ones included, is seen both ways (a fixed
-      # seed, so a changed summary replays its datasets).
+      # Every policy and stream, the role, org and team ones included, is seen both ways (a
+      # fixed seed, so a changed summary replays its datasets). Eight datasets: with the
+      # hook's teams in the mix, four at this seed never put an archived document before a
+      # reader the restrictive policy keeps it from.
       - name: samesight-verify audit
         run: >-
-          timeout 300 bash scripts/ci/verify-coverage.sh examples/audit-roles
-          "8 of 8 RLS read policies on synced tables were seen both allowing and refusing a run user a row\. 7 of 7 stream/table pairs both sent and withheld a row\."
-          --sync-config sync-config.yaml --runs 4 --seed 7
+          timeout 600 bash scripts/ci/verify-coverage.sh examples/audit-roles
+          "9 of 9 RLS read policies on synced tables were seen both allowing and refusing a run user a row\. 8 of 8 stream/table pairs both sent and withheld a row\."
+          --sync-config sync-config.yaml --runs 8 --seed 7 --time-limit 300
       # Run users hold the roles the rules compare: a leak only editors see must be caught.
       - name: samesight-verify audit on a planted editor leak
         working-directory: examples/audit-roles
         run: timeout 420 pnpm run verify:planted
+      # Run users hold the team roles the hook adds from their memberships: a leak only team
+      # members see must be caught.
+      - name: samesight-verify audit on a planted team leak
+        working-directory: examples/audit-roles
+        run: timeout 420 pnpm run verify:planted-team
       - name: nothing left behind
         if: ${{ !cancelled() }}
         run: bash scripts/ci/left-behind.sh supabase_db_samesight-audit-roles powersync

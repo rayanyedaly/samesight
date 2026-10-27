@@ -58,3 +58,9 @@ enable_confirmations = false
 # more than the CLI's default allowance of sign-ins per five minutes from one address.
 [auth.rate_limit]
 sign_in_sign_ups = 1000
+
+# The hook in supabase/migrations adds the user's team and role there to every token. Auth
+# reads this when it starts: restart the stack (stack:down, stack:up) after changing it.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/custom_access_token_hook"

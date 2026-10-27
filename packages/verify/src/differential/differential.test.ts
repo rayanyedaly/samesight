@@ -1,7 +1,8 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { compare, normalize } from "./compare.ts";
-import { rowsFromOps, streamOfBucket } from "./device.ts";
+import { type Flow, rowsFromOps, streamOfBucket, watchErrors } from "./device.ts";
+import { brokeDown } from "./run.ts";
 import { type ColumnModel, insertOrder, parseCheck, sqlHints, type TableModel } from "./model.ts";
 import { rowKey } from "./rls.ts";
 import { columnArbitrary } from "./world.ts";
@@ -141,11 +142,90 @@ describe("rowsFromOps", () => {
     expect(hidden).toMatchObject({ kind: "hidden", streams: ["m7"], columns: ["internalNotes"] });
   });
 
+  it("reads an aliased row type as its source table, one row with a copy from each name", () => {
+    const typed = (row_type: string, bucket: string, data: Record<string, unknown>) => ({ bucket, row_type, row_id: "a", data: JSON.stringify(data) });
+    const rows = rowsFromOps(
+      [typed("l", '3#mine|0["u"]', { id: "a", name: "x" }), typed("lists", '3#all|0[]', { id: "a", name: "x" }), typed("Other", '3#o|0[]', { id: "a" }), typed("D", '3#d|0[]', { id: "a" })],
+      { l: "lists", lists: "lists", d: "documents" },
+    );
+    expect(rows).toEqual([
+      {
+        table: "lists",
+        id: "a",
+        data: { id: "a", name: "x" },
+        sources: [
+          { stream: "mine", columns: ["id", "name"] },
+          { stream: "all", columns: ["id", "name"] },
+        ],
+        copies: [
+          { stream: "mine", data: { id: "a", name: "x" } },
+          { stream: "all", data: { id: "a", name: "x" } },
+        ],
+      },
+      // Unknown types stay as they came; an alias the device kept in capitals is still found.
+      { table: "Other", id: "a", data: { id: "a" }, sources: [{ stream: "o", columns: ["id"] }], copies: [{ stream: "o", data: { id: "a" } }] },
+      { table: "documents", id: "a", data: { id: "a" }, sources: [{ stream: "d", columns: ["id"] }], copies: [{ stream: "d", data: { id: "a" } }] },
+    ]);
+  });
+
   it("compares each bucket's copy, so a wrong copy cannot hide behind a right one", () => {
     const rows = rowsFromOps([op('3#viewer|1["t"]', "a", { id: "a", title: "SECRET" }), op('3#admin|1["t"]', "a", { id: "a", title: "public" })]);
     const model: TableModel[] = [{ ...table("Inspection"), columns: [column({ name: "id", type: "uuid" }), column({ name: "title" })] }];
     expect(compare(rows, new Map([[rowKey("Inspection", "a"), { id: "a", title: "public" }]]), new Map(), model)).toEqual([
       expect.objectContaining({ kind: "differs", columns: ["title"] }),
     ]);
+  });
+});
+
+describe("watchErrors", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("gives up once the service has kept failing for the window, and not before", () => {
+    vi.useFakeTimers();
+    let flow: Flow = { connected: false, downloading: false };
+    const gaveUp: string[] = [];
+    watchErrors(() => flow, 10_000, (e) => gaveUp.push(e.message));
+    vi.advanceTimersByTime(5_000);
+    flow = { connected: false, downloading: false, error: new Error("fetch failed") };
+    vi.advanceTimersByTime(9_900);
+    expect(gaveUp).toEqual([]);
+    vi.advanceTimersByTime(500);
+    expect(gaveUp).toEqual(["fetch failed"]);
+    vi.advanceTimersByTime(30_000);
+    expect(gaveUp).toEqual(["fetch failed"]);
+  });
+
+  it("waits out a first sync after an error the service recovered from, though the SDK keeps the error set", () => {
+    vi.useFakeTimers();
+    const error = new Error("fetch failed");
+    let flow: Flow = { connected: false, downloading: false, error };
+    const gaveUp: string[] = [];
+    const stop = watchErrors(() => flow, 10_000, (e) => gaveUp.push(e.message));
+    vi.advanceTimersByTime(5_000);
+    // The retry connects; the error stays set until a sync completes, as @powersync/common keeps it.
+    flow = { connected: true, downloading: false, error };
+    vi.advanceTimersByTime(20_000);
+    flow = { connected: true, downloading: true, error };
+    vi.advanceTimersByTime(30_000);
+    expect(gaveUp).toEqual([]);
+    // Disconnected again: the window counts from there.
+    flow = { connected: false, downloading: false, error: new Error("second") };
+    vi.advanceTimersByTime(9_000);
+    expect(gaveUp).toEqual([]);
+    vi.advanceTimersByTime(1_500);
+    expect(gaveUp).toEqual(["second"]);
+    stop();
+  });
+});
+
+describe("brokeDown", () => {
+  it("tells a run that could not finish its datasets from one that found something", () => {
+    const fail = (detail: string) => ({ status: "fail" as const, check: "differential", detail });
+    expect(brokeDown([fail("the run failed: Error: no complete sync from http://x: fetch failed")])).toBe(true);
+    expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows (then a run failed: Error: fetch failed)):\n    u0 received ...")])).toBe(true);
+    expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows):\n    u0 received ...")])).toBe(false);
+    expect(brokeDown([{ status: "warn", check: "differential", detail: "the run failed: x" }])).toBe(false);
   });
 });

@@ -53,7 +53,14 @@ export async function checkWriteEscape(s: Run, world: World, prepare?: (client: 
 
   await rolledBack(s.client, async () => {
     if (prepare) await prepare(s.client);
-    const inserted = await insertWorld(s.client, s.tables, world, s.fixed);
+    // Generated rows may point at rows kept for the run (the access token hook's teams).
+    const generated = await insertWorld(s.client, s.tables, world, s.fixed, s.existing);
+    // Rows kept for the run (the access token hook's) are copied too: one a user could write but
+    // not read back is planted data like any other. (What the hook would make of it at the
+    // next sign-in is not checked: no one signs in again.)
+    const fixedRows = s.fixedRows ?? [];
+    const inserted = [...generated, ...fixedRows];
+    const tables = [...s.tables, ...s.model.filter((t) => !s.tables.includes(t) && fixedRows.some((r) => r.table === t.name))];
     const as = async (u: Member) => {
       await s.client.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify(s.sessions.get(u.id)?.claims ?? {})]);
     };
@@ -71,7 +78,7 @@ export async function checkWriteEscape(s: Run, world: World, prepare?: (client: 
     const attempt = async (u: Member, table: string, key: string, values: Record<string, unknown>, c: TableCounts): Promise<{ code?: string; constraint?: string }> => {
       const row = { ...values, [key]: prefixedUuid(s.fixed.prefix) };
       const cols = Object.keys(row);
-      const t = s.tables.find((x) => x.name === table);
+      const t = tables.find((x) => x.name === table);
       const refs = (t?.columns ?? []).filter((col) => col.type === "uuid" && col.name !== key && row[col.name] !== undefined && row[col.name] !== null).map((col) => `${col.name} ${label(row[col.name])}`);
       c.tried++;
       await s.client.query("savepoint probe");
@@ -116,7 +123,7 @@ export async function checkWriteEscape(s: Run, world: World, prepare?: (client: 
     for (const u of s.fixed.users) {
       await s.client.query("set local role authenticated");
       await as(u);
-      for (const t of s.tables) {
+      for (const t of tables) {
         const [key] = t.primaryKey;
         const keyType = t.columns.find((c) => c.name === key)?.type;
         if (t.primaryKey.length !== 1 || !key || keyType !== "uuid") {

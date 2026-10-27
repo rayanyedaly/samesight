@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseSyncConfig } from "./config.ts";
 import { parseStreams } from "./streams.ts";
 import { auditScope, outputTable, tablesNamed } from "./scope.ts";
 
@@ -6,18 +7,38 @@ const config = (streams: string[]) => ["config:", "  edition: 3", "streams:", ..
 
 describe("outputTable", () => {
   it("reads the table a query sends, alone or through joins", () => {
-    expect(outputTable("SELECT * FROM lists WHERE owner_id = auth.user_id()")).toMatchObject({ table: "lists", reads: ["lists"] });
-    expect(outputTable("SELECT id, name FROM public.lists")).toMatchObject({ table: "lists", reads: ["lists"] });
-    expect(outputTable("SELECT todos.* FROM todos INNER JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()")).toMatchObject({
+    expect(outputTable("SELECT * FROM lists WHERE owner_id = auth.user_id()")).toEqual({ table: "lists", deviceTable: "lists", reads: ["lists"], aliases: { lists: "lists" } });
+    expect(outputTable("SELECT id, name FROM public.lists")).toEqual({ table: "lists", deviceTable: "lists", reads: ["lists"], aliases: { lists: "lists" } });
+    expect(outputTable("SELECT todos.* FROM todos INNER JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()")).toEqual({
       table: "todos",
+      deviceTable: "todos",
       reads: ["todos", "lists"],
+      aliases: { todos: "todos", lists: "lists" },
     });
     // A join's alias names its table.
-    expect(outputTable("SELECT todos.* FROM todos JOIN lists l ON todos.list_id = l.id")).toEqual({ table: "todos", reads: ["todos", "lists"], aliases: { todos: "todos", l: "lists" } });
+    expect(outputTable("SELECT todos.* FROM todos JOIN lists l ON todos.list_id = l.id")).toEqual({
+      table: "todos",
+      deviceTable: "todos",
+      reads: ["todos", "lists"],
+      aliases: { todos: "todos", l: "lists" },
+    });
     // A qualified column renamed with AS, as PowerSync's group chat demo writes it.
-    expect(outputTable("SELECT profiles.id, profiles.id as profile_id FROM profiles JOIN messages ON messages.recipient_id = profiles.id")).toMatchObject({
+    expect(outputTable("SELECT profiles.id, profiles.id as profile_id FROM profiles JOIN messages ON messages.recipient_id = profiles.id")).toEqual({
       table: "profiles",
+      deviceTable: "profiles",
       reads: ["profiles", "messages"],
+      aliases: { profiles: "profiles", messages: "messages" },
+    });
+  });
+
+  it("names the device table after the output table's alias, as PowerSync does", () => {
+    expect(outputTable("SELECT * FROM documents d WHERE d.owner_id = auth.user_id()")).toEqual({ table: "documents", deviceTable: "d", reads: ["documents"], aliases: { d: "documents" } });
+    expect(outputTable("SELECT * FROM public.lists AS mine")).toEqual({ table: "lists", deviceTable: "mine", reads: ["lists"], aliases: { mine: "lists" } });
+    expect(outputTable("SELECT t.* FROM todos AS t JOIN lists l ON t.list_id = l.id")).toEqual({
+      table: "todos",
+      deviceTable: "t",
+      reads: ["todos", "lists"],
+      aliases: { t: "todos", l: "lists" },
     });
   });
 
@@ -25,8 +46,6 @@ describe("outputTable", () => {
     expect(() => outputTable("SELECT * FROM a JOIN b ON a.x = b.y")).toThrow(/across a join/);
     expect(() => outputTable("SELECT a.id, b.id FROM a JOIN b ON a.x = b.y")).toThrow(/more than one table/);
     expect(() => outputTable("SELECT x.* FROM a JOIN b ON a.x = b.y")).toThrow(/does not name/);
-    expect(() => outputTable("SELECT * FROM lists AS mine")).toThrow(/calls lists mine/);
-    expect(() => outputTable("SELECT t.* FROM todos AS t JOIN lists l ON t.list_id = l.id")).toThrow(/calls todos t/);
     expect(() => outputTable("SELECT * FROM a LEFT JOIN b ON a.x = b.y")).toThrow(/only \[INNER\] JOIN/);
     expect(() => outputTable("SELECT * FROM a JOIN b USING (x)")).toThrow(/without ON/);
     expect(() => outputTable("SELECT * FROM auth.users")).toThrow(/outside public/);
@@ -68,7 +87,49 @@ describe("auditScope", () => {
       ),
     );
     expect(s.synced).toEqual(["lists", "todos"]);
+    expect(s.deviceTables).toEqual({ lists: "lists", todos: "todos" });
     expect(s.findings).toEqual([expect.objectContaining({ status: "ok", detail: "1 stream, 2 queries, sending lists, todos" })]);
+  });
+
+  it("maps an aliased output table back to its source, and fails when one device name would hold two tables", () => {
+    const aliased = auditScope(
+      parseStreams(
+        config([
+          "  mine:",
+          "    auto_subscribe: true",
+          "    queries:",
+          "      - SELECT * FROM lists l WHERE l.owner_id = auth.user_id()",
+          "      - SELECT t.* FROM todos t JOIN lists ON t.list_id = lists.id",
+          "      - SELECT * FROM lists WHERE archived = false",
+        ]),
+      ),
+    );
+    expect(aliased.synced).toEqual(["lists", "todos"]);
+    expect(aliased.deviceTables).toEqual({ l: "lists", lists: "lists", t: "todos" });
+    expect(aliased.findings.map((f) => f.status)).toEqual(["ok"]);
+
+    const clash = auditScope(
+      parseStreams(config(["  a:", "    auto_subscribe: true", "    queries:", "      - SELECT * FROM todos AS lists", "      - SELECT * FROM lists"])),
+    );
+    expect(clash.findings).toEqual([
+      expect.objectContaining({
+        status: "fail",
+        detail: "a queries[1] sends lists rows as lists, a name devices already hold todos rows under; rows of the two could not be told apart: SELECT * FROM lists",
+      }),
+    ]);
+    // The other order, across streams.
+    const reverse = auditScope(
+      parseStreams(config(["  a:", "    auto_subscribe: true", "    query: SELECT * FROM lists", "  b:", "    auto_subscribe: true", "    query: SELECT * FROM todos AS lists"])),
+    );
+    expect(reverse.findings).toEqual([expect.objectContaining({ status: "fail", detail: expect.stringMatching(/^b query sends todos rows as lists, a name devices already hold lists rows under/) })]);
+  });
+
+  it("maps an aliased data query of bucket definitions back to its source", () => {
+    const s = auditScope(
+      parseSyncConfig("bucket_definitions:\n  b:\n    parameters: SELECT request.user_id() AS user_id\n    data:\n      - SELECT t.* FROM todos t WHERE t.owner_id = bucket.user_id\n").streams,
+      "bucket definitions",
+    );
+    expect([s.synced, s.deviceTables, s.findings.map((f) => f.status)]).toEqual([["todos"], { t: "todos" }, ["ok"]]);
   });
 
   it("adds the tables CTEs and subqueries read, so their branches get rows", () => {
