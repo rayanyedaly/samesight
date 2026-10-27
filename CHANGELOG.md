@@ -52,6 +52,7 @@ The first published release.
 - A differential counterexample ends with a `replay` line: the command that replays the run, with its own flags and the seed that failed, shell-quoted. Findings carry it as `replay`.
 - `samesight-verify` prints in colour, with a symbol before each `FAIL`, `warn` and `ok`, when its output is a terminal; it stays plain when piped, in CI, under `TERM=dumb` or under `NO_COLOR`, and `FORCE_COLOR` turns colour on. `formatFindings` takes a `color` argument, off by default.
 - `samesight-verify` exits 0 on a pass, 1 when a check found something, and 2 when it could not run (a flag, a missing file, a database or service it cannot reach, a differential whose service broke down), so CI can tell a leak from a broken run.
+- `--json` (both modes) writes one JSON report to stdout, with the text on stderr, on exits 0, 1 and 2: the result and exit code, the seed, each section's findings and the differential's row reports. Its JSON Schema ships as `@samesight/verify/schema/report.schema.json`.
 - The offline checks are exported for use in tests.
 
 ### @samesight/supabase

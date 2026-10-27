@@ -4,11 +4,11 @@ import { describe, expect, it } from "vitest";
 
 const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
-/** Runs the CLI; resolves with its exit code and stderr. */
+/** Runs the CLI; resolves with its exit code, stdout and stderr. */
 const cli = (args: string[]) =>
-  new Promise<{ code: number | string; stderr: string }>((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { timeout: 15_000 }, (e, _stdout, stderr) =>
-      resolve({ code: e ? (typeof e.code === "number" ? e.code : `killed (${e.signal}): timed out?`) : 0, stderr }),
+  new Promise<{ code: number | string; stdout: string; stderr: string }>((resolve) => {
+    execFile(process.execPath, [CLI, ...args], { timeout: 15_000 }, (e, stdout, stderr) =>
+      resolve({ code: e ? (typeof e.code === "number" ? e.code : `killed (${e.signal}): timed out?`) : 0, stdout, stderr }),
     );
   });
 
@@ -32,13 +32,32 @@ describe("samesight-verify audit flags", () => {
   it("takes --compose with --static", { timeout: 20_000 }, async () => {
     const { code, stderr } = await cli(["audit", "--static", "--compose", "docker-compose.yml", "--sync-config", "nowhere.yaml"]);
     expect(stderr).not.toMatch(/--compose checks/);
-    expect(stderr).toMatch(/No sync config at/);
+    expect(stderr).toMatch(/no sync config at/);
     expect(code).toBe(2);
   });
 
   it("exits 2 on a flag it cannot read, and on a policy it cannot find", { timeout: 20_000 }, async () => {
     expect((await cli(["audit", "--runs", "many"])).code).toBe(2);
     expect((await cli(["--policy", "nowhere.policy.ts"])).code).toBe(2);
+  });
+
+  it("with --json, writes one document to stdout on exit 2, the message on stderr too", { timeout: 20_000 }, async () => {
+    for (const [args, mode, error] of [
+      [["audit", "--runs", "many", "--json"], "audit", /--runs must be a whole number/],
+      [["--json", "--bogus"], "policy", /Unknown option '--bogus'/],
+      [["audit", "--json", "--seed", "3", "--sync-config", "nowhere.yaml"], "audit", /no sync config at .*nowhere\.yaml/],
+    ] as const) {
+      const { code, stdout, stderr } = await cli([...args]);
+      expect(code, args.join(" ")).toBe(2);
+      const doc = JSON.parse(stdout);
+      expect(doc).toMatchObject({ version: 1, tool: "samesight-verify", mode, result: "incomplete", exitCode: 2, sections: [] });
+      expect(doc.error).toMatch(error);
+      expect(stderr).toMatch(error);
+    }
+    // The help, a pass, goes to stderr, and the document says it passed.
+    const help = await cli(["--help", "--json"]);
+    expect(help.stderr).toMatch(/Usage: samesight-verify/);
+    expect(JSON.parse(help.stdout)).toMatchObject({ result: "passed", exitCode: 0 });
   });
 
   it.each([["stdout"], ["stderr"], ["stdout", "stderr"]])(
