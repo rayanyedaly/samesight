@@ -14,11 +14,13 @@ planted=sync-config.planted.yaml
 case "$which" in
   editor)
     sed "s/^\( *- SELECT \* FROM documents WHERE auth.parameter('\$.app_metadata.role') = 'editor'\) AND status = 'published'$/\1/" sync-config.yaml > "$planted"
-    caught="u[0-9]+ \([^)]*app_metadata\.role=editor[,)].*received documents .*\(stream editor\); RLS returns no such row"
+    caught="^ *leak: u[0-9]+ \([^)]*app_metadata\.role=editor[,)].*received documents .*; RLS returns no such row"
+    stream=editor
     ;;
   team)
     sed "s/^\( *- SELECT \* FROM documents WHERE team_id = auth.parameter('team_id')\) AND auth.parameter('team_role') = 'lead'\( AND status != 'archived'\)$/\1\2/" sync-config.yaml > "$planted"
-    caught="u[0-9]+ \([^)]*team_role=member[,)].*received documents .*\(stream team\); RLS returns no such row"
+    caught="^ *leak: u[0-9]+ \([^)]*team_role=member[,)].*received documents .*; RLS returns no such row"
+    stream=team
     ;;
   *)
     echo "verify-planted.sh: plant editor or team, not $which" >&2
@@ -45,7 +47,8 @@ if [ "$code" -ne 1 ]; then
   echo "verify-planted.sh: the audit exited $code, not 1 (findings)" >&2
   exit 1
 fi
-if ! grep -qE "$caught" "$log"; then
+# The leak, and on the line after it the stream that sent it.
+if ! grep -A1 -E "$caught" "$log" | grep -qE "^ *sent by +stream $stream"; then
   echo "verify-planted.sh: the audit failed, but not on the planted $which leak" >&2
   exit 1
 fi

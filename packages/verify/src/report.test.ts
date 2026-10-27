@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exitCode, type Finding, failed, formatFindings } from "./report.ts";
+import { exitCode, type Finding, failed, formatFindings, formatRow, type RowReport } from "./report.ts";
 
 describe("report", () => {
   it("fails only on a fail, never on warnings", () => {
@@ -23,5 +23,24 @@ describe("exitCode", () => {
     expect(exitCode([f("fail", true)])).toBe(2);
     // What it found counts for more than what it could not run.
     expect(exitCode([f("fail", true), f("fail")])).toBe(1);
+  });
+});
+
+describe("formatRow", () => {
+  const leak: RowReport = {
+    kind: "leak",
+    summary: "",
+    user: { label: "u1 (app_metadata.role=editor)", id: "u1" },
+    table: "lists",
+    id: "5a3e",
+    row: "lists 5a3e (owner_id u0)",
+    sentBy: [{ stream: "user_data" }, { stream: "shared", query: "queries[1]" }],
+  };
+
+  it("says what happened, then which streams sent it, each on its own line", () => {
+    expect(formatRow(leak)).toEqual(["leak: u1 (app_metadata.role=editor) received lists 5a3e (owner_id u0); RLS returns no such row for this user", "  sent by    stream user_data; stream shared, queries[1]"]);
+    expect(formatRow({ ...leak, kind: "hidden", columns: ["notes"], user: { ...leak.user, role: "viewer" } })[0]).toBe("hidden: u1 (app_metadata.role=editor) received lists 5a3e (owner_id u0) with notes, which the policy hides from viewer");
+    // A gap was sent by nothing.
+    expect(formatRow({ ...leak, kind: "gap", sentBy: [] })).toEqual(["gap: RLS lets u1 (app_metadata.role=editor) read lists 5a3e (owner_id u0), but no stream sent it"]);
   });
 });

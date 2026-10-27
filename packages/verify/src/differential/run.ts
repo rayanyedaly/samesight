@@ -10,7 +10,7 @@ import type pg from "pg";
 import { type IR, ident } from "samesight/compiler";
 import { leftForNext, type Mode } from "../autostart/teardown.ts";
 import { connectLocal, rows } from "../db.ts";
-import type { Finding } from "../report.ts";
+import { type Finding, formatRow, type RowReport, rowSentence } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { show } from "../audit/assign.ts";
 import { claimKey } from "../audit/claims.ts";
@@ -632,8 +632,8 @@ export interface DifferentialResult {
   findings: Finding[];
   /** Datasets tried before the first failure; shrinking runs are not counted. */
   runs: number;
-  /** The shrunk failing world's problems, in plain words. */
-  counterexample?: string[];
+  /** The shrunk failing world's problems, as row reports. */
+  counterexample?: RowReport[];
   /** The time limit ended the run before every dataset. */
   stopped?: boolean;
 }
@@ -716,12 +716,12 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const visible = new Map<string, number>();
   const received = new Map<string, number>();
   // Gaps that are only warnings (audit mode): one example per kind of gap, ids aside.
-  const gaps = new Map<string, string>();
+  const gaps = new Map<string, RowReport>();
   const failing = (all: UserProblems[]): UserProblems[] => {
     const split = splitProblems(all, s.gaps);
-    for (const line of describeFailures(s, split.narrower)) {
-      const key = line.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, "…");
-      if (!gaps.has(key)) gaps.set(key, line);
+    for (const r of reportRows(s, split.narrower)) {
+      const key = r.summary.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, "…");
+      if (!gaps.has(key)) gaps.set(key, r);
     }
     return split.failing;
   };
@@ -734,7 +734,8 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       {
         status: "warn",
         check,
-        detail: `RLS lets users read rows no stream sends them (sync is narrower than RLS: fine if intended, but RLS alone guards the REST API), for example:\n${shown.map((l) => `    ${l}`).join("\n")}${more}`,
+        detail: `RLS lets users read rows no stream sends them (sync is narrower than RLS: fine if intended, but RLS alone guards the REST API), for example:\n${shown.flatMap(formatRow).map((l) => `    ${l}`).join("\n")}${more}`,
+        rows: shown,
       },
     ];
   };
@@ -777,7 +778,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const crashed: Finding[] = x.crash === undefined ? [] : [{ status: "fail", check, detail: `then ${RUN_FAILED}${String(x.crash)}`, incomplete: true }];
   if (x.lastFailing) {
     const world = x.lastFailing;
-    const counterexample = describeFailures(s, failing(await withWorld(s, world, () => compareAll(s))));
+    const counterexample = reportRows(s, failing(await withWorld(s, world, () => compareAll(s))));
     if (!counterexample.length) return fail(`a dataset failed (seed ${x.seed}) but passed when run again: devices may not have caught up${x.crash === undefined ? "" : ` (then ${RUN_FAILED}${String(x.crash)})`}`, x.datasets, true);
     return {
       runs: x.datasets,
@@ -786,7 +787,8 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
         {
           status: "fail",
           check,
-          detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}):\n${counterexample.map((l) => `    ${l}`).join("\n")}`,
+          detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}):\n${counterexample.flatMap(formatRow).map((l) => `    ${l}`).join("\n")}`,
+          rows: counterexample,
         },
         ...crashed,
       ]),
@@ -848,20 +850,27 @@ function describeRow(s: Run, table: string, id: string, row: Record<string, unkn
   return `${table} ${id}${parts.length ? ` (${parts.join(", ")})` : ""}`;
 }
 
+/** Each problem as a row report: who, which row, which streams sent it. */
+export function reportRows(s: Run, failures: UserProblems[]): RowReport[] {
+  return failures.flatMap(({ user, problems }) =>
+    problems.map((p) => {
+      const r = {
+        kind: p.kind,
+        user: { label: user.label, id: user.id, role: user.role },
+        table: p.table,
+        id: p.id,
+        row: describeRow(s, p.table, p.id, p.row),
+        ...(p.columns ? { columns: p.columns } : {}),
+        sentBy: p.streams.map((stream) => ({ stream })),
+      };
+      return { ...r, summary: `${rowSentence(r, p.streams.length ? ` (stream ${p.streams.join(", ")})` : "")}.` };
+    }),
+  );
+}
+
+/** Each problem in a sentence: who, which row, which streams, which way. */
 export function describeFailures(s: Run, failures: UserProblems[]): string[] {
-  const out: string[] = [];
-  for (const { user, problems } of failures) {
-    for (const p of problems) {
-      const row = describeRow(s, p.table, p.id, p.row);
-      const via = p.streams.length ? ` (stream ${p.streams.join(", ")})` : "";
-      if (p.kind === "leak") out.push(`${user.label} received ${row}${via}; RLS returns no such row for this user.`);
-      else if (p.kind === "hidden") out.push(`${user.label} received ${row} with ${p.columns?.join(", ")}${via}, which the policy hides from ${user.role}.`);
-      else if (p.kind === "gap") out.push(`RLS lets ${user.label} read ${row}, but no stream sent it.`);
-      else if (p.kind === "unsent") out.push(`${user.label}'s copy of ${row} lacks ${p.columns?.join(", ")}, which RLS lets them read${via}.`);
-      else out.push(`${user.label}'s copy of ${row} differs from the database in ${p.columns?.join(", ")}${via}.`);
-    }
-  }
-  return out;
+  return reportRows(s, failures).map((r) => r.summary);
 }
 
 export async function tearDown(s: Run): Promise<void> {

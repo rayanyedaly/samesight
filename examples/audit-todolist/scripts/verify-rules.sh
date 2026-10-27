@@ -31,7 +31,7 @@ if [ "$code" -ne 1 ]; then
   echo "verify-rules.sh: the audit exited $code, not 1 (findings)" >&2
   exit 1
 fi
-if ! grep -q "received lists .*RLS returns no such row" "$log"; then
+if ! grep -qE "^ *leak: u[0-9]+ .*received lists .*; RLS returns no such row" "$log"; then
   echo "verify-rules.sh: the audit failed, but not on the planted lists leak" >&2
   exit 1
 fi
