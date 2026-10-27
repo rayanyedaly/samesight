@@ -74,7 +74,8 @@ Audit options (a project with hand-written RLS and sync config, no policy file):
                         for this run (needs Docker) and removes it, and all it made, at the end
   --keep-powersync      leave the service audit started up, for the next audit of the project to
                         reuse (the next audit that starts PowerSync without the flag removes it)
-  --compose <file>      with --powersync or --static: the compose file that runs your PowerSync, to check its version floor
+  --compose <file>      with --powersync or --static: the compose file that runs your PowerSync,
+                        to check its version floor
   --publication <name>  with --powersync or --static: the publication to check (default: powersync)
   --static, --runs, --seed, --time-limit   as above
 
