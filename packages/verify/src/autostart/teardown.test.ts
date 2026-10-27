@@ -135,25 +135,42 @@ describe("onSignals", () => {
     expect(events).toEqual(["exit 141"]);
   });
 
-  it("exits at once on the same signal twice, and when the teardown outlasts its grace", async () => {
+  it("exits at once on the same signal again a second later, not on one sent twice at once (npx forwards it)", async () => {
+    let time = 0;
+    const clock = () => time;
     const twice = proc();
     const hung = new Teardown(() => {});
     hung.add("hung", () => new Promise(() => {}));
-    onSignals(hung, () => {}, twice.p);
+    onSignals(hung, () => {}, twice.p, 120_000, clock);
+    twice.p.emit("SIGTERM");
     twice.p.emit("SIGTERM");
     expect(twice.exits).toEqual([]);
+    time = 1500;
     twice.p.emit("SIGTERM");
     expect(twice.exits).toEqual([143]);
+  });
 
+  it("exits when the teardown outlasts its grace, whatever began it", async () => {
     const late = proc();
     const slow = new Teardown(() => {});
     slow.add("hung", () => new Promise(() => {}));
     onSignals(slow, () => {}, late.p, 20);
     late.p.emit("SIGHUP");
     expect(await late.exited).toBe(129);
+
+    // Begun by the run itself (its end): the grace starts with the signal.
+    const own = proc();
+    const t = new Teardown(() => {});
+    t.add("hung", () => new Promise(() => {}));
+    onSignals(t, () => {}, own.p, 20);
+    void t.run();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(own.exits).toEqual([]);
+    own.p.emit("SIGTERM");
+    expect(await own.exited).toBe(143);
   });
 
-  it("leaves a teardown the run began itself to finish and report; one Ctrl+C then only arms the exit", async () => {
+  it("leaves a teardown the run began itself to finish and report", async () => {
     const { p, exits } = proc();
     const t = new Teardown(() => {});
     let finish: () => void = () => {};
@@ -167,26 +184,28 @@ describe("onSignals", () => {
     await done;
     await new Promise((r) => setTimeout(r, 5));
     expect(exits).toEqual([]);
-    p.emit("SIGINT");
-    expect(exits).toEqual([130]);
   });
 
-  it("exits at once on a second Ctrl+C, whatever began the teardown, and stops listening when told", async () => {
+  it("exits at once on Ctrl+C again, whatever began the teardown, and stops listening when told", async () => {
+    let time = 0;
+    const clock = () => time;
     const { p, exits } = proc();
     const t = new Teardown(() => {});
     t.add("slow", () => new Promise(() => {}));
-    onSignals(t, () => {}, p);
+    onSignals(t, () => {}, p, 120_000, clock);
     p.emit("SIGINT");
+    time = 1000;
     p.emit("SIGINT");
     expect(exits).toEqual([130]);
 
     const after = proc();
     const slow = new Teardown(() => {});
     slow.add("slow", () => new Promise(() => {}));
-    onSignals(slow, () => {}, after.p);
+    onSignals(slow, () => {}, after.p, 120_000, clock);
     after.p.emit("SIGTERM");
     after.p.emit("SIGINT");
     expect(after.exits).toEqual([]);
+    time = 2500;
     after.p.emit("SIGINT");
     expect(after.exits).toEqual([143]);
 

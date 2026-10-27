@@ -25,13 +25,14 @@ export const execDocker: Exec = (args, env) =>
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (d: string) => {
+    // First: a spawn that fails (no docker, no file descriptors left) has no streams.
+    child.on("error", (err) => reject(Object.assign(err, { stdout, stderr })));
+    child.stdout?.setEncoding("utf8").on("data", (d: string) => {
       stdout += d;
     });
-    child.stderr.setEncoding("utf8").on("data", (d: string) => {
+    child.stderr?.setEncoding("utf8").on("data", (d: string) => {
       stderr += d;
     });
-    child.on("error", (err) => reject(Object.assign(err, { stdout, stderr })));
     child.on("close", (code, signal) => {
       if (code === 0) resolve({ stdout, stderr });
       else reject(Object.assign(new Error(`docker ${args[0] ?? ""} exited ${code ?? signal}`), { stdout, stderr }));

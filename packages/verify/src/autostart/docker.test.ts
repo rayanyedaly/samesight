@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { Docker, DockerError, type Exec } from "./docker.ts";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Docker, DockerError, type Exec, execDocker } from "./docker.ts";
 
 /** A fake docker: answers by the first argument, or fails the way the real CLI does. */
 function fake(answers: Record<string, string | Error>): { exec: Exec; calls: string[][] } {
@@ -74,5 +78,26 @@ describe("Docker.logs", () => {
     expect(await new Docker(exec).logs("x", 30)).toBe("ready\nFATAL: could not connect");
     const unended: Exec = async () => ({ stdout: "no newline", stderr: "FATAL" });
     expect(await new Docker(unended).logs("x", 30)).toBe("no newline\nFATAL");
+  });
+});
+
+describe.runIf(process.platform === "linux")("execDocker, with a docker stand-in on the PATH", () => {
+  it("runs it in a process group of its own, attaches stderr on failure, and reports a missing docker", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "samesight-docker-"));
+    try {
+      const script = join(dir, "docker");
+      writeFileSync(script, '#!/bin/sh\ncase "$1" in\n  pgid) ps -o pgid= -p $$ ;;\n  fail) echo "Error: boom" >&2; exit 3 ;;\nesac\n');
+      chmodSync(script, 0o755);
+      const PATH = `${dir}:/usr/bin:/bin`;
+      const own = execFileSync("ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim();
+      const { stdout } = await execDocker(["pgid"], { PATH });
+      expect(stdout.trim()).toMatch(/^\d+$/);
+      expect(stdout.trim()).not.toBe(own);
+      await expect(execDocker(["fail"], { PATH })).rejects.toMatchObject({ stderr: "Error: boom\n" });
+      await expect(new Docker((args) => execDocker(args, { PATH })).run(["fail"])).rejects.toThrow("docker fail failed: Error: boom");
+      await expect(new Docker((args) => execDocker(args, { PATH: "/nonexistent" })).check()).rejects.toThrow(/Docker is not installed/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

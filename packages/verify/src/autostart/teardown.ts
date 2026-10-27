@@ -75,30 +75,40 @@ export interface Signals {
  * (130, 143, 129); and when the output fails (a closed terminal, or a reader that left:
  * | head, | tee), exits 141 as on SIGPIPE (129 when SIGHUP comes first), or 1 for any
  * other output error. During it, a different signal does not cut it short; the same one
- * twice (Ctrl+C twice, a second SIGTERM) exits at once, and so does a teardown still
- * running after `graceMs`. A teardown begun by the run itself (its end, an error) is left
- * to finish and report; a signal then only arms the exit for a second one. Returns a
+ * again a second or more later (Ctrl+C again, a second SIGTERM) exits at once, and so
+ * does a teardown still running `graceMs` after the first. A teardown begun by the run
+ * itself (its end, an error) is left to finish and report. Returns a
  * function that stops listening.
  */
-export function onSignals(teardown: Teardown, log: (line: string) => void, proc: Signals = process, graceMs = 120_000): () => void {
+/** How far apart the same signal must come to count twice. */
+const REPEAT_MS = 1000;
+
+export function onSignals(
+  teardown: Teardown,
+  log: (line: string) => void,
+  proc: Signals = process,
+  graceMs = 120_000,
+  now: () => number = Date.now,
+): () => void {
   let code: number | undefined;
-  const seen = new Map<string, number>();
+  const first = new Map<string, number>();
   const end = (why: string, exitCode: number) => {
-    const count = (seen.get(why) ?? 0) + 1;
-    seen.set(why, count);
+    const at = now();
+    const firstAt = first.get(why);
+    if (firstAt === undefined) first.set(why, at);
     if (code !== undefined) {
-      // A broken output errors on each write: only a signal sent twice means "now".
-      if (count >= 2 && why !== "output closed") proc.exit(code);
+      // Only a signal sent again means "now": a broken output errors on each write, and
+      // the same signal can arrive twice at once (from the terminal, and forwarded by npx).
+      if (firstAt !== undefined && at - firstAt >= REPEAT_MS && why !== "output closed") proc.exit(code);
       return;
     }
     code = exitCode;
-    const already = teardown.started;
     try {
       log(`${why}: removing what this run started (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next audit that starts PowerSync)`);
     } catch {}
-    if (already) return;
     setTimeout(() => proc.exit(exitCode), graceMs).unref();
-    void teardown.run().then(() => proc.exit(exitCode));
+    // A teardown the run began itself finishes and reports on its own.
+    if (!teardown.started) void teardown.run().then(() => proc.exit(exitCode));
   };
   const handlers = [
     ["SIGINT", () => end("SIGINT", 130)],
