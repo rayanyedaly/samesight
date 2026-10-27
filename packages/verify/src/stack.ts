@@ -20,6 +20,8 @@ export interface Stack {
   powersync: string;
   /** Auth's shared HS256 secret, when `supabase status` prints one. */
   jwtSecret?: string;
+  /** The start of the service's replication slot names, when not powersync (auto-start's own). */
+  slotPrefix?: string;
 }
 
 /** Parses `KEY="value"` lines as `supabase status -o env` prints them. */
