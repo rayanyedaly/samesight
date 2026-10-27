@@ -142,9 +142,10 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
 
     // Each step that makes or removes something runs through teardown.step, so Ctrl+C
     // mid-start waits for it, and nothing is made after the teardown has run.
-    const leftovers = await teardown.step(() => sweep(docker, o.client, supabase.project));
+    const leftovers = await teardown.step(() => sweep(docker, o.client, supabase.project, o.log));
     if (leftovers.length) o.log(`removed what an earlier run left: ${leftovers.join(", ")}`);
     // Pulled before anything is created, so a failed pull leaves nothing to remove.
+    if (teardown.started) throw new Error("stopped");
     await ensureImage(docker, o.log);
 
     const run = runName();
@@ -212,9 +213,11 @@ async function keptRun(
   // Its storage must still be up too.
   if (!(await docker.containers([`name=^${containerName(run, "storage")}$`, "status=running"])).length) return null;
   const { rows } = await client.query<{ ok: boolean }>(
-    `select exists (select from pg_roles where rolname = $1)
-        and exists (select from pg_replication_slots where active and starts_with(slot_name, $2))
-        and coalesce((select bool_and(has_table_privilege($1, format('public.%I', t), 'select')) from unnest($3::text[]) t), true) as ok`,
+    // The privilege check runs only once the role is known to exist: it fails on a missing one.
+    `select case when exists (select from pg_roles where rolname = $1)
+                      and exists (select from pg_replication_slots where active and starts_with(slot_name, $2))
+                 then coalesce((select bool_and(has_table_privilege($1, format('public.%I', t), 'select')) from unnest($3::text[]) t), true)
+                 else false end as ok`,
     [`${PREFIX}${run}`, `${PREFIX}${run}_`, tables],
   );
   if (!rows[0]?.ok) return null;

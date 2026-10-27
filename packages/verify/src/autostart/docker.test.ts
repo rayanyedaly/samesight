@@ -72,5 +72,7 @@ describe("Docker.logs", () => {
   it("returns what the container wrote to stdout and stderr", async () => {
     const exec: Exec = async () => ({ stdout: "ready\n", stderr: "FATAL: could not connect\n" });
     expect(await new Docker(exec).logs("x", 30)).toBe("ready\nFATAL: could not connect");
+    const unended: Exec = async () => ({ stdout: "no newline", stderr: "FATAL" });
+    expect(await new Docker(unended).logs("x", 30)).toBe("no newline\nFATAL");
   });
 });

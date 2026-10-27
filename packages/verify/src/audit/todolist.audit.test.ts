@@ -53,9 +53,12 @@ afterAll(async () => {
   try {
     if (s) await tearDown(s);
   } finally {
-    left = (await started?.stop()) ?? [];
-    await own?.end();
-    await client?.end();
+    try {
+      left = (await started?.stop()) ?? [];
+    } finally {
+      await own?.end();
+      await client?.end();
+    }
   }
   expect(left).toEqual([]);
 });

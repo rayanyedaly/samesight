@@ -33,7 +33,8 @@ export class Teardown {
    */
   step<T>(fn: () => Promise<T>): Promise<T> {
     if (this.started) return Promise.reject(new Error("stopped"));
-    const p = fn();
+    // Recorded before the step begins, so a teardown begun at any point of it waits for it.
+    const p = Promise.resolve().then(fn);
     this.pending = p.catch(() => {});
     return p;
   }
@@ -57,38 +58,49 @@ export class Teardown {
   }
 }
 
-/** What onSignals needs of `process`. */
 type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
+/** What onSignals needs of `process`. */
 export interface Signals {
   once(event: Signal, listener: () => void): unknown;
   off(event: Signal, listener: () => void): unknown;
   exit(code: number): never;
+  stdout: Pick<NodeJS.EventEmitter, "on" | "off">;
+  stderr: Pick<NodeJS.EventEmitter, "on" | "off">;
 }
 
 /**
  * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP, then exits as a killed process would
- * (130, 143, 129). A second Ctrl+C during it exits at once. Returns a function that
- * stops listening.
+ * (130, 143, 129); and when the output has gone (a closed terminal, or a reader that left:
+ * | head, | tee), whose writes now fail, exits 141 as on SIGPIPE. A second Ctrl+C during
+ * it exits at once. Returns a function that stops listening.
  */
 export function onSignals(teardown: Teardown, log: (line: string) => void, proc: Signals = process): () => void {
-  const handle = (signal: Signal, code: number) => () => {
-    // A closed terminal, or a pipe whose reader has gone (| tee), makes every later write
-    // fail with EPIPE; unhandled, that would end the process before the teardown runs.
-    for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
+  let ending = false;
+  const end = (why: string, code: number) => {
+    if (ending) return;
+    ending = true;
     try {
-      log(`${signal}: removing what this run started (Ctrl+C again to leave it for the next run to remove)`);
+      log(`${why}: removing what this run started (Ctrl+C again to leave it for the next run to remove)`);
     } catch {}
     proc.once("SIGINT", () => proc.exit(code));
     void teardown.run().then(() => proc.exit(code));
   };
   const handlers = [
-    ["SIGINT", handle("SIGINT", 130)],
-    ["SIGTERM", handle("SIGTERM", 143)],
-    ["SIGHUP", handle("SIGHUP", 129)],
+    ["SIGINT", () => end("SIGINT", 130)],
+    ["SIGTERM", () => end("SIGTERM", 143)],
+    ["SIGHUP", () => end("SIGHUP", 129)],
   ] as const;
+  // Unhandled, a failed write would end the process at once, before any teardown.
+  const broken = (e: NodeJS.ErrnoException) => {
+    if (e.code === "EPIPE" || e.code === "EIO") end("output closed", 141);
+  };
   for (const [signal, fn] of handlers) proc.once(signal, fn);
+  proc.stdout.on("error", broken);
+  proc.stderr.on("error", broken);
   return () => {
     for (const [signal, fn] of handlers) proc.off(signal, fn);
+    proc.stdout.off("error", broken);
+    proc.stderr.off("error", broken);
   };
 }

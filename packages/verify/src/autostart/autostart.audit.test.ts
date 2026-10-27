@@ -91,6 +91,7 @@ describe("auto-start on the demo", () => {
 
   it("removes everything when its terminal closes (SIGHUP, with its output gone)", async () => {
     const { child } = await startChild();
+    expect((await leftovers()).length).toBeGreaterThan(0);
     const exit = exited(child);
     // A closed terminal, or a reader that went with it (| tee): every write now fails.
     child.stdout?.destroy();

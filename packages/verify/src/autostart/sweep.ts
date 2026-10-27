@@ -15,8 +15,8 @@ import { PROJECT_LABEL, removeContainers } from "./storage.ts";
 
 type Client = Pick<pg.Client, "query" | "escapeIdentifier" | "escapeLiteral">;
 
-/** Removes an earlier run's leftovers; resolves with what it removed, for the log. */
-export async function sweep(docker: Docker, client: Client, project: string): Promise<string[]> {
+/** Removes an earlier run's leftovers; resolves with what it removed, and logs what it could not. */
+export async function sweep(docker: Docker, client: Client, project: string, log: (line: string) => void = () => {}): Promise<string[]> {
   const removed: string[] = [];
   const containers = await docker.containers([`label=${PROJECT_LABEL}=${project}`]);
   if (containers.length) {
@@ -25,8 +25,13 @@ export async function sweep(docker: Docker, client: Client, project: string): Pr
   }
   const { rows: roles } = await client.query<{ role: string }>("select rolname as role from pg_roles where starts_with(rolname, $1)", [PREFIX]);
   for (const { role } of roles) {
-    // A slot still held keeps its role for the next sweep; the run goes on without it.
-    if (await tearDownReplication(client, { role, slotPrefix: `${role}_` }).then(() => true, () => false)) removed.push(role);
+    // A role that cannot go yet (its slot still held) is left for the next sweep; the run goes on.
+    try {
+      await tearDownReplication(client, { role, slotPrefix: `${role}_` });
+      removed.push(role);
+    } catch (e) {
+      log(`could not remove ${role} yet: ${(e as Error).message}; the next audit retries`);
+    }
   }
   const { rows: slots } = await client.query<{ slot: string }>(
     "select slot_name as slot from pg_replication_slots where not active and starts_with(slot_name, $1)",
