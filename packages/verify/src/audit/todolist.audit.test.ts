@@ -161,9 +161,15 @@ describe("overloaded policy functions on the demo's catalog", () => {
 
 describe("an access token hook on the demo's catalog", () => {
   const URI = "pg-functions://postgres/public/samesight_test_hook";
-  const plan = (sql: string[]) =>
+  // As Supabase's guide has it: no API role may execute the hook (the warning has its own case).
+  const REVOKE = `do $$ begin
+      if to_regprocedure('public.samesight_test_hook(jsonb)') is not null then
+        revoke execute on function public.samesight_test_hook(jsonb) from public, anon, authenticated;
+      end if;
+    end $$`;
+  const plan = (sql: string[], revoke = true) =>
     rolledBack(client, async () => {
-      for (const q of sql) await client.query(q);
+      for (const q of [...sql, ...(revoke ? [REVOKE] : [])]) await client.query(q);
       return planHook(client, URI, await policyFunctions(client));
     });
   // A plpgsql hook reading lists, and todos through a SQL-standard helper two levels down.
@@ -241,6 +247,21 @@ describe("an access token hook on the demo's catalog", () => {
     ]);
     expect(helper.tables).toEqual(["todos"]);
     expect(helper.findings).toEqual([]);
+  });
+
+  it("warns when the API roles can execute the hook, and on calls deeper than audit reads", async () => {
+    // The helper two levels down calls a third, which reads todos.
+    const deeper = [
+      "create function public.samesight_test_deepest(u uuid) returns bigint language sql stable return (select count(*) from public.todos where created_by = u)",
+      "create function public.samesight_test_owned(u uuid) returns bigint language sql stable return public.samesight_test_deepest(u)",
+      ...hook.slice(1),
+    ];
+    const p = await plan(deeper, false);
+    expect(p.findings.map((f) => f.detail)).toEqual([
+      "the access token hook pg-functions://postgres/public/samesight_test_hook calls public.samesight_test_deepest three or more calls deep, which audit does not read: it may read tables audit gives no rows",
+      "anon, authenticated can execute the access token hook pg-functions://postgres/public/samesight_test_hook (new functions are executable by them by default): when its schema is exposed through the API, they can run it for any user id and read the claims it adds",
+      expect.stringMatching(/^supabase_auth_admin cannot read lists/),
+    ]);
   });
 
   it("names a view the hook reads, which audit gives no rows", async () => {
