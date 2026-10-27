@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import fc from "fast-check";
 import type pg from "pg";
 import { ident } from "samesight/compiler";
-import type { ColumnModel, ForeignKeyModel, TableModel } from "./model.ts";
+import { type ColumnModel, type ForeignKeyModel, jsPattern, type TableModel } from "./model.ts";
 
 export interface Member {
   id: string;
@@ -65,7 +65,16 @@ function scalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
 function baseScalar(c: ColumnModel): fc.Arbitrary<unknown> | undefined {
   const t = c.type;
   if (c.values?.length) return fc.constantFrom(...new Set([...c.values, ...c.hints]));
-  if (c.pattern !== undefined) return fc.stringMatching(new RegExp(c.pattern));
+  if (c.pattern !== undefined) {
+    // A Postgres-only pattern (a POSIX class, say) gets plain strings: rows it refuses are skipped.
+    const re = jsPattern(c.pattern);
+    if (!re) return fc.string({ maxLength: 12 });
+    try {
+      return fc.stringMatching(re);
+    } catch {
+      return fc.string({ maxLength: 12 });
+    }
+  }
   const hinted = (arb: fc.Arbitrary<unknown>) => (c.hints.length ? fc.oneof(fc.constantFrom(...c.hints), arb) : arb);
   if (t === "uuid") return fc.uuid({ version: 4 });
   if (t === "text" || t.startsWith("character")) return hinted(fc.string({ maxLength: 12 }));
@@ -235,10 +244,19 @@ export async function deleteRows(client: pg.Client, tables: TableModel[], prefix
         continue;
       }
       const [key] = t.primaryKey;
-      if (t.primaryKey.length !== 1 || !key) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column and no single-column primary key`);
       const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
-      const byUser = owners.map((c) => ` or ${ident(c)} = any($2::uuid[])`).join("");
-      await client.query(`delete from public.${ident(t.name)} where ${ident(key)}::text like $1${byUser}`, owners.length ? [`${prefix}%`, users] : [`${prefix}%`]);
+      const keyed = t.primaryKey.length === 1 && key !== undefined;
+      // A table the run's rows are found in by owner alone (user_roles keyed by user and role) needs
+      // no single key, but then a required owner column, so no row of the run's lacks one.
+      const owned = owners.some((c) => t.columns.find((x) => x.name === c)?.nullable === false);
+      if (!keyed && !owned) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column, no single-column primary key and no required column pointing at auth.users`);
+      const params: unknown[] = [];
+      const conds = [
+        ...(keyed ? [`${ident(key)}::text like $${params.push(`${prefix}%`)}`] : []),
+        ...(owners.length ? [owners.map((c) => `${ident(c)} = any($${params.length + 1}::uuid[])`).join(" or ")] : []),
+      ];
+      if (owners.length) params.push(users);
+      await client.query(`delete from public.${ident(t.name)} where ${conds.join(" or ")}`, params);
     }
     await client.query("commit");
   } catch (e) {

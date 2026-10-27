@@ -41,8 +41,47 @@ export function streamOfBucket(name: string): string {
   return afterVersion.split(/[|[]/)[0] ?? afterVersion;
 }
 
+export interface SyncOptions {
+  timeoutMs?: number;
+  /** How long the service may keep failing (a download error, and no download since) before the sync gives up. */
+  errorWindowMs?: number;
+  /** Each device table name with the table its rows come from, where a query's alias renames it. */
+  deviceTables?: Record<string, string>;
+}
+
+/** What a device's status says, as the error watch reads it. */
+export interface Flow {
+  /** Connected to the service; the SDK keeps a download error set until a sync completes, connected or not. */
+  connected: boolean;
+  downloading: boolean;
+  error?: Error;
+}
+
+/**
+ * Watches `read` every `everyMs`: once an error is seen, if the device is neither connected
+ * nor downloading for `windowMs` from then, calls `giveUp` with the last error. A connection
+ * resets the watch, so a service that errs once and recovers is waited for, however long its
+ * first sync takes. Returns a function that stops it.
+ */
+export function watchErrors(read: () => Flow, windowMs: number, giveUp: (error: Error) => void, everyMs = 250): () => void {
+  let since: number | undefined;
+  const timer = setInterval(() => {
+    const flow = read();
+    if (flow.connected || flow.downloading) since = undefined;
+    else if (flow.error) {
+      since ??= Date.now();
+      if (Date.now() - since >= windowMs) {
+        clearInterval(timer);
+        giveUp(flow.error);
+      }
+    }
+  }, everyMs);
+  return () => clearInterval(timer);
+}
+
 /** Connects with `token`, waits for the first complete sync, and returns every row the device holds. */
-export async function syncOnce(endpoint: string, token: string, timeoutMs = 60_000): Promise<DeviceRow[]> {
+export async function syncOnce(endpoint: string, token: string, options: SyncOptions = {}): Promise<DeviceRow[]> {
+  const timeoutMs = options.timeoutMs ?? 60_000;
   const dir = mkdtempSync(join(tmpdir(), "samesight-device-"));
   const db = new PowerSyncDatabase({ schema: new Schema({}), database: { dbFilename: "device.db", dbLocation: dir } });
   try {
@@ -52,11 +91,27 @@ export async function syncOnce(endpoint: string, token: string, timeoutMs = 60_0
     );
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), timeoutMs);
+    // A service that keeps failing (it stopped, or refuses the token) is not waited for to the end.
+    let failing: Error | undefined;
+    const errorWindowMs = options.errorWindowMs ?? 10_000;
+    const unwatch = watchErrors(
+      () => ({
+        connected: db.currentStatus.connected,
+        downloading: db.currentStatus.dataFlowStatus.downloading ?? false,
+        ...(db.currentStatus.dataFlowStatus.downloadError ? { error: db.currentStatus.dataFlowStatus.downloadError } : {}) }),
+      errorWindowMs,
+      (e) => {
+        failing = e;
+        timeout.abort();
+      },
+    );
     try {
       await db.waitForFirstSync({ signal: timeout.signal });
     } finally {
       clearTimeout(timer);
+      unwatch();
     }
+    if (failing) throw new Error(`no complete sync from ${endpoint}: it kept failing for ${errorWindowMs / 1000}s: ${failing.message}`);
     if (timeout.signal.aborted) {
       // waitForFirstSync only waits: why it never finished (an expired token, a broken config) is in the status.
       const cause = db.currentStatus.dataFlowStatus.downloadError;
@@ -68,6 +123,7 @@ export async function syncOnce(endpoint: string, token: string, timeoutMs = 60_0
            from ps_oplog o join ps_buckets b on b.id = o.bucket
           where b.name <> '$local'`,
       ),
+      options.deviceTables,
     );
   } finally {
     await db.disconnectAndClear().catch(() => {});
@@ -76,18 +132,25 @@ export async function syncOnce(endpoint: string, token: string, timeoutMs = 60_0
   }
 }
 
-/** Folds the oplog into rows: each row once, with every column any bucket sent, and which stream sent which. */
-export function rowsFromOps(ops: Op[]): DeviceRow[] {
+/**
+ * Folds the oplog into rows: each row once, with every column any bucket sent, and which
+ * stream sent which. A row type in `deviceTables` is read as the table it names, so a row
+ * two queries send under different names is one row, with a copy from each.
+ */
+export function rowsFromOps(ops: Op[], deviceTables: Record<string, string> = {}): DeviceRow[] {
   const byKey = new Map<string, DeviceRow>();
   for (const op of ops) {
     if (op.data === null) continue;
-    const key = `${op.row_type}\u0000${op.row_id}`;
+    // Audit reads an unquoted alias lowercased, as Postgres would; the device may keep its case.
+    const named = Object.hasOwn(deviceTables, op.row_type) ? op.row_type : op.row_type.toLowerCase();
+    const table = Object.hasOwn(deviceTables, named) ? (deviceTables[named] as string) : op.row_type;
+    const key = `${table}\u0000${op.row_id}`;
     const data = JSON.parse(op.data) as Record<string, unknown>;
     const stream = streamOfBucket(op.bucket);
     const row = byKey.get(key);
     const source = { stream, columns: Object.keys(data) };
     const copy = { stream, data: { ...data } };
-    if (!row) byKey.set(key, { table: op.row_type, id: op.row_id, data, sources: [source], copies: [copy] });
+    if (!row) byKey.set(key, { table, id: op.row_id, data, sources: [source], copies: [copy] });
     else {
       row.copies = [...(row.copies ?? []), copy];
       // The same row from several buckets: keep every column any of them sent.

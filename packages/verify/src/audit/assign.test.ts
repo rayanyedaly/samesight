@@ -210,17 +210,32 @@ describe("Auth's rate limit", () => {
     await expect(createUsers(stack, 1, "r")).rejects.toThrow(/^Auth POST \/admin\/users: 429 \{"msg":"rate limited"\}$/);
   });
 
+  it("says when Auth does not answer, rather than waiting on it", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    });
+    await expect(createUsers(stack, 1, "r")).rejects.toThrow(/^Auth POST \/admin\/users: no answer within 30s$/);
+  });
+
   it("sends each user's metadata in the create body", async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(String(init.body)));
-      return new Response(JSON.stringify({ id: `id${bodies.length}` }), { status: 200 });
+      const body = bodies.at(-1) as { id?: string };
+      return new Response(JSON.stringify({ id: body.id ?? `id${bodies.length}` }), { status: 200 });
     });
-    await createUsers(stack, 2, "r", [{ app_metadata: { role: "admin" } }]);
+    await createUsers(stack, 2, "r", [{ app_metadata: { role: "admin" } }], ["5a3e5a3e-0000-4000-8000-000000000001"]);
     expect(bodies).toEqual([
-      expect.objectContaining({ app_metadata: { role: "admin" }, email_confirm: true }),
+      expect.objectContaining({ id: "5a3e5a3e-0000-4000-8000-000000000001", app_metadata: { role: "admin" }, email_confirm: true }),
       expect.not.objectContaining({ app_metadata: expect.anything() }),
     ]);
+  });
+
+  it("refuses a user Auth created with another id than the one asked for", async () => {
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ id: "11111111-1111-4111-8111-111111111111" }), { status: 200 }));
+    await expect(createUsers(stack, 1, "r", [], ["5a3e5a3e-0000-4000-8000-000000000001"])).rejects.toThrow(
+      /with id 11111111-1111-4111-8111-111111111111, not the 5a3e5a3e-0000-4000-8000-000000000001 audit asked for/,
+    );
   });
 });
 
@@ -265,7 +280,7 @@ describe("claims compared with columns", () => {
     expect(a.paths.map((p) => [p.key, p.pool, p.columns])).toEqual([["app_metadata.stage", ["draft", "published"], ["documents.status"]]]);
     expect(a.claimValues).toEqual(new Map([["documents", new Map([["status", ["draft", "published"]]])]]));
     expect(Object.fromEntries(a.notSet)).toEqual({
-      "app_metadata.delegate": "it is compared only with column owner_id, and no generated row can hold its values: documents.owner_id (a key to auth.users: not given run user ids yet)",
+      "app_metadata.delegate": "it is compared only with column owner_id, and no generated row can hold its values: documents.owner_id (a key to auth.users, which takes only run users' ids)",
       "app_metadata.team_id": "it is compared only with column team, and no generated row can hold its values: documents.team (text, which the rules do not cast the claim to)",
     });
   });
@@ -299,7 +314,9 @@ describe("claims compared with columns", () => {
     const sub = planClaims([{ where: "w", sql: `(EXISTS ( SELECT 1 FROM public.orgs o WHERE (o.id = (${read("org_id")})::uuid)))`, dialect: "postgres" }]);
     expect(assignClaims(sub, fresh, model).keyPools).toEqual(new Map());
     const short = planClaims([on("orgs", `(code = ${read("code")})`)]);
-    expect(assignClaims(short, fresh, model).paths[0]).toMatchObject({ pool: ["ss-a", "ss-b"], columns: [], skipped: ["orgs.code (character varying(3) takes none of the values)"] });
+    expect(assignClaims(short, fresh, model).notSet.get("app_metadata.code")).toBe(
+      "it is compared only with column code, and no generated row can hold its values: orgs.code (character varying(3) takes none of the values)",
+    );
     expect([fitsType("ss-a", "character varying(4)"), fitsType("ss-a", "character varying(3)"), fitsType(3, "uuid"), fitsType("3", "integer"), fitsType("x", "text")]).toEqual([true, false, false, true, true]);
   });
 
@@ -344,5 +361,106 @@ describe("claims compared with columns", () => {
     const plan = planClaims([on("documents", `(org_id = (${read("org_id")})::uuid)`), on("orgs", `((${read("org_id")})::uuid = '${literal}'::uuid)`)]);
     expect(assignClaims(plan, fresh, model).paths[0]?.skipped).toEqual([`orgs.id for ${literal} (a key takes only fresh run uuids, so cleanup finds its rows)`]);
     expect([fitsType(1.5, "integer"), fitsType(2, "integer"), fitsType(1.5, "numeric"), fitsType("ss-a", "jsonb")]).toEqual([false, true, true, false]);
+  });
+
+  it("takes only numbers a column stores exactly", () => {
+    expect([fitsType("1.0", "integer"), fitsType(32768, "smallint"), fitsType(-32768, "smallint"), fitsType("9223372036854775807", "bigint"), fitsType("9223372036854775808", "bigint")]).toEqual([false, false, true, true, false]);
+    expect([fitsType(1.5, "numeric(3,1)"), fitsType(1.55, "numeric(3,1)"), fitsType(100.5, "numeric(3,1)"), fitsType(Number.NaN, "numeric"), fitsType(Number.POSITIVE_INFINITY, "real")]).toEqual([true, false, false, false, false]);
+    expect(otherValue([32767], ["smallint"], fresh)).toBe(32766);
+    expect(otherValue([5], ["integer"], fresh)).toBe(6);
+  });
+
+  it("keeps values a column's CHECK pattern refuses out, and skips one JavaScript cannot run", () => {
+    const patterned: TableModel[] = [
+      { name: "tags", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("slug", "text", { pattern: "^[a-z]+$" }), col("odd", "text", { pattern: "(" })], foreignKeys: [] },
+    ];
+    const a = assignClaims(planClaims([on("tags", `(slug = ${read("tag")})`), on("tags", `(odd = ${read("tag")})`)]), fresh, patterned);
+    expect(a.paths).toEqual([]);
+    expect(a.notSet.get("app_metadata.tag")).toBe(
+      "it is compared only with columns slug, odd, and no generated row can hold its values: tags.odd (a CHECK pattern audit cannot read); tags.slug (its CHECK pattern takes none of the values)",
+    );
+  });
+
+  it("names a text key by itself, and still gives the claim's values to the other columns", () => {
+    const keyed: TableModel[] = [
+      { name: "plans", primaryKey: ["code"], unique: ["code"], columns: [col("code", "text"), col("label", "text")], foreignKeys: [] },
+    ];
+    const plan = planClaims([on("plans", `(code = ${read("plan")})`), on("plans", `(label = ${read("plan")})`)]);
+    const [path] = assignClaims(plan, fresh, keyed).paths;
+    expect(path).toMatchObject({ pool: ["ss-a", "ss-b"], columns: ["plans.label"], skipped: ["plans.code (a text key: keys take only fresh run uuids)"] });
+  });
+
+  it("notes once, by name, a primary key no rule names the table of", () => {
+    const sub = planClaims([
+      { where: "w", sql: `(EXISTS ( SELECT 1 FROM public.orgs o WHERE (o.id = (${read("org_id")})::uuid)))`, dialect: "postgres" },
+      on("documents", `(org_id = (${read("org_id")})::uuid)`),
+    ]);
+    const a = assignClaims(sub, fresh, model);
+    expect(a.paths[0]?.unkeyed).toEqual(["id (the primary key of orgs, documents; no rule comparing it names its table, so none is keyed)"]);
+    // The values went into orgs.id through documents.org_id, so the line is ok, with the note.
+    const [line] = claimFindings(sub, undefined, undefined, a);
+    expect(line).toMatchObject({ status: "ok", detail: expect.stringMatching(/generated rows take them in orgs\.id; not in id \(the primary key of orgs, documents;/) });
+  });
+
+  it("gives a claim compared with a user column the ids of two run users, which rows already point at", () => {
+    const ids = ["5a3e5a3e-0000-4000-8000-000000000001", "5a3e5a3e-0000-4000-8000-000000000002", "5a3e5a3e-0000-4000-8000-000000000003", "5a3e5a3e-0000-4000-8000-000000000004"];
+    const plan = planClaims([on("documents", `(owner_id = (${read("delegate")})::uuid)`)]);
+    const a = assignClaims(plan, fresh, model, ids);
+    expect(a.paths).toEqual([{ path: ["app_metadata", "delegate"], key: "app_metadata.delegate", pool: ids.slice(0, 2), columns: ["documents.owner_id"], skipped: [], unkeyed: [], users: true }]);
+    // Ids are minted per run: --static names whose they are.
+    expect(claimFindings(plan, undefined, undefined, a)[0]?.detail).toMatch(/; a full run gives users u0's id, u1's id, and one user none of them \(not run: --static\); generated rows take them in documents\.owner_id$/);
+    expect(a.claimValues).toEqual(new Map());
+    expect(a.keyPools).toEqual(new Map());
+    // Labels and the held line name the user, not the id.
+    expect(claimLabel("u2", { app_metadata: { delegate: ids[1] } }, [["app_metadata", "delegate"]], new Map([[ids[1] as string, "u1"]]))).toBe("u2 (app_metadata.delegate=u1)");
+    const tokens = new Map([
+      ["u0", { sub: ids[0], app_metadata: { delegate: ids[0] } }],
+      ["u1", { sub: ids[1], app_metadata: { delegate: ids[1] } }],
+      ["u2", { sub: ids[2], app_metadata: {} }],
+    ]);
+    expect(claimFindings(plan, undefined, tokens, a)[0]?.detail).toMatch(/; held: u0's id u0, u1's id u1, none u2; generated rows take them in documents\.owner_id$/);
+  });
+
+  it("keeps fresh keys for a claim compared with a user column and a key to another table, and skips the user column", () => {
+    const ids = ["5a3e5a3e-0000-4000-8000-000000000001", "5a3e5a3e-0000-4000-8000-000000000002"];
+    const plan = planClaims([on("documents", `((owner_id = (${read("who")})::uuid) OR (org_id = (${read("who")})::uuid))`)]);
+    const a = assignClaims(plan, fresh, model, ids);
+    expect(a.paths[0]).toMatchObject({ columns: ["orgs.id"], skipped: ["documents.owner_id (a key to auth.users, which takes only run users' ids)"] });
+    expect(a.paths[0]?.users).toBeUndefined();
+    expect(a.paths[0]?.pool.some((v) => ids.includes(String(v)))).toBe(false);
+  });
+
+  it("takes only a key to auth.users as a user column, not one to another auth table", () => {
+    const sessions: TableModel = {
+      name: "devices",
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [col("id", "uuid"), col("session_id", "uuid")],
+      foreignKeys: [{ columns: ["session_id"], schema: "auth", table: "sessions", references: ["id"] }],
+    };
+    const plan = planClaims([on("devices", `(session_id = (${read("sid")})::uuid)`)]);
+    const a = assignClaims(plan, fresh, [sessions], ["5a3e5a3e-0000-4000-8000-000000000001", "5a3e5a3e-0000-4000-8000-000000000002"]);
+    expect(a.paths).toEqual([]);
+    expect(a.notSet.get("app_metadata.sid")).toMatch(/session_id/);
+  });
+
+  it("keeps decimals out of floats that cannot hold them, and out of negative-scale numerics", () => {
+    expect([fitsType(0.5, "real"), fitsType(0.1, "real"), fitsType(16777217, "real"), fitsType(0.1, "double precision"), fitsType("0.10", "double precision"), fitsType(101, "numeric(5,-2)")]).toEqual([true, false, false, true, false, false]);
+  });
+
+  it("treats a pattern with Postgres-only syntax as one audit cannot read", () => {
+    for (const pattern of ["^[[:alpha:]-]+$", "\\mss", "^ss\\y", "(?i)ss"]) {
+      const t: TableModel[] = [{ name: "tags", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("slug", "text", { pattern })], foreignKeys: [] }];
+      expect(assignClaims(planClaims([on("tags", `(slug = ${read("tag")})`)]), fresh, t).notSet.get("app_metadata.tag"), pattern).toMatch(/tags\.slug \(a CHECK pattern audit cannot read\)/);
+    }
+  });
+
+  it("chooses the pool's type after leaving out keys that cannot take it", () => {
+    const t: TableModel[] = [
+      { name: "roles", primaryKey: ["code"], unique: ["code"], columns: [col("code", "text")], foreignKeys: [] },
+      { name: "items", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("code", "integer")], foreignKeys: [] },
+    ];
+    const [path] = assignClaims(planClaims([on("roles", `(code = ${read("c")})`), on("items", `(code = ${read("c")})`)]), fresh, t).paths;
+    expect(path).toMatchObject({ pool: [101, 102], columns: ["items.code"], skipped: ["roles.code (a text key: keys take only fresh run uuids)"] });
   });
 });

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Docker, type Exec } from "./docker.ts";
 import { autoStart, KEEP_LABEL } from "./run.ts";
-import type { Signals } from "./teardown.ts";
+import { type Signals, Teardown } from "./teardown.ts";
 
 /** A PowerSync stand-in, always ready, with no JWKS (so tokens are checked with the secret). */
 let server: Server;
@@ -118,6 +118,7 @@ function db(o: { locked?: boolean; keptAlive?: boolean; roles?: string[]; held?:
         return { rows: (o.held ?? []).filter((s) => s.startsWith(values[0] as string)).map((slot) => ({ slot })) };
       }
       if (/exists \(select from pg_roles/.test(text)) return { rows: [{ exists: true }] };
+      if (/where active and starts_with\(slot_name, \$1\)\) as ok/.test(text)) return { rows: [{ ok: true }] };
       return { rows: [] };
     }) as never,
   };
@@ -324,6 +325,40 @@ describe("autoStart", () => {
     expect(d.ran()).toEqual([]);
     expect(d.calls.some((c) => c[0] === "rm")).toBe(false);
     expect(c.sql.some((s) => /create role|drop role|pg_drop_replication_slot|pg_terminate_backend/.test(s))).toBe(false);
+  });
+
+  it("with the caller's teardown, listens for no signal, and its steps run after the caller's later ones", async () => {
+    const d = docker();
+    const c = db();
+    const p = proc();
+    const teardown = new Teardown(() => {});
+    const started = await autoStart({ ...options(d.docker, c, p), teardown });
+    expect(listening(p)).toBe(0);
+    const order: string[] = [];
+    teardown.add("the run's users and rows", async () => {
+      order.push(`users, with ${d.calls.filter((x) => x[0] === "rm").length} containers removed`);
+    });
+    expect(await started.stop()).toEqual([]);
+    expect(order).toEqual(["users, with 0 containers removed"]);
+    expect(d.calls.find((x) => x[0] === "rm")).toEqual(["rm", "--force", "--volumes", ...d.ran()]);
+    expect(c.sql.at(-1)).toBe("select pg_advisory_unlock($1)");
+  });
+
+  it("with the caller's teardown and keep, leaves the service up once ready while the caller's steps still run", async () => {
+    const d = docker();
+    const c = db();
+    const teardown = new Teardown(() => {});
+    await autoStart({ ...options(d.docker, c, proc(), true), teardown });
+    let ran = false;
+    teardown.add("the run's users and rows", async () => {
+      ran = true;
+    });
+    // As Ctrl+C would: the caller's step runs, the service stays, the lock goes.
+    expect(await teardown.run()).toEqual([]);
+    expect(ran).toBe(true);
+    expect(d.calls.some((x) => x[0] === "rm")).toBe(false);
+    expect(c.sql.some((x) => /^drop role/.test(x))).toBe(false);
+    expect(c.sql.at(-1)).toBe("select pg_advisory_unlock($1)");
   });
 
   it("with keep, labels the service and leaves it up, letting go of the lock and the signals", async () => {

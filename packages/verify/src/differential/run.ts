@@ -8,7 +8,8 @@
 import fc from "fast-check";
 import type pg from "pg";
 import { type IR, ident } from "samesight/compiler";
-import { rows } from "../db.ts";
+import { LEFT_FOR_NEXT } from "../autostart/teardown.ts";
+import { connectLocal, rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { show } from "../audit/assign.ts";
@@ -52,6 +53,8 @@ export interface Run {
   password: string;
   /** The tables read through RLS and compared with the devices. */
   synced: string[];
+  /** Device table names a query's alias gives, with the synced table each holds rows of. */
+  deviceTables?: Record<string, string>;
   /** Per table, the columns this user's devices must not hold. */
   hidden: (user: Member) => Map<string, string[]>;
   /**
@@ -63,6 +66,10 @@ export interface Run {
   asFound?: string[];
   /** Their rows, for generated rows to point at. */
   existing?: Inserted[];
+  /** Rows given before sign-in and kept for the run (the access token hook's): a subset of `existing`. */
+  fixedRows?: Inserted[];
+  /** Fixed rows the database refused, as table, user and its message. */
+  fixedRefused?: string[];
 }
 
 /** A run under a Samesight policy: tenants, a user per role, the policy's hidden columns. */
@@ -95,18 +102,115 @@ const letter = (i: number) => String.fromCharCode(65 + i);
 /** Held for the run: runs share one prefix and one email domain, so a second would delete the first's data. */
 const LOCK = Number.parseInt(PREFIX, 16);
 
+/** The connections holding LOCK: added once it is taken, removed once let go. Exported for tests. */
+export const holdingLock = new WeakSet<pg.Client>();
+
+const unlock = async (client: pg.Client) => {
+  holdingLock.delete(client);
+  await client.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
+};
+
+/**
+ * For a run a signal may stop half way (Ctrl+C, SIGTERM, SIGHUP): `step` removes its users
+ * and rows. It ends the run's own database connection (`client`, whose backend id is read
+ * now), which rolls back what that had open and lets go of the lock; then, on a connection
+ * of its own that takes the lock, it cleans up as tearDown would. It does nothing while the
+ * run does not hold the lock (one refused it never cleans another's data), and once the run
+ * has begun its own tearDown, which it waits for instead. Use the `tearDown` it returns in
+ * place of the plain one, which does nothing once `step` has begun.
+ */
+export async function stoppable(
+  client: pg.Client,
+  stack: Stack,
+  tables: ScopeTable[],
+  log: (line: string) => void,
+): Promise<{ step: () => Promise<void>; tearDown: (s: Run) => Promise<void> }> {
+  const [{ pid } = { pid: 0 }] = await rows<{ pid: number }>(client, "select pg_backend_pid() as pid");
+  let ending: Promise<void> | undefined;
+  let stopping = false;
+  return {
+    tearDown: (s) => {
+      if (stopping) return Promise.resolve();
+      ending ??= tearDown(s);
+      return ending;
+    },
+    step: async () => {
+      if (ending) return ending.catch(() => {});
+      if (!holdingLock.has(client)) return;
+      stopping = true;
+      const later = LEFT_FOR_NEXT;
+      let fresh: pg.Client | undefined;
+      try {
+        fresh = await connectLocal(stack.db);
+        // Unheard, the run's client's error on its ended connection would crash the process.
+        client.on("error", () => {});
+        await fresh.query("select pg_terminate_backend($1, 5000)", [pid]);
+        for (let i = 0; i < 50 && (await rows(fresh, "select 1 from pg_stat_activity where pid = $1", [pid])).length; i++) await new Promise((r) => setTimeout(r, 100));
+        holdingLock.delete(client);
+        const [{ locked } = { locked: false }] = await rows<{ locked: boolean }>(fresh, "select pg_try_advisory_lock($1) as locked", [LOCK]);
+        if (!locked) {
+          log(`could not take the run's lock to remove its users and rows; ${later}`);
+          return;
+        }
+        try {
+          await cleanup(fresh, stack, insertOrder(await readModel(fresh, tables)));
+        } finally {
+          await fresh.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
+        }
+      } catch (e) {
+        log(`could not remove the run's users and rows: ${(e as Error).message}; ${later}`);
+      } finally {
+        await fresh?.end().catch(() => {});
+      }
+    },
+  };
+}
+
 export async function setUp(client: pg.Client, stack: Stack, ir: IR): Promise<Setup> {
   return exclusive(client, stack, policyTables(ir), () => prepareRun(client, stack, ir));
 }
 
+/** How a differential finding says a dataset could not be run (the service failed, say), alone or after a counterexample. */
+const RUN_FAILED = "the run failed: ";
+const THEN_FAILED = "(then a run failed: ";
+
+/** Whether the differential broke down rather than found something: its service's logs are then worth showing. */
+export function brokeDown(findings: Finding[]): boolean {
+  return findings.some((f) => f.status === "fail" && (f.detail.startsWith(RUN_FAILED) || f.detail.includes(THEN_FAILED)));
+}
+
 /** Users a run without a policy signs up. */
 export const AUDIT_USERS = 4;
+
+/** Rows to insert before sign-in and keep for the run (audit/fixed.ts), and the tables they fill. */
+export interface FixedSetUp {
+  /** Fixed tables: generated rows never go there. */
+  tables: string[];
+  rows: { table: string; row: Record<string, unknown>; user?: number }[];
+  /** The hook's URI, for messages. */
+  hook?: string;
+  /** Fixed rows' keys as labels show them (teams row 1). */
+  names?: Map<string, string>;
+  /** Per-user tables and their user columns: run users' rows there (a sign-up trigger's) go before the fixed ones. */
+  clear?: { table: string; column: string }[];
+}
 
 /** The metadata audit gives each run user, and the claim paths to label users by. */
 export interface UserClaims {
   /** Per user, by index; the number of users. */
   metadata: Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>[];
   paths: string[][];
+  /** Ids to create the users with, by index (claims may hold them); fresh run ids otherwise. */
+  ids?: string[];
+}
+
+/**
+ * Ids for run users, minted before they are created so claims can hold them. They carry the
+ * run's prefix, so a row keyed by its user's id (a profile a signup trigger makes) counts as
+ * the run's own.
+ */
+export function runUserIds(count: number): string[] {
+  return Array.from({ length: count }, () => prefixedUuid(PREFIX));
 }
 
 /**
@@ -115,39 +219,102 @@ export interface UserClaims {
  * auth.users, and what a device may hold is whatever RLS lets its user read. A user is
  * labelled by the values its token carries at the claim paths: u2 (app_metadata.role=editor).
  */
-export async function setUpUsers(client: pg.Client, stack: Stack, scope: { tables: ScopeTable[]; synced: string[] }, claims?: UserClaims): Promise<Run> {
+export async function setUpUsers(
+  client: pg.Client,
+  stack: Stack,
+  scope: { tables: ScopeTable[]; synced: string[]; deviceTables?: Record<string, string>; fixed?: FixedSetUp },
+  claims?: UserClaims,
+): Promise<Run> {
   const count = claims?.metadata.length || AUDIT_USERS;
   return exclusive(client, stack, scope.tables, async () => {
     const model = insertOrder(await readModel(client, scope.tables));
-    // Without tenants, the run finds its rows again only by the prefix it gives uuid keys.
-    const refused = auditRefusals(model, scope.synced);
+    const fixedTables = scope.fixed?.tables ?? [];
+    // Without tenants, the run finds its rows again only by the prefix it gives uuid keys
+    // (fixed tables were checked for a key or a user column when they were planned).
+    const refused = auditRefusals(model.filter((t) => !fixedTables.includes(t.name)), scope.synced);
     if (refused.length) throw new Error(`audit mode cannot run on these tables: ${refused.join("; ")}`);
     await cleanup(client, stack, model);
-    const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36), claims?.metadata);
+    const ids = claims?.ids?.slice(0, count) ?? runUserIds(count);
+    const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36), claims?.metadata, ids);
+    // Rows the access token hook reads, before anyone signs in; each on its own, so one the
+    // database refuses leaves the others.
+    const fixedRows: Inserted[] = [];
+    const fixedRefused: string[] = [];
+    if (scope.fixed?.clear?.length) {
+      await client.query("begin");
+      try {
+        // As cleanup deletes: past the project's own delete triggers.
+        await client.query("set local session_replication_role = replica");
+        for (const { table, column } of scope.fixed.clear) {
+          await client.query(`delete from public.${ident(table)} where ${ident(column)} = any($1::uuid[])`, [users.map((u) => u.id)]);
+        }
+        await client.query("commit");
+      } catch (e) {
+        await client.query("rollback").catch(() => {});
+        throw e;
+      }
+    }
+    if (scope.fixed?.rows.length) {
+      await client.query("begin");
+      try {
+        for (const r of scope.fixed.rows) {
+          await client.query("savepoint fixed");
+          try {
+            await insertRow(client, r.table, r.row);
+            await client.query("release savepoint fixed");
+            fixedRows.push({ table: r.table, row: r.row, tenant: undefined });
+          } catch (e) {
+            await client.query("rollback to savepoint fixed");
+            fixedRefused.push(`${r.table} row${r.user === undefined ? "" : ` for u${r.user}`}: ${(e as Error).message}`);
+          }
+        }
+        await client.query("commit");
+      } catch (e) {
+        await client.query("rollback").catch(() => {});
+        throw e;
+      }
+    }
     const sessions = new Map<string, Session>();
-    for (const u of users) sessions.set(u.id, await signIn(stack, u.email, password));
-    const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: claimLabel(`u${i}`, sessions.get(u.id)?.claims ?? {}, claims?.paths ?? []) }));
+    for (const [i, u] of users.entries()) {
+      try {
+        sessions.set(u.id, await signIn(stack, u.email, password));
+      } catch (e) {
+        // The hook runs on every sign-in, with the rows this user was given.
+        if (scope.fixed?.hook) {
+          const given = scope.fixed.rows.filter((r) => r.user === i).map((r) => r.table);
+          throw new Error(`signing in u${i} failed: ${(e as Error).message}. The access token hook ${scope.fixed.hook} runs on every sign-in${given.length ? `, with the rows audit gave u${i} in ${[...new Set(given)].join(", ")}` : ""}`);
+        }
+        throw e;
+      }
+    }
+    const names = new Map([...users.map((u, i) => [u.id, `u${i}`] as const), ...(scope.fixed?.names ?? [])]);
+    const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: claimLabel(`u${i}`, sessions.get(u.id)?.claims ?? {}, claims?.paths ?? [], names) }));
     return {
       client,
       stack,
       model,
-      tables: generatedTables(model, []),
+      tables: generatedTables(model, fixedTables),
       fixed: { prefix: PREFIX, tenants: [], users: members },
       sessions,
       password,
       synced: scope.synced,
+      ...(scope.deviceTables ? { deviceTables: scope.deviceTables } : {}),
+      ...(scope.fixed ? { existing: fixedRows, fixedRows, fixedRefused } : {}),
       hidden: () => new Map(),
       gaps: "warn",
     };
   });
 }
 
-/** u2 (app_metadata.role=editor), from what the token carries at each path; bare when it carries none. */
-export function claimLabel(name: string, claims: Record<string, unknown>, paths: string[][]): string {
+/**
+ * u2 (app_metadata.role=editor), from what the token carries at each path; bare when it
+ * carries none. A value that is a run user's id shows as that user (manager_id=u1).
+ */
+export function claimLabel(name: string, claims: Record<string, unknown>, paths: string[][], users: ReadonlyMap<string, string> = new Map()): string {
   const held = paths.flatMap((path) => {
     let v: unknown = claims;
     for (const k of path) v = v !== null && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined;
-    return v === undefined || v === null ? [] : [`${claimKey(path)}=${show(v)}`];
+    return v === undefined || v === null ? [] : [`${claimKey(path)}=${typeof v === "string" && users.has(v) ? users.get(v) : show(v)}`];
   });
   return held.length ? `${name} (${held.join(", ")})` : name;
 }
@@ -174,13 +341,14 @@ export function auditRefusals(model: TableModel[], synced: string[]): string[] {
 async function exclusive<T extends Run>(client: pg.Client, stack: Stack, tables: ScopeTable[], prepare: () => Promise<T>): Promise<T> {
   const [{ locked } = { locked: false }] = await rows<{ locked: boolean }>(client, "select pg_try_advisory_lock($1) as locked", [LOCK]);
   if (!locked) throw new Error("another samesight verify run is using this database; wait for it to finish");
+  holdingLock.add(client);
   try {
     return await prepare();
   } catch (e) {
     // Users, tenants and memberships made before the failure: removed now, not by the next run.
     const model = insertOrder(await readModel(client, tables).catch(() => []));
     await cleanup(client, stack, model).catch(() => {});
-    await client.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
+    await unlock(client);
     throw e;
   }
 }
@@ -195,6 +363,7 @@ async function prepareRun(client: pg.Client, stack: Stack, ir: IR): Promise<Setu
   plan.push({ tenant: 0, role: ir.claims.roles[1] ?? ir.claims.roles[0] ?? null }, { tenant: null, role: null });
 
   const runId = PREFIX.slice(0, 4) + Date.now().toString(36);
+  // Policy mode's claims come from tenants and roles, not ids: Auth picks them, as any Auth can.
   const { users, password } = await createUsers(stack, plan.length, runId);
   const members: Member[] = users.map((u, i) => {
     const p = plan[i] ?? { tenant: null, role: null };
@@ -335,7 +504,7 @@ export async function syncAll(s: Run): Promise<Map<string, Awaited<ReturnType<ty
         session = await signIn(s.stack, u.email, s.password);
         s.sessions.set(u.id, session);
       }
-      out.set(u.id, await syncOnce(s.stack.powersync, session.token));
+      out.set(u.id, await syncOnce(s.stack.powersync, session.token, s.deviceTables ? { deviceTables: s.deviceTables } : {}));
     }),
   );
   return out;
@@ -351,7 +520,8 @@ export async function compareAll(s: Run, options: IterationOptions = {}): Promis
   const ours = (table: string, id: string) => {
     const t = s.model.find((m) => m.name === table);
     const key = t?.columns.find((c) => c.name === t.primaryKey[0]);
-    return key?.type !== "uuid" || id.startsWith(s.fixed.prefix);
+    // A row keyed by its user's id (a profile) is the run's when the user is, whoever chose the id.
+    return key?.type !== "uuid" || id.startsWith(s.fixed.prefix) || s.fixed.users.some((u) => u.id === id);
   };
   if (options.tally) {
     for (const rs of seen) for (const key of rs.keys()) {
@@ -513,7 +683,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       for (const r of rowsIn) inserted.set(r.table, (inserted.get(r.table) ?? 0) + 1);
       const devices = await syncAll(s);
       const passed = failing(await compareAll(s, { devices, tally: visible, received })).length === 0;
-      if (passed && !failedOnce && options.coverage) await measure(s, options.coverage, rowsIn, devices);
+      if (passed && !failedOnce && options.coverage) await measure(s, options.coverage, rowsIn, devices, (s.fixedRows ?? []).filter((r) => s.synced.includes(r.table)));
       return passed;
     });
     failedOnce ||= !ok;
@@ -535,7 +705,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
     datasets += x.datasets;
   }
   x = { ...x, datasets };
-  const crashed = x.crash === undefined ? "" : ` (then a run failed: ${String(x.crash)})`;
+  const crashed = x.crash === undefined ? "" : ` ${THEN_FAILED}${String(x.crash)})`;
   if (x.lastFailing) {
     const world = x.lastFailing;
     const counterexample = describeFailures(s, failing(await withWorld(s, world, () => compareAll(s))));
@@ -552,7 +722,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       ]),
     };
   }
-  if (x.crash !== undefined) return { ...fail(`the run failed: ${String(x.crash)}`, x.datasets), stopped: x.stopped };
+  if (x.crash !== undefined) return { ...fail(`${RUN_FAILED}${String(x.crash)}`, x.datasets), stopped: x.stopped };
   if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit" }] };
   const untested = s.tables
     .filter((t) => s.synced.includes(t.name))
@@ -628,6 +798,6 @@ export async function tearDown(s: Run): Promise<void> {
   try {
     await cleanup(s.client, s.stack, s.model);
   } finally {
-    await s.client.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
+    await unlock(s.client);
   }
 }

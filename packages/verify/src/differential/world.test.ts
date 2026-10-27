@@ -1,6 +1,6 @@
 import type pg from "pg";
 import { describe, expect, it } from "vitest";
-import type { TableModel } from "./model.ts";
+import { jsPattern, type TableModel } from "./model.ts";
 import fc from "fast-check";
 import { columnArbitrary, insertWorld, type World } from "./world.ts";
 
@@ -43,5 +43,17 @@ describe("columnArbitrary with claim values", () => {
     const held = drawn.filter((v) => v === "ss-a" || v === "ss-b").length;
     expect(held).toBeGreaterThan(50);
     expect(fc.sample(columnArbitrary(base) as fc.Arbitrary<unknown>, { numRuns: 200, seed: 1 }).filter((v) => v === "ss-a" || v === "ss-b")).toEqual([]);
+  });
+});
+
+describe("a CHECK pattern JavaScript cannot run as Postgres does", () => {
+  it("falls back to plain strings rather than throwing or matching it differently", () => {
+    const col = (pattern: string) => ({ name: "code", type: "text", nullable: false, hasDefault: false, computed: false, hints: [], pattern });
+    for (const pattern of ["^[[:alpha:]]+$", "\\mword\\M", "(?i)abc", "(unclosed"]) {
+      // Read as none: \\m compiles in JavaScript, as a plain m, and would match something else.
+      expect(jsPattern(pattern), pattern).toBeUndefined();
+      const arb = columnArbitrary(col(pattern)) as fc.Arbitrary<unknown>;
+      expect(fc.sample(arb, { numRuns: 5, seed: 1 }).every((v) => typeof v === "string"), pattern).toBe(true);
+    }
   });
 });

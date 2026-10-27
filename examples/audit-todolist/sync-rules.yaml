@@ -1,9 +1,10 @@
 # The demo's access rules written as legacy sync rules (bucket_definitions), the form most
-# PowerSync apps used before sync streams: each user's lists, and the to-dos in them.
+# PowerSync apps used before sync streams: each user's lists, and the to-dos in them. The
+# alias (t) names the table on devices; audit maps it back to todos.
 # scripts/verify-rules.sh runs the audit on this file and on a planted copy.
 bucket_definitions:
   user_lists:
     parameters: SELECT id AS list_id FROM lists WHERE owner_id = request.user_id()
     data:
       - SELECT * FROM lists WHERE id = bucket.list_id
-      - SELECT * FROM todos WHERE list_id = bucket.list_id
+      - SELECT t.* FROM todos t WHERE t.list_id = bucket.list_id

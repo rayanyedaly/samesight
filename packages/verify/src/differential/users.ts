@@ -23,11 +23,17 @@ export interface Session {
   expiresAt: number;
 }
 
+const AUTH_TIMEOUT_MS = 30_000;
+
 async function auth(stack: Stack, path: string, init: RequestInit & { admin?: boolean }): Promise<unknown> {
   const key = init.admin ? stack.secretKey : stack.publishableKey;
+  // Bounded, so a signal's cleanup, which waits for users being made, is never held by a hung Auth.
   const res = await fetch(`${stack.api}/auth/v1${path}`, {
     ...init,
     headers: { apikey: key, ...(init.admin ? { authorization: `Bearer ${key}` } : {}), "content-type": "application/json" },
+    signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+  }).catch((e: Error) => {
+    throw e.name === "TimeoutError" ? new Error(`Auth ${init.method ?? "GET"} ${path}: no answer within ${AUTH_TIMEOUT_MS / 1000}s`) : e;
   });
   const text = await res.text();
   if (res.status === 429 && path.startsWith("/token")) {
@@ -58,13 +64,15 @@ export async function deleteUser(stack: Stack, id: string): Promise<void> {
 
 /**
  * Creates `count` confirmed users sharing one random password, made for this run only.
- * `metadata[i]` is the app_metadata and user_metadata user i is created with, if any.
+ * `metadata[i]` is the app_metadata and user_metadata user i is created with, if any, and
+ * `ids[i]` its id (minted up front, so a claim can hold it); Auth picks one when none is given.
  */
 export async function createUsers(
   stack: Stack,
   count: number,
   runId: string,
   metadata: Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>[] = [],
+  ids: string[] = [],
 ): Promise<{ users: User[]; password: string }> {
   const password = randomBytes(18).toString("base64url");
   const users: User[] = [];
@@ -73,8 +81,10 @@ export async function createUsers(
     const created = (await auth(stack, "/admin/users", {
       method: "POST",
       admin: true,
-      body: JSON.stringify({ email, password, email_confirm: true, ...metadata[i] }),
+      body: JSON.stringify({ ...(ids[i] ? { id: ids[i] } : {}), email, password, email_confirm: true, ...metadata[i] }),
     })) as { id: string };
+    // An Auth that ignores the id would leave claims holding ids no user has.
+    if (ids[i] && created.id !== ids[i]) throw new Error(`Auth created ${email} with id ${created.id}, not the ${ids[i]} audit asked for; this Auth version does not take an id at creation`);
     users.push({ id: created.id, email });
   }
   return { users, password };

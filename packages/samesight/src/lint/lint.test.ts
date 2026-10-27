@@ -39,7 +39,7 @@ describe("RULE_NAMES", () => {
     "  everything:\n    query: SELECT * FROM customers",
     "  by_param:\n    auto_subscribe: true\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list')",
     "  by_metadata:\n    auto_subscribe: true\n    query: SELECT * FROM tasks WHERE team_id = auth.parameter('user_metadata') ->> 'team'",
-    "  odd:\n    auto_subscribe: true\n    query: SELECT * FROM lists AS mine WHERE owner_id = auth.user_id()",
+    "  odd:\n    auto_subscribe: true\n    query: SELECT * FROM lists JOIN shares ON shares.list_id = lists.id WHERE lists.owner_id = auth.user_id()",
     "",
   ].join("\n");
   const migrations = applyMigrations([{ file: "m.sql", sql: "create policy open on customers using (true);" }]);
