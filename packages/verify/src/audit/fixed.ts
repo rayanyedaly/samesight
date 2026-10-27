@@ -24,8 +24,11 @@ export interface FixedPlan {
   refusal?: string;
 }
 
-const userColumn = (t: TableModel) =>
-  t.foreignKeys.find((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1)?.columns[0];
+/** The column a row belongs to its user by: a key to auth.users, a required one first (user_id before invited_by). */
+const userColumn = (t: TableModel) => {
+  const keys = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
+  return keys.find((c) => t.columns.find((x) => x.name === c)?.nullable === false) ?? keys[0];
+};
 const required = (c: ColumnModel) => !c.nullable && !c.hasDefault && !c.computed;
 const uuidKey = (t: TableModel) =>
   t.primaryKey.length === 1 &&
@@ -61,7 +64,9 @@ export function fixedPlan(model: TableModel[], hookTables: string[]): FixedPlan 
   for (const name of tables) {
     const t = byName.get(name) as TableModel;
     const own = perUser.includes(name);
-    if (!uuidKey(t) && !(own && userColumn(t))) return { tables: [], perUser: [], notes, refusal: `${name} has no uuid key${own ? " or column pointing at auth.users" : ""} of its own, so audit could not find its rows again` };
+    // Without a uuid key, its rows are found by their user, so every one must have one.
+    const owned = own && t.columns.find((c) => c.name === userColumn(t))?.nullable === false;
+    if (!uuidKey(t) && !owned) return { tables: [], perUser: [], notes, refusal: `${name} has no uuid key${own ? " or required column pointing at auth.users" : ""} of its own, so audit could not find its rows again` };
     for (const fk of t.foreignKeys) {
       if (!fk.columns.every((c) => required(t.columns.find((x) => x.name === c) as ColumnModel))) continue;
       if (fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1) continue;
@@ -96,10 +101,10 @@ export const PARENT_ROWS = 2;
  * CHECK or enum list, else the literals rules compare the column with (its hints and claim
  * values, when the hook names the column). A table with none varies by having a row or not.
  */
-export function hookDims(model: TableModel[], plan: FixedPlan, body: string, parentRows: (table: string) => number = () => PARENT_ROWS): Dim[] {
+export function hookDims(model: TableModel[], plan: FixedPlan, body: string, parentRows: (table: string) => number = () => PARENT_ROWS, own = body): Dim[] {
   const out: Dim[] = [];
-  // A column the hook reads: named in its body, or any, when it selects *.
-  const star = /(?<![A-Za-z0-9_$])select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i.test(body);
+  // A column the hook reads: named in `body` (its own and its helpers'), or any, when its own body selects *.
+  const star = /(?<![A-Za-z0-9_$])select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i.test(own);
   const named = (c: string) => star || new RegExp(`(?<![A-Za-z0-9_$])${c.replace(/[$]/g, "\\$")}(?![A-Za-z0-9_$])`, "i").test(body);
   for (const name of plan.perUser) {
     const t = model.find((m) => m.name === name) as TableModel;
