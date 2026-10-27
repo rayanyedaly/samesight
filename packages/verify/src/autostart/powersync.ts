@@ -108,9 +108,9 @@ export async function startPowerSync(
     if (o.aborted?.()) throw new Error("stopped while PowerSync started");
     const state = await docker.inspect<{ State: { Running: boolean } }>("container", container);
     if (!state?.State.Running) {
-      throw await failure(ready ? "stopped before it began replicating (it refuses a sync config it cannot use)" : "stopped while starting");
+      throw await failure(ready ? "stopped before it began replicating (as one that refuses its sync config does)" : "stopped while starting");
     }
-    if (Date.now() > deadline) throw await failure(ready ? `did not begin replicating within ${timeoutMs / 1000}s` : `was not ready within ${timeoutMs / 1000}s`);
+    if (Date.now() > deadline) throw await failure(ready ? `did not begin replicating within ${timeoutMs / 1000}s (its first snapshot of the tables may still be running)` : `was not ready within ${timeoutMs / 1000}s`);
     await sleep(o.pollMs ?? 1000);
   }
 }

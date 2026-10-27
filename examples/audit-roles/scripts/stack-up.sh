@@ -18,6 +18,7 @@ pnpm exec supabase start -x realtime,storage-api,imgproxy,mailpit,postgres-meta,
 
 # 3. Wait until Postgres takes connections: the CLI can return while it still restarts.
 project=$(sed -n 's/^project_id *= *"\(.*\)"/\1/p' supabase/config.toml)
+[ -n "$project" ] || { echo "stack-up.sh: no project_id in config.toml" >&2; exit 1; }
 for _ in $(seq 1 60); do
   docker exec "supabase_db_$project" pg_isready -U postgres -q && break
   sleep 1

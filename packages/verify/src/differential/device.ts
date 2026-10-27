@@ -51,20 +51,23 @@ export interface SyncOptions {
 
 /** What a device's status says, as the error watch reads it. */
 export interface Flow {
+  /** Connected to the service; the SDK keeps a download error set until a sync completes, connected or not. */
+  connected: boolean;
   downloading: boolean;
   error?: Error;
 }
 
 /**
- * Watches `read` every `everyMs`: once an error is seen, if no download happens for
- * `windowMs` from then, calls `giveUp` with the last error. A download resets the watch, so
- * a service that errs once and recovers is waited for. Returns a function that stops it.
+ * Watches `read` every `everyMs`: once an error is seen, if the device is neither connected
+ * nor downloading for `windowMs` from then, calls `giveUp` with the last error. A connection
+ * resets the watch, so a service that errs once and recovers is waited for, however long its
+ * first sync takes. Returns a function that stops it.
  */
 export function watchErrors(read: () => Flow, windowMs: number, giveUp: (error: Error) => void, everyMs = 250): () => void {
   let since: number | undefined;
   const timer = setInterval(() => {
     const flow = read();
-    if (flow.downloading && !flow.error) since = undefined;
+    if (flow.connected || flow.downloading) since = undefined;
     else if (flow.error) {
       since ??= Date.now();
       if (Date.now() - since >= windowMs) {
@@ -92,7 +95,10 @@ export async function syncOnce(endpoint: string, token: string, options: SyncOpt
     let failing: Error | undefined;
     const errorWindowMs = options.errorWindowMs ?? 10_000;
     const unwatch = watchErrors(
-      () => ({ downloading: db.currentStatus.dataFlowStatus.downloading ?? false, ...(db.currentStatus.dataFlowStatus.downloadError ? { error: db.currentStatus.dataFlowStatus.downloadError } : {}) }),
+      () => ({
+        connected: db.currentStatus.connected,
+        downloading: db.currentStatus.dataFlowStatus.downloading ?? false,
+        ...(db.currentStatus.dataFlowStatus.downloadError ? { error: db.currentStatus.dataFlowStatus.downloadError } : {}) }),
       errorWindowMs,
       (e) => {
         failing = e;

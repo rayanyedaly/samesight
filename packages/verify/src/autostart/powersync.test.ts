@@ -95,7 +95,7 @@ describe("startPowerSync with a replication check", () => {
     let inspected = 0;
     const { docker } = fake(port, () => ++inspected < 3);
     await expect(startPowerSync(docker, { run: "a1", project: "todo", network: "n", config: "", pollMs: 5, replicating: async () => false })).rejects.toThrow(
-      /stopped before it began replicating \(it refuses a sync config it cannot use\); its last log lines:\nError: could not connect to storage/,
+      /stopped before it began replicating \(as one that refuses its sync config does\); its last log lines:\nError: could not connect to storage/,
     );
   });
 
