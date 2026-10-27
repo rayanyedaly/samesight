@@ -22,6 +22,8 @@ import type { ClaimsPlan } from "./claims.ts";
 /** Users before the copy and the user with no claims. */
 const SPREAD = 6;
 const MIN_USERS = 4;
+/** The most users a run signs up. */
+export const MAX_USERS = SPREAD + 2;
 
 export interface SetPath {
   path: string[];
@@ -66,6 +68,8 @@ interface Target {
   values?: string[];
   /** Its CHECK pattern (col ~ '...'). */
   pattern?: string;
+  /** A key to auth.users: rows take run users, so the claim's values are run user ids. */
+  users?: boolean;
   type: string;
 }
 
@@ -99,7 +103,8 @@ function targetsOf(columns: string[], columnTables: Record<string, string[]>, fa
       }
       const fk = t.foreignKeys.find((k) => k.columns.length === 1 && k.columns[0] === name);
       if (fk?.schema === "auth") {
-        skipped.push(`${t.name}.${name} (a key to auth.users: not given run user ids yet)`);
+        // Generated rows already point such a column at run users: the claim holds their ids.
+        targets.push({ table: t.name, column: name, key: false, users: true, type: col.type });
       } else if (fk) {
         const parent = model.find((m) => m.name === fk.table);
         const ref = fk.references[0] as string;
@@ -236,7 +241,7 @@ export function castFamily(cast: string): "uuid" | "number" | "boolean" | "text"
 
 const isPrefix = (a: string[], b: string[]) => a.length < b.length && a.every((k, i) => b[i] === k);
 
-export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: TableModel[] = []): Assignment {
+export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: TableModel[] = [], userIds: string[] = []): Assignment {
   // Only values minted here (the run's prefixed uuids) become keys: cleanup finds the run's
   // rows by that prefix, so a row keyed by a rule's own literal would outlive the run.
   const minted = new Set<string>();
@@ -275,7 +280,10 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
       const values = u.values.filter((v) => v !== null);
       let pool: ClaimValue[] | undefined;
       if (values.length === 0 && u.columns.length > 0) {
-        pool = targets.length && families.size <= 1 && !families.has("unknown") ? columnPool(targets, lead, fresh) : undefined;
+        // Compared with a user column: the ids of two run users (u0 and u1), which rows point at.
+        const userPool = targets.some((x) => x.users) && userIds.length >= COLUMN_POOL ? userIds.slice(0, COLUMN_POOL) : undefined;
+        if (!userPool) for (const x of targets.filter((y) => y.users)) skipped.push(`${x.table}.${x.column} (a key to auth.users, which takes only run users' ids)`);
+        pool = userPool ?? (targets.length && families.size <= 1 && !families.has("unknown") ? columnPool(targets.filter((x) => !x.users), lead, fresh) : undefined);
         if (!pool) {
           const notes = [...skipped, ...found.unkeyed];
           const why = notes.length ? `: ${notes.join("; ")}` : targets.length ? ", and audit has no values of their type" : "";
@@ -292,6 +300,12 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
       }
       const placed: string[] = [];
       for (const x of targets) {
+        if (x.users) {
+          // Rows already point user columns at run users; the claim holds two of their ids.
+          if (pool.some((v) => typeof v === "string" && userIds.includes(v))) placed.push(`${x.table}.${x.column}`);
+          else if (!skipped.some((n) => n.startsWith(`${x.table}.${x.column} (`))) skipped.push(`${x.table}.${x.column} (a key to auth.users, which takes only run users' ids)`);
+          continue;
+        }
         // Only values the column takes: its type, its length, its CHECK or enum list.
         const fits = pool.filter((v) => fitsType(v, x.type) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || new RegExp(x.pattern).test(String(v))));
         if (!fits.length) {
@@ -329,7 +343,7 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
 
   const sizes = paths.map((p) => p.pool.length);
   const combos = sizes.reduce((a, b) => a * b, 1);
-  const count = paths.length === 0 ? MIN_USERS : Math.min(Math.max(combos + 2, MIN_USERS), SPREAD + 2);
+  const count = paths.length === 0 ? MIN_USERS : Math.min(Math.max(combos + 2, MIN_USERS), MAX_USERS);
   const spread = count - 2;
   const picked = pickCombinations(sizes, spread);
   const users: Map<string, ClaimValue>[] = [];
