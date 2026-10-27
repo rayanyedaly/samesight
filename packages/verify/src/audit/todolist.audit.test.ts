@@ -7,6 +7,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { parseSyncConfig } from "samesight/compiler";
 import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import type pg from "pg";
@@ -18,6 +19,7 @@ import { type AutoStarted, autoStart } from "../autostart/run.ts";
 import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
 import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
+import { coverageScope, stateOf } from "./coverage.ts";
 import { auditTables } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
 
@@ -232,5 +234,45 @@ describe("the write path on the demo", () => {
     });
     // The new row must pass the SELECT policy too, since the WHERE reads the table.
     expect(refused).toBe("42501");
+  });
+});
+
+describe("coverage on the demo", () => {
+  const scope = async () => {
+    const config = parseSyncConfig(readFileSync(`${DEMO}sync-config.yaml`, "utf8"));
+    return coverageScope(client, SYNCED, config.streams, await policyFunctions(client), config.kind, new Set());
+  };
+
+  it("sees both policies and the user_data stream's two tables allowing and refusing, and a hook-only policy only refusing", async () => {
+    // Committed for the run, since coverage reads in its own transaction: it lets no run user
+    // read more (no token carries app_role), so the differential still passes.
+    await client.query("create policy samesight_hook_only on public.lists for select to authenticated using ((auth.jwt() ->> 'app_role') = 'auditor')");
+    try {
+      const cov = await scope();
+      const r = await differential(s, { runs: 2, seed: 3, timeLimitMs: 120_000, coverage: cov });
+      expect(r.findings.filter((f) => f.status === "fail")).toEqual([]);
+      expect(cov.policies.map((p) => [p.table, p.name, stateOf(p.tally), p.reachable])).toEqual([
+        ["lists", "owned lists", "exercised", true],
+        ["lists", "samesight_hook_only", "only refused", false],
+        ["todos", "todos in owned lists", "exercised", true],
+      ]);
+      expect(cov.units.map((u) => [u.streams, u.table, stateOf(u.tally)])).toEqual([
+        [["user_data"], "lists", "exercised"],
+        [["user_data"], "todos", "exercised"],
+      ]);
+      expect(cov.datasets).toBeGreaterThanOrEqual(2);
+    } finally {
+      await client.query("drop policy if exists samesight_hook_only on public.lists");
+    }
+  }, 300_000);
+
+  it("names an event trigger that would run on DROP POLICY, and then measures no policy", async () => {
+    const cov = await rolledBack(client, async () => {
+      await client.query("create function public.samesight_test_ddl() returns event_trigger language plpgsql as $$ begin end $$");
+      await client.query("create event trigger samesight_test_ddl on ddl_command_end execute function public.samesight_test_ddl()");
+      return scope();
+    });
+    expect(cov.triggers).toEqual(["samesight_test_ddl (samesight_test_ddl)"]);
+    expect(cov.notes).toContainEqual(expect.objectContaining({ status: "warn", detail: expect.stringMatching(/^policies not measured: .*event triggers would run on that \(samesight_test_ddl/) }));
   });
 });

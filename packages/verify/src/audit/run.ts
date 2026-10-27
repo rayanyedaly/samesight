@@ -17,7 +17,8 @@ import type { Stack } from "../stack.ts";
 import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
 import { accessTokenHook, claimFindings, planClaims, policyFunctions, policyRules, type RuleSql, syncRules } from "./claims.ts";
 import { auditScope } from "samesight/compiler";
-import { parseSyncConfig } from "samesight/compiler";
+import { parseSyncConfig, type SyncConfig } from "samesight/compiler";
+import { coverageScope } from "./coverage.ts";
 import { checkWriteEscape } from "./writes.ts";
 
 export interface AuditOptions {
@@ -87,8 +88,9 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   let scope: ReturnType<typeof auditScope>;
   let warnings: Finding[];
   let streamSql: RuleSql[];
+  let config: SyncConfig;
   try {
-    const config = parseSyncConfig(o.syncConfig.text);
+    config = parseSyncConfig(o.syncConfig.text);
     streamSql = syncRules(config);
     scope = auditScope(config.streams, config.kind);
     warnings = config.findings;
@@ -109,7 +111,8 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   ];
   section("Database catalog", [...(await checkAuditCatalog(client, scope.synced, o.publication, scope.reads)), ...checkUserEditableClaims(rules)]);
   // The claims the rules read: shown now when no user will sign in, else once users have.
-  const claims = planClaims([...(await policyRules(client)), ...streamSql], await policyFunctions(client));
+  const functions = await policyFunctions(client);
+  const claims = planClaims([...(await policyRules(client)), ...streamSql], functions);
   const hook = o.projectDir === undefined ? undefined : accessTokenHook(o.projectDir);
   // The metadata values each run user holds: a uuid none of the rules name is one of the run's own.
   const assignment = assignClaims(claims, () => prefixedUuid(PREFIX));
@@ -145,7 +148,8 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
     section("Claims", claimFindings(claims, hook, tokens, assignment));
     o.log("generating datasets for the differential");
-    const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
+    const coverage = await coverageScope(client, scope.synced, config.streams, functions, config.kind, new Set(assignment.paths.map((p) => p.key)));
+    const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
     section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, result.findings);
     o.log("writing as each user");
     const [world] = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 16 }), { numRuns: 1, seed: o.seed ?? 7 });

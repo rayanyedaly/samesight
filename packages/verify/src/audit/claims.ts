@@ -51,7 +51,7 @@ export interface ClaimsPlan {
  * Runs catalog reads with an empty search_path, so Postgres prints every function with its
  * schema (auth.jwt(), not a bare jwt() when auth happens to be on the path).
  */
-async function qualified<T>(client: pg.Client, fn: () => Promise<T>): Promise<T> {
+export async function qualified<T>(client: pg.Client, fn: () => Promise<T>): Promise<T> {
   const { rows: current } = await client.query<{ path: string }>("select pg_catalog.current_setting('search_path') as path");
   await client.query("select pg_catalog.set_config('search_path', '', false)");
   const restore = () => client.query("select pg_catalog.set_config('search_path', $1, false)", [current[0]?.path ?? ""]);
