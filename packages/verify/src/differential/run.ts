@@ -229,11 +229,10 @@ export async function setUp(client: pg.Client, stack: Stack, ir: IR): Promise<Se
 
 /** How a differential finding says a dataset could not be run (the service failed, say), alone or after a counterexample. */
 const RUN_FAILED = "the run failed: ";
-const THEN_FAILED = "(then a run failed: ";
 
 /** Whether the differential broke down rather than found something: its service's logs are then worth showing. */
 export function brokeDown(findings: Finding[]): boolean {
-  return findings.some((f) => f.status === "fail" && (f.detail.startsWith(RUN_FAILED) || f.detail.includes(THEN_FAILED)));
+  return findings.some((f) => f.status === "fail" && f.incomplete === true);
 }
 
 /** Users a run without a policy signs up. */
@@ -739,7 +738,11 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       },
     ];
   };
-  const fail = (detail: string, runs: number) => ({ runs, findings: withGaps([{ status: "fail" as const, check, detail }]) });
+  // A run that could not finish (a service broke down) is incomplete: it found nothing, and checked nothing either.
+  const fail = (detail: string, runs: number, incomplete = false) => ({
+    runs,
+    findings: withGaps([{ status: "fail" as const, check, detail, ...(incomplete ? { incomplete } : {}) }]),
+  });
 
   // Coverage counts datasets up to the first failure: shrinking replays variations of that one.
   let failedOnce = false;
@@ -770,11 +773,12 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
     datasets += x.datasets;
   }
   x = { ...x, datasets };
-  const crashed = x.crash === undefined ? "" : ` ${THEN_FAILED}${String(x.crash)})`;
+  // A run that failed after the counterexample was found: said on its own, as incomplete.
+  const crashed: Finding[] = x.crash === undefined ? [] : [{ status: "fail", check, detail: `then ${RUN_FAILED}${String(x.crash)}`, incomplete: true }];
   if (x.lastFailing) {
     const world = x.lastFailing;
     const counterexample = describeFailures(s, failing(await withWorld(s, world, () => compareAll(s))));
-    if (!counterexample.length) return fail(`a dataset failed (seed ${x.seed}) but passed when run again: devices may not have caught up${crashed}`, x.datasets);
+    if (!counterexample.length) return fail(`a dataset failed (seed ${x.seed}) but passed when run again: devices may not have caught up${x.crash === undefined ? "" : ` (then ${RUN_FAILED}${String(x.crash)})`}`, x.datasets, true);
     return {
       runs: x.datasets,
       counterexample,
@@ -782,13 +786,14 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
         {
           status: "fail",
           check,
-          detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}${crashed}):\n${counterexample.map((l) => `    ${l}`).join("\n")}`,
+          detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}):\n${counterexample.map((l) => `    ${l}`).join("\n")}`,
         },
+        ...crashed,
       ]),
     };
   }
-  if (x.crash !== undefined) return { ...fail(`${RUN_FAILED}${String(x.crash)}`, x.datasets), stopped: x.stopped };
-  if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit" }] };
+  if (x.crash !== undefined) return { ...fail(`${RUN_FAILED}${String(x.crash)}`, x.datasets, true), stopped: x.stopped };
+  if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit", incomplete: true }] };
   const untested = s.tables
     .filter((t) => s.synced.includes(t.name))
     .flatMap((t) =>

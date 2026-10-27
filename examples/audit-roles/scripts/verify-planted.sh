@@ -40,6 +40,11 @@ if [ "$code" -eq 0 ]; then
   echo "verify-planted.sh: the audit passed on the planted sync config" >&2
   exit 1
 fi
+# 1 is a finding; 2 is a run that could not finish, which caught nothing.
+if [ "$code" -ne 1 ]; then
+  echo "verify-planted.sh: the audit exited $code, not 1 (findings)" >&2
+  exit 1
+fi
 if ! grep -qE "$caught" "$log"; then
   echo "verify-planted.sh: the audit failed, but not on the planted $which leak" >&2
   exit 1

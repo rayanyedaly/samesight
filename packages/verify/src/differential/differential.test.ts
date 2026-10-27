@@ -222,10 +222,13 @@ describe("watchErrors", () => {
 
 describe("brokeDown", () => {
   it("tells a run that could not finish its datasets from one that found something", () => {
-    const fail = (detail: string) => ({ status: "fail" as const, check: "differential", detail });
-    expect(brokeDown([fail("the run failed: Error: no complete sync from http://x: fetch failed")])).toBe(true);
-    expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows (then a run failed: Error: fetch failed)):\n    u0 received ...")])).toBe(true);
+    const fail = (detail: string, incomplete?: true) => ({ status: "fail" as const, check: "differential", detail, ...(incomplete ? { incomplete } : {}) });
+    expect(brokeDown([fail("the run failed: Error: no complete sync from http://x: fetch failed", true)])).toBe(true);
+    // A counterexample, then a run that failed: two findings, the second incomplete.
+    expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows):\n    u0 received ..."), fail("then the run failed: Error: fetch failed", true)])).toBe(true);
     expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows):\n    u0 received ...")])).toBe(false);
+    // Read from the flag, not the words.
+    expect(brokeDown([fail("the run failed: x")])).toBe(false);
     expect(brokeDown([{ status: "warn", check: "differential", detail: "the run failed: x" }])).toBe(false);
   });
 });
