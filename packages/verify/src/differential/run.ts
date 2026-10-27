@@ -21,6 +21,7 @@ import { insertOrder, policyTables, readModel, type ScopeTable, type TableModel 
 import { readAsUsers } from "./rls.ts";
 import { createUsers, deleteUser, leftoverUsers, type Session, signIn } from "./users.ts";
 import {
+  cleanable,
   deleteRows,
   type Fixed,
   generatedTables,
@@ -82,10 +83,16 @@ export interface UserProblems {
   problems: Problem[];
 }
 
-/** Removes everything an earlier run may have left: its rows, then its users. */
-export async function cleanup(client: pg.Client, stack: Stack, model: TableModel[]): Promise<void> {
+/**
+ * Removes everything an earlier run may have left: its rows, then its users. `outside` are
+ * tables beyond the run's that may hold an earlier run's rows (the access token hook's, from
+ * a run made while it was enabled): only rows keyed by the prefix or owned by a run user go.
+ */
+export async function cleanup(client: pg.Client, stack: Stack, model: TableModel[], outside: TableModel[] = []): Promise<void> {
   const users = await leftoverUsers(client);
-  const rowsDeleted = await deleteRows(client, insertOrder(model), PREFIX, users).then(
+  // Past the project's triggers (deleteRows), the order of the outside tables does not matter.
+  const tables = [...insertOrder(model), ...outside.filter((t) => !model.some((m) => m.name === t.name))];
+  const rowsDeleted = await deleteRows(client, tables, PREFIX, users, { ownedOnly: new Set(outside.map((t) => t.name)) }).then(
     () => undefined,
     (e: unknown) => e,
   );
@@ -95,6 +102,12 @@ export async function cleanup(client: pg.Client, stack: Stack, model: TableModel
   for (const id of users) await deleteUser(stack, id).catch((e: Error) => failed.push(`${id}: ${e.message}`));
   if (rowsDeleted !== undefined) throw rowsDeleted;
   if (failed.length) throw new Error(`could not delete ${failed.length} earlier run users (a row outside the audited tables may still reference them): ${failed.join("; ")}`);
+}
+
+/** The tables of `names` deleteRows can clean; none when they cannot be read. */
+async function outsideModel(client: pg.Client, names: string[]): Promise<TableModel[]> {
+  if (!names.length) return [];
+  return (await readModel(client, names.map((name) => ({ name }))).catch(() => [])).filter(cleanable);
 }
 
 const letter = (i: number) => String.fromCharCode(65 + i);
@@ -124,6 +137,7 @@ export async function stoppable(
   stack: Stack,
   tables: ScopeTable[],
   log: (line: string) => void,
+  outside: string[] = [],
 ): Promise<{ step: () => Promise<void>; tearDown: (s: Run) => Promise<void> }> {
   const [{ pid } = { pid: 0 }] = await rows<{ pid: number }>(client, "select pg_backend_pid() as pid");
   let ending: Promise<void> | undefined;
@@ -153,7 +167,7 @@ export async function stoppable(
           return;
         }
         try {
-          await cleanup(fresh, stack, insertOrder(await readModel(fresh, tables)));
+          await cleanup(fresh, stack, insertOrder(await readModel(fresh, tables)), await outsideModel(fresh, outside));
         } finally {
           await fresh.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
         }
@@ -222,7 +236,7 @@ export function runUserIds(count: number): string[] {
 export async function setUpUsers(
   client: pg.Client,
   stack: Stack,
-  scope: { tables: ScopeTable[]; synced: string[]; deviceTables?: Record<string, string>; fixed?: FixedSetUp },
+  scope: { tables: ScopeTable[]; synced: string[]; deviceTables?: Record<string, string>; fixed?: FixedSetUp; cleanup?: string[] },
   claims?: UserClaims,
 ): Promise<Run> {
   const count = claims?.metadata.length || AUDIT_USERS;
@@ -233,7 +247,7 @@ export async function setUpUsers(
     // (fixed tables were checked for a key or a user column when they were planned).
     const refused = auditRefusals(model.filter((t) => !fixedTables.includes(t.name)), scope.synced);
     if (refused.length) throw new Error(`audit mode cannot run on these tables: ${refused.join("; ")}`);
-    await cleanup(client, stack, model);
+    await cleanup(client, stack, model, await outsideModel(client, scope.cleanup ?? []));
     const ids = claims?.ids?.slice(0, count) ?? runUserIds(count);
     const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36), claims?.metadata, ids);
     // Rows the access token hook reads, before anyone signs in; each on its own, so one the
@@ -303,7 +317,7 @@ export async function setUpUsers(
       hidden: () => new Map(),
       gaps: "warn",
     };
-  });
+  }, scope.cleanup);
 }
 
 /**
@@ -338,7 +352,7 @@ export function auditRefusals(model: TableModel[], synced: string[]): string[] {
 }
 
 /** Holds the run's lock while `prepare` sets the run up; on failure, removes what it made and lets go. */
-async function exclusive<T extends Run>(client: pg.Client, stack: Stack, tables: ScopeTable[], prepare: () => Promise<T>): Promise<T> {
+async function exclusive<T extends Run>(client: pg.Client, stack: Stack, tables: ScopeTable[], prepare: () => Promise<T>, outside: string[] = []): Promise<T> {
   const [{ locked } = { locked: false }] = await rows<{ locked: boolean }>(client, "select pg_try_advisory_lock($1) as locked", [LOCK]);
   if (!locked) throw new Error("another samesight verify run is using this database; wait for it to finish");
   holdingLock.add(client);
@@ -347,7 +361,7 @@ async function exclusive<T extends Run>(client: pg.Client, stack: Stack, tables:
   } catch (e) {
     // Users, tenants and memberships made before the failure: removed now, not by the next run.
     const model = insertOrder(await readModel(client, tables).catch(() => []));
-    await cleanup(client, stack, model).catch(() => {});
+    await cleanup(client, stack, model, await outsideModel(client, outside)).catch(() => {});
     await unlock(client);
     throw e;
   }

@@ -227,14 +227,33 @@ export async function insertWorld(client: pg.Client, tables: TableModel[], world
   return done.slice(existing.length);
 }
 
+/** A table's columns pointing at auth.users on their own, and those of them a row must fill. */
+function ownersOf(t: TableModel): { all: string[]; required: string[] } {
+  const all = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
+  return { all, required: all.filter((c) => t.columns.find((x) => x.name === c)?.nullable === false) };
+}
+
+/**
+ * Whether deleteRows can find a run's rows in the table: by a tenant column, by a
+ * single-column key (the run's prefix), or by a required column pointing at auth.users.
+ */
+export function cleanable(t: TableModel): boolean {
+  return t.tenant !== undefined || (t.primaryKey.length === 1 && t.primaryKey[0] !== undefined) || ownersOf(t).required.length > 0;
+}
+
 /**
  * Deletes the run's rows from `tables`, bypassing the append-only triggers: every row of
  * the run's tenants, or, for a table without a tenant column, every row whose primary key
  * carries the run's prefix (the generator gives uuid keys the prefix) or that points at one
  * of `users` (the run's users) through a key to auth.users, which also catches rows the
  * project's own triggers made for the run's rows.
+ *
+ * A table without a single key (user_roles keyed by user and role) is matched by its
+ * required owner columns only: a row there whose only link to a run user is an optional
+ * column (invited_by) is someone else's, and is kept, though it may then block deleting that
+ * user. So are the tables in `ownedOnly`, which are not the run's own (cleanup reaches them).
  */
-export async function deleteRows(client: pg.Client, tables: TableModel[], prefix: string, users: string[] = []): Promise<void> {
+export async function deleteRows(client: pg.Client, tables: TableModel[], prefix: string, users: string[] = [], options: { ownedOnly?: ReadonlySet<string> } = {}): Promise<void> {
   await client.query("begin");
   try {
     await client.query("set local session_replication_role = replica");
@@ -244,12 +263,10 @@ export async function deleteRows(client: pg.Client, tables: TableModel[], prefix
         continue;
       }
       const [key] = t.primaryKey;
-      const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
       const keyed = t.primaryKey.length === 1 && key !== undefined;
-      // A table the run's rows are found in by owner alone (user_roles keyed by user and role) needs
-      // no single key, but then a required owner column, so no row of the run's lacks one.
-      const owned = owners.some((c) => t.columns.find((x) => x.name === c)?.nullable === false);
-      if (!keyed && !owned) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column, no single-column primary key and no required column pointing at auth.users`);
+      if (!cleanable(t)) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column, no single-column primary key and no required column pointing at auth.users`);
+      const { all, required } = ownersOf(t);
+      const owners = keyed && !options.ownedOnly?.has(t.name) ? all : required;
       const params: unknown[] = [];
       const conds = [
         ...(keyed ? [`${ident(key)}::text like $${params.push(`${prefix}%`)}`] : []),

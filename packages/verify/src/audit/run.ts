@@ -82,6 +82,20 @@ export async function auditTables(client: pg.Client, start: string[]): Promise<s
   return found.map((r) => r.name);
 }
 
+/**
+ * Tables beyond the run's `tables` an earlier run may have left rows in (the access token
+ * hook's, from a run made while it was enabled): the public tables with a column pointing at
+ * auth.users, and the tables those point at.
+ */
+export async function cleanupScope(client: pg.Client, tables: string[]): Promise<string[]> {
+  const owning = await rows<{ name: string }>(
+    client,
+    `select distinct c.relname as name from pg_constraint k join pg_class c on c.oid = k.conrelid join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and k.contype = 'f' and k.confrelid = 'auth.users'::regclass and cardinality(k.conkey) = 1`,
+  );
+  return (await auditTables(client, owning.map((r) => r.name))).filter((t) => !tables.includes(t));
+}
+
 /** Runs the audit; the findings are reported through `section` as each step ends. */
 export async function audit(client: pg.Client, given: Stack, o: AuditOptions): Promise<Finding[]> {
   const findings: Finding[] = [];
@@ -128,7 +142,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const fixedTables = p.setUp.scope.fixed?.tables ?? [];
   o.log(`signing up users; generating rows for ${tables.filter((t) => !fixedTables.includes(t)).join(", ")}${fixedTables.length ? `; rows the access token hook reads in ${fixedTables.join(", ")}` : ""}`);
   // Added before any user exists, so a run stopped at any point after removes what it made.
-  const stop = await stoppable(client, stack, p.setUp.scope.tables, o.log);
+  const stop = await stoppable(client, stack, p.setUp.scope.tables, o.log, p.setUp.scope.cleanup);
   o.teardown?.add("the run's users and rows", stop.step);
   let s: Run;
   try {
@@ -212,6 +226,7 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
   }
   const tables = await auditTables(client, [...named, ...(fixed?.perUser ?? [])]);
   const model = await modelOf(tables);
+  const cleanup = await cleanupScope(client, tables);
   // A column counts as one the hook reads when its body or a function it calls names it.
   const dims = fixed && hookPlan?.fn ? hookDims(model, fixed, hookPlan.fn.read, hookPlan.fn.body, hookPlan.fn.starred) : [];
   // Run users' ids are minted up front, so a claim compared with a user column can hold two of
@@ -250,6 +265,7 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
         tables: scopeTables,
         synced: scope.synced,
         deviceTables: scope.deviceTables,
+        cleanup,
         ...(fixed
           ? {
               fixed: {

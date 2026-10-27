@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnModel, TableModel } from "../differential/model.ts";
-import { deleteRows } from "../differential/world.ts";
+import { cleanable, deleteRows } from "../differential/world.ts";
 import { assignClaims } from "./assign.ts";
 import { planClaims } from "./claims.ts";
 import { dimLabel, fixedPlan, fixedRows, hookDims, userColumn } from "./fixed.ts";
@@ -224,9 +224,35 @@ describe("deleteRows on a table found by its user column alone", () => {
     expect(userColumn(members)).toBe("user_id");
     const sql: [string, unknown[]][] = [];
     await deleteRows({ query: async (text: string, values: unknown[] = []) => sql.push([text, values]) } as never, [members], "5a3e5a3e", ["u0"]);
-    expect(sql.filter(([t]) => t.startsWith("delete"))).toEqual([['delete from public.team_members where invited_by = any($1::uuid[]) or user_id = any($1::uuid[])', [["u0"]]]]);
+    // By its required user column only: a row u0 only invited is someone else's.
+    expect(sql.filter(([t]) => t.startsWith("delete"))).toEqual([['delete from public.team_members where user_id = any($1::uuid[])', [["u0"]]]]);
     const rows = fixedRows([teams, members], fixedPlan([teams, members], ["team_members"]), [], [[]], ["u0-id"], () => "5a3e5a3e-k");
     expect(rows.find((r) => r.table === "team_members")?.row).toMatchObject({ user_id: "u0-id", invited_by: "u0-id" });
+  });
+
+  it("matches a table outside the run by its prefix and required owners only", async () => {
+    const audits: TableModel = {
+      name: "audits",
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [col("id", "uuid"), col("user_id", "uuid"), col("reviewer_id", "uuid", { nullable: true })],
+      foreignKeys: [toUsers("reviewer_id"), toUsers("user_id")],
+    };
+    const deleted = async (ownedOnly?: Set<string>) => {
+      const sql: [string, unknown[]][] = [];
+      await deleteRows({ query: async (text: string, values: unknown[] = []) => sql.push([text, values]) } as never, [audits], "5a3e5a3e", ["u0"], ownedOnly ? { ownedOnly } : {});
+      return sql.filter(([t]) => t.startsWith("delete")).map(([t]) => t);
+    };
+    expect(await deleted()).toEqual(["delete from public.audits where id::text like $1 or reviewer_id = any($2::uuid[]) or user_id = any($2::uuid[])"]);
+    expect(await deleted(new Set(["audits"]))).toEqual(["delete from public.audits where id::text like $1 or user_id = any($2::uuid[])"]);
+  });
+
+  it("says which tables it can clean", () => {
+    const base: TableModel = { name: "t", primaryKey: ["a_id", "b_id"], unique: [], columns: [col("a_id", "uuid"), col("b_id", "uuid"), col("by", "uuid", { nullable: true })], foreignKeys: [toUsers("by")] };
+    expect(cleanable(base)).toBe(false);
+    expect(cleanable({ ...base, primaryKey: ["a_id"] })).toBe(true);
+    expect(cleanable({ ...base, tenant: "a_id" })).toBe(true);
+    expect(cleanable({ ...base, columns: base.columns.map((c) => ({ ...c, nullable: false })) })).toBe(true);
   });
 
   it("still refuses a table without a single key whose owner column may be null: such rows would never be found", async () => {
