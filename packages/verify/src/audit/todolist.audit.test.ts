@@ -20,6 +20,7 @@ import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
 import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
+import { planHook } from "./hook.ts";
 import { auditTables } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
 
@@ -146,6 +147,81 @@ describe("overloaded policy functions on the demo's catalog", () => {
     });
     expect(plan.uses.find((u) => u.key === "app_metadata.role")?.rules).toEqual(['policy "samesight_role" on lists (USING)']);
     expect(plan.unreadable.filter((x) => x.where.includes("samesight_role2"))).toEqual([]);
+  });
+});
+
+describe("an access token hook on the demo's catalog", () => {
+  const URI = "pg-functions://postgres/public/samesight_test_hook";
+  const plan = (sql: string[]) =>
+    rolledBack(client, async () => {
+      for (const q of sql) await client.query(q);
+      return planHook(client, URI, await policyFunctions(client));
+    });
+  // A plpgsql hook reading lists, and todos through a SQL-standard helper two levels down.
+  const hook = [
+    "create function public.samesight_test_owned(u uuid) returns bigint language sql stable return (select count(*) from public.todos where created_by = u)",
+    "create function public.samesight_test_count(u uuid) returns bigint language sql stable return public.samesight_test_owned(u)",
+    `create function public.samesight_test_hook(event jsonb) returns jsonb language plpgsql stable set search_path = '' as $$
+       declare n int;
+       begin
+         select count(*) into n from public.lists where owner_id = (event->>'user_id')::uuid;
+         perform public.samesight_test_count((event->>'user_id')::uuid);
+         return jsonb_set(event, '{claims,lists}', to_jsonb(n));
+       end $$`,
+  ];
+
+  it("finds the tables the hook reads, through the functions it calls, and that supabase_auth_admin cannot read them", async () => {
+    const p = await plan(hook);
+    expect(p).toMatchObject({ tables: ["lists", "todos"], role: "supabase_auth_admin", fn: { schema: "public", name: "samesight_test_hook" } });
+    expect(p.cannot).toBeUndefined();
+    expect(p.findings.map((f) => f.detail)).toEqual([
+      "supabase_auth_admin cannot read lists (no SELECT grant), so the access token hook pg-functions://postgres/public/samesight_test_hook may find no rows for run users",
+      "supabase_auth_admin cannot read todos (no SELECT grant), so the access token hook pg-functions://postgres/public/samesight_test_hook may find no rows for run users",
+    ]);
+  });
+
+  it("names RLS without a policy for it, and says nothing once a policy lets it read", async () => {
+    const grants = ["grant usage on schema public to supabase_auth_admin", "grant select on public.lists, public.todos to supabase_auth_admin"];
+    const rls = await plan([...hook, ...grants]);
+    expect(rls.findings.map((f) => f.detail)).toEqual([
+      expect.stringMatching(/^supabase_auth_admin cannot read lists \(RLS is on and no policy lets it read\)/),
+      expect.stringMatching(/^supabase_auth_admin cannot read todos \(RLS is on and no policy lets it read\)/),
+    ]);
+    const open = await plan([
+      ...hook,
+      ...grants,
+      "create policy samesight_hook_lists on public.lists for select to supabase_auth_admin using (true)",
+      "create policy samesight_hook_todos on public.todos for select to supabase_auth_admin using (true)",
+    ]);
+    expect(open.findings).toEqual([]);
+  });
+
+  it("checks a SECURITY DEFINER hook as its owner, and warns on what else it does on each sign-in", async () => {
+    const p = await plan([
+      `create function public.samesight_test_hook(event jsonb) returns jsonb language plpgsql security definer set search_path = '' as $$
+         begin
+           insert into public.todos (description, list_id, created_by) select 'x', id, owner_id from public.lists limit 0;
+           perform pg_notify('signins', event->>'user_id');
+           execute 'select 1';
+           return jsonb_set(event, '{claims,app_metadata,role}', '"admin"');
+         end $$`,
+    ]);
+    expect(p.role).toBe("postgres");
+    expect(p.tables).toEqual(["lists"]);
+    expect(p.findings.map((f) => f.detail)).toEqual([
+      expect.stringMatching(/runs SQL it builds at run time \(EXECUTE\)/),
+      expect.stringMatching(/writes to public\.todos: each run user's sign-in runs it$/),
+      expect.stringMatching(/calls pg_notify: each run user's sign-in runs it$/),
+      expect.stringMatching(/sets app_metadata\.role in the token, over what audit gives run users$/),
+    ]);
+  });
+
+  it("cannot steer a hook whose function is missing, or that reads no public table", async () => {
+    const missing = await plan([]);
+    expect(missing).toMatchObject({ tables: [], cannot: "it names no function public.samesight_test_hook(jsonb) in the database" });
+    expect(missing.findings).toEqual([expect.objectContaining({ detail: expect.stringMatching(/names no function public\.samesight_test_hook\(jsonb\) in the database; its claims are not steered$/) })]);
+    const none = await plan(["create function public.samesight_test_hook(event jsonb) returns jsonb language sql stable return event"]);
+    expect(none).toMatchObject({ tables: [], cannot: "its body reads no public table" });
   });
 });
 

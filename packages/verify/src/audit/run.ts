@@ -20,6 +20,7 @@ import { accessTokenHook, claimFindings, planClaims, policyFunctions, policyRule
 import { auditScope } from "samesight/compiler";
 import { parseSyncConfig, type SyncConfig } from "samesight/compiler";
 import { coverageFindings, coverageScope, coverageTitle, qualifyDifferential } from "./coverage.ts";
+import { planHook } from "./hook.ts";
 import { checkWriteEscape } from "./writes.ts";
 
 export interface AuditOptions {
@@ -117,6 +118,8 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const functions = await policyFunctions(client);
   const claims = planClaims([...(await policyRules(client)), ...streamSql], functions);
   const hook = o.projectDir === undefined ? undefined : accessTokenHook(o.projectDir);
+  // Its function, the tables it reads, and what it does on each sign-in.
+  const hookPlan = hook ? await planHook(client, hook.uri, functions) : undefined;
   const named = [...new Set([...scope.synced, ...scope.reads])];
   const tables = await auditTables(client, named);
   // The metadata values each run user holds, and the columns generated rows put them in: a
@@ -129,7 +132,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const userIds = runUserIds(MAX_USERS);
   const assignment = assignClaims(claims, () => prefixedUuid(PREFIX), await readModel(client, tables.map((name) => ({ name, hints, userColumns }))), userIds);
   if (o.staticOnly || failed(findings)) {
-    section("Claims", claimFindings(claims, hook, undefined, assignment));
+    section("Claims", claimFindings(claims, hook, undefined, assignment, hookPlan));
     if (!o.staticOnly) o.log("skipping the differential: fix the failures above first");
     return findings;
   }
@@ -161,12 +164,12 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     s = await (o.teardown ? o.teardown.step(setUp) : setUp());
   } catch (e) {
     // Users could not sign in (a rate limit, say): the claims are still worth showing.
-    section("Claims", claimFindings(claims, hook, undefined, assignment));
+    section("Claims", claimFindings(claims, hook, undefined, assignment, hookPlan));
     throw e;
   }
   try {
     const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
-    section("Claims", claimFindings(claims, hook, tokens, assignment));
+    section("Claims", claimFindings(claims, hook, tokens, assignment, hookPlan));
     o.log("generating datasets for the differential");
     const coverage = await coverageScope(client, scope.synced, config.streams, functions, config.kind, new Set(assignment.paths.map((p) => p.key)));
     const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, ...(o.seed !== undefined ? { seed: o.seed } : {}) });

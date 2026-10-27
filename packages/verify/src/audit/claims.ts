@@ -12,6 +12,7 @@ import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classi
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import { type Assignment, type SetPath, show as plain } from "./assign.ts";
+import { type HookPlan, showUri } from "./hook.ts";
 import { signInDetail, signInKeyOf } from "./signin.ts";
 
 /** One rule's SQL: a policy's USING or WITH CHECK, or a stream or bucket query. */
@@ -235,10 +236,12 @@ export function claimFindings(
   hook: { uri: string } | undefined,
   tokens?: Map<string, Record<string, unknown>>,
   assignment?: Assignment,
+  hookPlan?: HookPlan,
 ): Finding[] {
   const out: Finding[] = [];
   const add = (status: Finding["status"], detail: string) => out.push({ status, check: "claims", detail });
-  if (hook && remoteHook(hook.uri)) add("warn", `the access token hook ${hook.uri} is not on this machine: every sign-in of a run user calls it`);
+  if (hook && remoteHook(hook.uri)) add("warn", `the access token hook ${showUri(hook.uri)} is not on this machine: every sign-in of a run user calls it`);
+  out.push(...(hookPlan?.findings ?? []));
   for (const u of plan.uses) {
     const compared = [
       ...(u.values.length ? [`compared with ${u.values.map(show).join(", ")}`] : []),
@@ -288,7 +291,7 @@ export function claimFindings(
         break;
       }
       case "hook":
-        add("warn", hookDetail(read, u, hook, tokens));
+        add("warn", hookDetail(read, u, hook, tokens, hookPlan));
         break;
       case "object":
         add("warn", `${read}; it reads ${u.key || "the whole token"} as one value, which audit cannot give users`);
@@ -345,7 +348,13 @@ function heldBy(tokens: Map<string, Record<string, unknown>>, path: string[]): s
 }
 
 /** What a hook-only claim means for this run, from the tokens when users have signed in. */
-function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined, tokens?: Map<string, Record<string, unknown>>): string {
+function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined, tokens?: Map<string, Record<string, unknown>>, hookPlan?: HookPlan): string {
+  if (hook && hookPlan?.cannot) {
+    const by = `added by the access token hook ${showUri(hook.uri)}, which audit cannot give rows to (${hookPlan.cannot})`;
+    return tokens
+      ? `${read}; ${by}; held: ${holders(tokens, u.path)}. Rules that read it are tested for these values only`
+      : `${read}; ${by}. Rules that read it are tested only for the values run users' tokens carry`;
+  }
   const held = tokens ? [...tokens].map(([label, claims]) => [label, at(claims, u.path)] as const) : undefined;
   const carried = held?.filter(([, v]) => v !== undefined && v !== null) ?? [];
   if (!hook) {
@@ -359,6 +368,18 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
   return same
     ? `${read}; ${by}; users signed in before any rows were generated, so every token carries the same value${values}. Rules that read it are tested for that value only; steering hook claims is planned (B3b)`
     : `${read}; ${by}${values}; audit does not choose these values, so rules that read it are tested for them only`;
+}
+
+/** lead u0 u3, member u1, none u2: the users whose tokens carry each value at `path`. */
+export function holders(tokens: Map<string, Record<string, unknown>>, path: string[]): string {
+  const by = new Map<string, string[]>();
+  const none: string[] = [];
+  for (const [label, claims] of tokens) {
+    const v = at(claims, path);
+    if (v === undefined || v === null) none.push(label);
+    else by.set(JSON.stringify(v), [...(by.get(JSON.stringify(v)) ?? []), label]);
+  }
+  return [...[...by].map(([v, labels]) => `${plain(JSON.parse(v))} ${labels.join(" ")}`), ...(none.length ? [`none ${none.join(" ")}`] : [])].join(", ");
 }
 
 /** The value at a path in decoded token claims. */
