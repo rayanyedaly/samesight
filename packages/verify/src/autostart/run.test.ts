@@ -302,13 +302,23 @@ describe("autoStart", () => {
     const d = docker({
       kept: "0a0b0c0d",
       keptFingerprint: await fingerprint(),
-      keptConfig: "uri: postgresql://samesight_audit_0a0b0c0d:role-password-0123456789@db:5432/postgres\nstorage: postgresql://powersync_storage:storage-password-0123456789@s:5432/x",
-      logs: "auth failed for role-password-0123456789, then storage-password-0123456789",
+      keptConfig: [
+        "replication:",
+        "  connections:",
+        "    - uri: postgresql://samesight_audit_0a0b0c0d:role-password-0123456789@db:5432/postgres",
+        "storage:",
+        "  uri: postgresql://powersync_storage:storage-password-0123456789@s:5432/x",
+        "sync_config:",
+        "  content: |",
+        "    # local: postgresql://postgres:postgres@127.0.0.1:54322/postgres",
+      ].join("\n"),
+      logs: "auth failed for role-password-0123456789, then storage-password-0123456789, as postgres",
     });
     const started = await autoStart(options(d.docker, db({ keptAlive: true }), proc()));
     const logs: string[] = [];
     await started.stop({ logs: (t) => logs.push(t) });
-    expect(logs).toEqual(["auth failed for ***, then ***"]);
+    // The sync config's own text is not a secret: only the service's two connections are.
+    expect(logs).toEqual(["auth failed for ***, then ***, as postgres"]);
   });
 
   it("does not reuse a service kept for another sync config or token check, and sweeps it", async () => {
