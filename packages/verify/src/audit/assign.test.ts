@@ -4,7 +4,7 @@ import { claimLabel } from "../differential/run.ts";
 import type { TableModel } from "../differential/model.ts";
 import { createUsers, signIn } from "../differential/users.ts";
 import type { Stack } from "../stack.ts";
-import { assignClaims, canonicalNumber, fitsType, metadataOf, otherValue, pickCombinations, show, valueKeyFor } from "./assign.ts";
+import { assignClaims, canonicalNumber, castFamily, fitsType, metadataOf, otherValue, pickCombinations, show, valueKeyFor } from "./assign.ts";
 import { claimFindings, planClaims, type RuleSql, syncRules } from "./claims.ts";
 
 const policy = (where: string, sql: string): RuleSql => ({ where, sql, dialect: "postgres" });
@@ -476,6 +476,10 @@ describe("claims compared with columns", () => {
 });
 
 describe("one number, one value, where the rules read numbers", () => {
+  it("takes every numeric type the claim reader does as a number", () => {
+    expect(["float", "float8", "numeric(10,2)", "int8", "double precision", "text"].map(castFamily)).toEqual(["number", "number", "number", "number", "number", "text"]);
+  });
+
   it("spells every number one way, from its digits, and nothing else as a number", () => {
     expect(["1", 1, "01", "1.0", "1e0", " 1 ", "+1", ".1e1"].map(canonicalNumber)).toEqual(Array(8).fill("0.1e1"));
     expect([0, "0.00", "-0", "-1.50", 1e21, "100", "9007199254740993"].map(canonicalNumber)).toEqual(["0", "0", "0", "-0.15e1", "0.1e22", "0.1e3", "0.9007199254740993e16"]);

@@ -256,7 +256,7 @@ export function otherValue(values: ClaimValue[], casts: string[], fresh: () => s
 
 export function castFamily(cast: string): "uuid" | "number" | "boolean" | "text" | "unknown" {
   if (cast === "uuid") return "uuid";
-  if (/^(smallint|integer|int|int2|int4|int8|bigint|numeric|decimal|real|double precision|float4|float8)(\(.*\))?$/.test(cast)) return "number";
+  if (/^(smallint|integer|int|int2|int4|int8|bigint|numeric|decimal|real|double precision|float|float4|float8)(\(.*\))?$/.test(cast)) return "number";
   if (/^(boolean|bool)$/.test(cast)) return "boolean";
   if (/^(text|varchar|character varying|json|jsonb)(\(.*\))?$/.test(cast)) return "text";
   return "unknown";
