@@ -36,6 +36,21 @@ describe("claimReads on SQL it used to refuse or misread", () => {
     expect(reads(`((${level})::integer = '')`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([""]), casts: ["integer"] }]);
   });
 
+  it("keeps a number a double cannot hold exactly as its text, and text an integer cannot take as text", () => {
+    const level = "((auth.jwt() -> 'app_metadata'::text) ->> 'level'::text)";
+    const one = (sql: string) => {
+      const c = reads(sql, "postgres")[0]?.compared;
+      return c?.kind === "literals" ? c.values : undefined;
+    };
+    expect(one(`((${level})::bigint = '9007199254740993')`)).toEqual(["9007199254740993"]);
+    expect(one(`((${level})::bigint = 9007199254740993)`)).toEqual(["9007199254740993"]);
+    expect(one(`((${level})::numeric = '1e400')`)).toEqual(["1e400"]);
+    expect(one(`((${level})::numeric = '0.10')`)).toEqual([0.1]);
+    // Postgres refuses '1.5' and '1e2' as integers.
+    expect(one(`((${level})::integer IN ('1.5', '1e2', ' 7 '))`)).toEqual(["1.5", "1e2", 7]);
+    expect(one(`((${level})::numeric IN ('1.5', '1e2'))`)).toEqual([1.5, 100]);
+  });
+
   it("reads public.table.column as that table's column, and another schema's as no column of the run's", () => {
     expect(reads("(auth.uid() = public.lists.owner_id)", "postgres")).toEqual([{ path: "sub", compared: { ...col("owner_id"), qualifier: "lists" } }]);
     expect(reads("(auth.uid() = private.lists.owner_id)", "postgres")).toEqual([{ path: "sub", compared: { kind: "other", text: "private.lists.owner_id" } }]);

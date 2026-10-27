@@ -14,7 +14,9 @@
  * the users up, and generates rows, with what this gives.
  */
 
-import type { ClaimValue } from "samesight/compiler";
+import { type ClaimValue, canonicalNumber } from "samesight/compiler";
+
+export { canonicalNumber };
 import { jsPattern, type TableModel } from "../differential/model.ts";
 import type { Finding } from "../report.ts";
 import type { ClaimsPlan } from "./claims.ts";
@@ -153,24 +155,6 @@ const WHOLE: Record<string, [bigint, bigint]> = {
   int8: [-9223372036854775808n, 9223372036854775807n],
 };
 
-/**
- * A number's canonical text, the same for every spelling of one value (1, 1.0, '01', 1e0),
- * or undefined when the value is no number. Built from the digits, so a bigint past 2^53
- * and text like '', '0x10' or 'Infinity' are never taken for one.
- */
-export function canonicalNumber(v: unknown): string | undefined {
-  const text = typeof v === "number" ? (Number.isFinite(v) ? String(v) : undefined) : typeof v === "string" ? v.trim() : undefined;
-  const m = text === undefined ? null : /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
-  if (!m || (!m[2] && !m[3])) return undefined;
-  const whole = m[2] ?? "";
-  let digits = whole + (m[3] ?? "");
-  let point = whole.length + Number(m[4] ?? 0);
-  const lead = /^0*/.exec(digits)?.[0].length ?? 0;
-  digits = digits.slice(lead).replace(/0+$/, "");
-  point -= lead;
-  return digits ? `${m[1] === "-" ? "-" : ""}0.${digits}e${point}` : "0";
-}
-
 /** How values of a claim are told apart: by canonical number when the rules read it as one, else exactly. */
 export const valueKeyFor =
   (numeric: boolean | undefined) =>
@@ -179,19 +163,25 @@ export const valueKeyFor =
     return n === undefined ? JSON.stringify(v ?? null) : `#${n}`;
   };
 
-/** Whether the value is a number the type stores exactly: whole and in range, or within numeric(p,s). */
-function fitsNumber(v: ClaimValue, type: string): boolean {
+/**
+ * Whether the value is a number the type stores exactly: whole and in range, or within
+ * numeric(p,s). `numeric` says the rules read the claim as a number; read as text, a whole
+ * or float column matches only the spelling Postgres prints back (100, not 1e2 or 0100).
+ */
+function fitsNumber(v: ClaimValue, type: string, numeric = false): boolean {
   const text = typeof v === "number" ? (Number.isFinite(v) ? String(v) : undefined) : typeof v === "string" ? v : undefined;
-  // A float takes any spelling of a number it holds exactly (1e2, 0.50).
   if (text !== undefined && /^(real|float4|double precision|float8)$/.test(type) && canonicalNumber(text) !== undefined) {
     const n = Number(text);
-    const exact = canonicalNumber(String(/^(real|float4)$/.test(type) ? Math.fround(n) : n)) === canonicalNumber(text);
+    const stored = /^(real|float4)$/.test(type) ? Math.fround(n) : n;
+    // Read as a number, any spelling of a number the float holds exactly (1e2, 0.50).
+    const exact = numeric ? canonicalNumber(String(stored)) === canonicalNumber(text) : String(stored) === text;
     return Number.isFinite(n) && exact;
   }
   if (text === undefined || !/^-?\d+(\.\d+)?$/.test(text)) return false;
   const range = WHOLE[type];
   if (range) {
     if (!/^-?\d+$/.test(text) || (typeof v === "number" && !Number.isSafeInteger(v))) return false;
+    if (!numeric && String(BigInt(text)) !== text) return false;
     const n = BigInt(text);
     return n >= range[0] && n <= range[1];
   }
@@ -207,12 +197,12 @@ function fitsNumber(v: ClaimValue, type: string): boolean {
 }
 
 /** Whether a column of this type takes the value: generated rows never hold one the database refuses. */
-export function fitsType(v: ClaimValue, type: string): boolean {
+export function fitsType(v: ClaimValue, type: string, numeric = false): boolean {
   switch (castFamily(type)) {
     case "uuid":
       return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
     case "number":
-      return fitsNumber(v, type);
+      return fitsNumber(v, type, numeric);
     case "boolean":
       return typeof v === "boolean";
     case "text": {
@@ -345,7 +335,7 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
           continue;
         }
         // Only values the column takes: its type, its length, its CHECK or enum list.
-        const fits = pool.filter((v) => fitsType(v, x.type) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || jsPattern(x.pattern)?.test(String(v)) === true));
+        const fits = pool.filter((v) => fitsType(v, x.type, u.numeric) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || jsPattern(x.pattern)?.test(String(v)) === true));
         if (!fits.length) {
           skipped.push(`${x.table}.${x.column} (${x.values ? "its CHECK or enum list allows" : x.pattern !== undefined ? "its CHECK pattern takes" : `${x.type} takes`} none of the values)`);
           continue;
@@ -400,7 +390,7 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
     const values = [...u.values.filter((v) => v !== null), ...hookOptions].filter((v, i, all) => all.findIndex((w) => same(w) === same(v)) === i);
     for (const x of targetsOf(u.columns, u.columnTables, family, model).targets) {
       if (x.key || x.users || perUser.has(x.table)) continue;
-      const fits = values.filter((v) => fitsType(v, x.type) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || jsPattern(x.pattern)?.test(String(v)) === true));
+      const fits = values.filter((v) => fitsType(v, x.type, u.numeric) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || jsPattern(x.pattern)?.test(String(v)) === true));
       if (!fits.length) continue;
       const columns = claimValues.get(x.table) ?? new Map<string, unknown[]>();
       claimValues.set(x.table, columns);

@@ -13,7 +13,7 @@ import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import { type Assignment, castFamily, type SetPath, show as plain, valueKeyFor } from "./assign.ts";
 import { type HookPlan, showUri } from "./hook.ts";
-import { signInDetail, signInKeyOf } from "./signin.ts";
+import { SIGN_IN, signInDetail, signInKeyOf } from "./signin.ts";
 
 /** One rule's SQL: a policy's USING or WITH CHECK, or a stream or bucket query. */
 export interface RuleSql {
@@ -171,7 +171,13 @@ const valueKey = (v: ClaimValue) => JSON.stringify(v);
 export const claimKey = (path: readonly string[]) => path.map((k) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : JSON.stringify(k))).join(".");
 
 /** What the rules read, by claim path. */
-export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, string> = new Map()): ClaimsPlan {
+export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, string> = new Map(), options: { hook?: boolean } = {}): ClaimsPlan {
+  // A claim Supabase Auth leaves out of a password user's token (client_id, jti) is the
+  // hook's when the project enables one: only the hook could add it there.
+  const classOf = (path: string[]): ClaimClass => {
+    const cls = classify(path);
+    return options.hook && cls === "auth-state" && SIGN_IN[signInKeyOf(claimKey(path))]?.kind === "absent" ? "hook" : cls;
+  };
   const uses = new Map<string, ClaimUse>();
   const unreadable: ClaimsPlan["unreadable"] = [];
   const identityColumns = new Set<string>();
@@ -180,7 +186,7 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
     for (const u of found.unreadable) unreadable.push({ where: rule.where, ...u });
     for (const read of found.reads) {
       const key = claimKey(read.path);
-      const use = uses.get(key) ?? { path: read.path, key, cls: classify(read.path), rules: [], values: [], columns: [], columnTables: {}, other: [], casts: [], numeric: true, negated: false };
+      const use = uses.get(key) ?? { path: read.path, key, cls: classOf(read.path), rules: [], values: [], columns: [], columnTables: {}, other: [], casts: [], numeric: true, negated: false };
       uses.set(key, use);
       // A read compared as text or JSON ('01' is not '1' there) makes every value exact.
       const last = read.casts.at(-1);
@@ -257,7 +263,7 @@ export function claimFindings(
     add("ok", hookPlan.steer.summary);
     // Rows that differ, yet tokens that do not: the hook reads something else, or cannot read them.
     const keys = plan.uses.filter((u) => u.cls === "hook");
-    if (tokens && keys.length && keys.every((u) => new Set([...tokens.values()].map((t) => JSON.stringify(at(t, u.path) ?? null))).size <= 1)) {
+    if (tokens && keys.length && keys.every((u) => new Set([...tokens.values()].map((t) => valueKeyFor(u.numeric)(at(t, u.path)))).size <= 1)) {
       add("warn", `every run user's token carries the same ${keys.map((u) => u.key).join(", ")}, although audit gave them different ${hookPlan.steer.perUser.join(", ")} rows; the hook may not read them`);
     }
   }
@@ -390,7 +396,7 @@ function steeredDetail(
   const missing = u.values.filter((v) => !carried.some((c) => same(c) === same(v)));
   // A rule compared with a value goes both ways only if someone holds another value, or none.
   const other = carried.some((c) => !u.values.some((v) => same(v) === same(c)));
-  const detail = `${read}; added by the access token hook ${shown} from rows audit gives each run user in ${perUser.join(", ")} before signing in; held: ${holders(tokens, u.path, steer.names)}${missing.length ? `; no token carries ${missing.map(show).join(", ")}` : ""}`;
+  const detail = `${read}; added by the access token hook ${shown} from rows audit gives each run user in ${perUser.join(", ")} before signing in; held: ${holders(tokens, u.path, steer.names, u.numeric)}${missing.length ? `; no token carries ${missing.map(show).join(", ")}` : ""}`;
   return { status: missing.length === 0 && other ? "ok" : "warn", detail };
 }
 
@@ -399,7 +405,7 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
   if (hook && hookPlan?.cannot) {
     const by = `added by the access token hook ${showUri(hook.uri)}, which audit cannot give rows to (${hookPlan.cannot})`;
     return tokens
-      ? `${read}; ${by}; held: ${holders(tokens, u.path)}. Rules that read it are tested for these values only`
+      ? `${read}; ${by}; held: ${holders(tokens, u.path, undefined, u.numeric)}. Rules that read it are tested for these values only`
       : `${read}; ${by}. Rules that read it are tested only for the values run users' tokens carry`;
   }
   const held = tokens ? [...tokens].map(([label, claims]) => [label, at(claims, u.path)] as const) : undefined;
@@ -409,7 +415,7 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
     if (carried.length === 0) return `${read}; no run user's token carries it (and supabase/config.toml enables no access token hook), so every user reads it as null`;
   }
   const values = held ? ` (${held.map(([label, v]) => `${label}: ${v === undefined ? "null" : JSON.stringify(v)}`).join(", ")})` : "";
-  const same = held && new Set(held.map(([, v]) => JSON.stringify(v ?? null))).size <= 1;
+  const same = held && new Set(held.map(([, v]) => valueKeyFor(u.numeric)(v))).size <= 1;
   const by = hook ? `added by the access token hook ${showUri(hook.uri)}` : "carried by the run users' tokens";
   if (!held) return `${read}; ${by}, whose values audit does not choose`;
   return same
@@ -418,16 +424,17 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
 }
 
 /** lead u0 u3, member u1, none u2: the users whose tokens carry each value at `path`. */
-export function holders(tokens: Map<string, Record<string, unknown>>, path: string[], names: ReadonlyMap<string, string> = new Map()): string {
-  const by = new Map<string, string[]>();
+export function holders(tokens: Map<string, Record<string, unknown>>, path: string[], names: ReadonlyMap<string, string> = new Map(), numeric = false): string {
+  const by = new Map<string, { value: unknown; labels: string[] }>();
   const none: string[] = [];
+  const key = valueKeyFor(numeric);
   for (const [label, claims] of tokens) {
     const v = at(claims, path);
     if (v === undefined || v === null) none.push(label);
-    else by.set(JSON.stringify(v), [...(by.get(JSON.stringify(v)) ?? []), label]);
+    else by.set(key(v), { value: by.get(key(v))?.value ?? v, labels: [...(by.get(key(v))?.labels ?? []), label] });
   }
   const name = (v: unknown) => (typeof v === "string" && names.has(v) ? (names.get(v) as string) : plain(v));
-  return [...[...by].map(([v, labels]) => `${name(JSON.parse(v))} ${labels.join(" ")}`), ...(none.length ? [`none ${none.join(" ")}`] : [])].join(", ");
+  return [...[...by.values()].map(({ value, labels }) => `${name(value)} ${labels.join(" ")}`), ...(none.length ? [`none ${none.join(" ")}`] : [])].join(", ");
 }
 
 /** The value at a path in decoded token claims. */

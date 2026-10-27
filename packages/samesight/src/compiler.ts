@@ -15,6 +15,7 @@ export {
   authStateKey,
   BODY_JOIN,
   callsIn,
+  canonicalNumber,
   claimReads,
   codeOnly,
   classify,
