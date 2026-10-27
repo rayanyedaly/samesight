@@ -172,7 +172,7 @@ function selectList(rest: string): string {
     const c = rest[i];
     if (c === "(") depth++;
     else if (c === ")") depth--;
-    else if (depth === 0 && /[^A-Za-z0-9_$]/.test(rest[i - 1] ?? " ") && /^(from|into)(?![A-Za-z0-9_$"])/i.test(rest.slice(i))) return rest.slice(0, i);
+    else if (depth === 0 && /[^A-Za-z0-9_$.]/.test(rest[i - 1] ?? " ") && /^(from|into)(?![A-Za-z0-9_$"])/i.test(rest.slice(i))) return rest.slice(0, i);
   }
   return rest;
 }
@@ -261,7 +261,7 @@ export function executeAdvice(callers: string[], shown: string, schema: string, 
   return (
     `${callers.join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds. ` +
     `As Supabase's guide does: grant usage on schema ${ident(schema)} to supabase_auth_admin; grant execute on function ${fnSql} to supabase_auth_admin; revoke execute on function ${fnSql} from public, anon, authenticated ` +
-    "(if they hold it through a role they are members of, take them out of that role rather than revoking from it, which the hook's own roles may need)"
+    "(and from any role they are members of that holds execute; supabase_auth_admin keeps the grant above)"
   );
 }
 

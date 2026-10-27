@@ -127,11 +127,28 @@ describe("stoppable", () => {
     }
     expect(lines).toEqual([
       expect.stringMatching(
-        new RegExp(`^could not remove the run's users and rows: could not delete 2 run users: rows in ${table} still reference them that are not the run's to delete .*remove or repoint them by hand, then, with no verify run going, delete the users .*on delete cascade`),
+        new RegExp(
+          `^could not remove the run's users and rows: could not delete 1 of 2 run users: rows in ${table} still reference them that are not the run's to delete .*remove or repoint them by hand, then, with no verify run going, delete the users .*on delete cascade.*The others failed otherwise, and the next run tries them again: .*504 upstream timeout$`,
+        ),
       ),
     ]);
     expect(lines[0]).toContain("504 upstream timeout");
     expect(lines[0]).not.toContain(LEFT_FOR_NEXT);
+  });
+
+  it("leaves users Auth would not delete for another reason to the next run, without blaming a row", async () => {
+    const client = runClient();
+    const lines: string[] = [];
+    const stop = await stoppable(client, { ...stack, api: "http://127.0.0.1:54321" }, [], (l) => lines.push(l));
+    holdingLock.add(client);
+    fresh.users = ["0b0b0b0b-0000-4000-8000-000000000001"];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("upstream timeout", { status: 504 })));
+    try {
+      await stop.step();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(lines).toEqual([`could not remove the run's users and rows: could not delete 1 run users: 0b0b0b0b-0000-4000-8000-000000000001: Auth DELETE /admin/users/0b0b0b0b-0000-4000-8000-000000000001: 504 upstream timeout; ${LEFT_FOR_NEXT}`]);
   });
 
   it("logs, never throws, when it cannot clean", async () => {

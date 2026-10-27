@@ -126,18 +126,21 @@ export async function cleanup(client: pg.Client, stack: Stack, model: TableModel
   if (rowsDeleted !== undefined) throw rowsDeleted;
   if (!failed.length) return;
   // Auth answers a row that still references the user with Postgres' 23503, naming its table.
-  const tables = [...new Set(failed.flatMap((f) => /still referenced from table \\?"([^"\\]+)\\?"/.exec(f)?.[1] ?? []))];
-  const how =
-    "they may hold that user's data, so remove or repoint them by hand, then, with no verify run going, delete the users (delete from auth.users where email like '%@verify.samesight.test'; " +
-    "a foreign key with on delete cascade then removes the rows that point at them, someone else's included)";
-  if (tables.length) {
+  const tableOf = (f: string) => /still referenced from table \\?"([^"\\]+)\\?"/.exec(f)?.[1];
+  const blocked = failed.filter((f) => tableOf(f) !== undefined);
+  const rest = failed.filter((f) => tableOf(f) === undefined);
+  if (blocked.length) {
+    const tables = [...new Set(blocked.map((f) => tableOf(f) as string))];
     throw new UsersBlocked(
-      `could not delete ${failed.length} run users: rows in ${tables.join(", ")} still reference them that are not the run's to delete (a real user owns them too, or only an optional column ties them to a run user); ${how}. Until then no run can: ${failed.join("; ")}`,
+      `could not delete ${blocked.length} of ${failed.length} run users: rows in ${tables.join(", ")} still reference them that are not the run's to delete (a real user owns them too, or only an optional column ties them to a run user). ` +
+        "Those rows may hold a real user's data: remove or repoint them by hand, then, with no verify run going, delete the users (delete from auth.users where email like '%@verify.samesight.test'; " +
+        `a foreign key with on delete cascade then removes the rows that point at them, someone else's included); until then no run can: ${blocked.join("; ")}` +
+        (rest.length ? `. The others failed otherwise, and the next run tries them again: ${rest.join("; ")}` : ""),
     );
   }
-  throw new Error(
-    `could not delete ${failed.length} run users (a row a foreign key without on delete cascade ties to them, one the run may not delete, can block it): ${failed.join("; ")}`,
-  );
+  // A database error behind Auth's 500 may be a row that blocks the delete.
+  const database = failed.some((f) => / 500 /.test(f));
+  throw new Error(`could not delete ${failed.length} run users${database ? " (a row a foreign key without on delete cascade ties to them can block it)" : ""}: ${failed.join("; ")}`);
 }
 
 /** Run users that rows the run may not delete still reference: no later run removes them either. */

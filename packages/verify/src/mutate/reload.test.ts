@@ -7,7 +7,9 @@ import { Teardown } from "../autostart/teardown.ts";
 import { MUTANT_HEADER } from "./mutants.ts";
 import { withSyncConfig } from "./reload.ts";
 
-vi.mock("../differential/run.ts", () => ({ waitForReplication: async () => {} }));
+// How long the put-back's wait for PowerSync to catch up takes: at once, unless a test holds it.
+const gate = vi.hoisted(() => ({ wait: async () => {} }));
+vi.mock("../differential/run.ts", () => ({ waitForReplication: () => gate.wait() }));
 
 const client = { query: async () => ({ rows: [] }) } as unknown as pg.Client;
 
@@ -171,6 +173,84 @@ describe("withSyncConfig under the run's teardown", () => {
     expect(await stop).toEqual([]);
     expect(restarts()).toBe(2);
   });
+
+  it("does not hold a stop for the put-back's wait for PowerSync to catch up", async () => {
+    const { ps, slots } = live();
+    const t = new Teardown(() => {}, "policy");
+    let release = () => {};
+    let stopped: string[] | undefined;
+    const run = withSyncConfig(
+      slots,
+      ps,
+      `${MUTANT_HEADER}\nstreams: {}\n`,
+      async () => {
+        // Loaded; from here the put-back's catching up hangs until released, and a stop comes during it.
+        gate.wait = () =>
+          new Promise<void>((r) => {
+            release = r;
+            void t.run().then((x) => {
+              stopped = x;
+            });
+          });
+      },
+      t,
+    );
+    try {
+      await vi.waitFor(() => expect(stopped).toEqual([]), { timeout: 3000 });
+    } finally {
+      release();
+      gate.wait = async () => {};
+    }
+    await run;
+  });
+
+  it("says nothing false after a stop restarted PowerSync and ended the run's connection", async () => {
+    const { ps, restarts } = live();
+    const t = new Teardown(() => {}, "policy");
+    // The stop's next step ends the run's connection: every query after it fails.
+    let ended = false;
+    let n = 0;
+    const client = {
+      query: async () => {
+        if (ended) throw new Error("Connection terminated");
+        return { rows: [{ name: `powersync_${++n}` }] };
+      },
+    } as unknown as pg.Client;
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await expect(
+        withSyncConfig(client, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {
+          await t.run();
+          ended = true;
+          throw new Error("Connection terminated");
+        }, t),
+      ).rejects.toThrow("Connection terminated");
+      expect(stderr.mock.calls.map(([x]) => String(x)).filter((x) => x.includes("may still serve the mutants"))).toEqual([]);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(restarts()).toBe(2);
+    expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
+  });
+
+  it("keeps the copy a failed step named, though the run's put-back then reloads", async () => {
+    // Loading works; the stop's step fails; the put-back's restart after it works.
+    const { ps, slots } = live(Number.POSITIVE_INFINITY, { failAt: 1 });
+    const lines: string[] = [];
+    const t = new Teardown((l) => lines.push(l), "policy");
+    await withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {
+      await t.run();
+    }, t);
+    const copy = /the original is at (\S+);/.exec(lines.join("\n"))?.[1] as string;
+    expect(copy).toBeDefined();
+    expect(existsSync(copy)).toBe(true);
+  });
+
+  it("gives the restart command nothing to read, so one that reads stdin does not hang", async () => {
+    const { ps, slots } = live();
+    ps.restart = [process.execPath, "-e", "require('fs').readFileSync(0)"];
+    await withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {});
+  }, 5000);
 
   it("refuses to begin once the teardown has", async () => {
     const { ps, slots } = live();
