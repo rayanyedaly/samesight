@@ -19,7 +19,7 @@
  */
 
 import { Console } from "node:console";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import fc from "fast-check";
@@ -44,6 +44,7 @@ import { brokeDown, differential, setUp, stoppable } from "./differential/run.ts
 import { policyTables } from "./differential/model.ts";
 import { worldArbitrary } from "./differential/world.ts";
 import { reportDocument, type Section } from "./json.ts";
+import { toMarkdown } from "./markdown.ts";
 import { mutationTest } from "./mutate/run.ts";
 import { exitCode, failed, type Finding, formatFindings } from "./report.ts";
 import { replayCommand } from "./replay.ts";
@@ -89,6 +90,7 @@ Options:
   --mutate-datasets <n> datasets to try per mutant before calling it missed (default: 8)
   --restart <command>   restarts PowerSync (default: docker compose restart powersync)
   --json                write one JSON report to stdout (schema/report.schema.json), the text to stderr
+  --report <file>       also write the findings to this file as Markdown, for an issue
 
 Audit options (a project with hand-written RLS and sync config, no policy file):
   --sync-config <file>  the PowerSync sync config (default: sync-config.yaml)
@@ -100,7 +102,7 @@ Audit options (a project with hand-written RLS and sync config, no policy file):
   --compose <file>      with --powersync or --static: the compose file that runs your PowerSync,
                         to check its version floor
   --publication <name>  with --powersync or --static: the publication to check (default: powersync)
-  --static, --runs, --seed, --time-limit, --json   as above
+  --static, --runs, --seed, --time-limit, --json, --report   as above
 
   -v, --version         print the version
   -h, --help            print this help
@@ -138,6 +140,7 @@ async function main(argv: string[]): Promise<number> {
       "mutate-datasets": { type: "string" },
       restart: { type: "string" },
       json: { type: "boolean" },
+      report: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -303,6 +306,7 @@ async function auditMain(argv: string[]): Promise<number> {
       seed: { type: "string" },
       "time-limit": { type: "string" },
       json: { type: "boolean" },
+      report: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -444,6 +448,33 @@ function report(findings: Finding[], started: number): number {
   return exitCode(findings);
 }
 
+/** What `--report` writes: each section as printed, and why the run could not go on. */
+/** `--report`'s file, read before the flags are, so a run that cannot read them still writes it. */
+function reportPath(argv: string[]): string | undefined {
+  let path: string | undefined;
+  for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
+    if (argv[i] === "--report" && i + 1 < argv.length) path = argv[++i];
+    else if (argv[i]?.startsWith("--report=")) path = argv[i]?.slice("--report=".length);
+  }
+  return path;
+}
+
+/**
+ * Writes the Markdown report, when asked for and the run got as far as a check or an error
+ * (not for --help or --version). A report it cannot write turns a pass into exit 2.
+ */
+function writeReport(argv: string[], code: number, error?: string): number {
+  const path = reportPath(argv);
+  if (path === undefined || (!sections.length && error === undefined)) return code;
+  try {
+    writeFileSync(path, toMarkdown({ mode: argv[0] === "audit" ? "audit" : "policy", exitCode: code, sections, ...(error !== undefined ? { error } : {}) }));
+  } catch (e) {
+    process.stderr.write(`samesight-verify: could not write the report to ${path}: ${(e as Error).message}\n`);
+    return code === 0 ? 2 : code;
+  }
+  return code;
+}
+
 // PowerSync's worker threads can keep the process alive, so it exits explicitly, once the
 // report has been written out.
 // Output that has gone (| head, a closed terminal) is no reason to crash; during an audit,
@@ -466,7 +497,9 @@ const exit = (code: number) => {
   process.stderr.write("", done);
 };
 /** Writes the --json document, then exits. A signal exits before this, with no document. */
-const finish = (code: number, error?: string) => {
+// A signal exits from onSignals instead, with neither report.
+const finish = (exitWith: number, error?: string) => {
+  const code = writeReport(ARGV, exitWith, error);
   if (JSON_OUT) {
     const doc = reportDocument({ toolVersion: VERSION, argv: ARGV, exitCode: code, durationMs: Date.now() - began, sections, ...(error !== undefined ? { error } : {}) });
     process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
