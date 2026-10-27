@@ -8,12 +8,12 @@
  */
 
 import type pg from "pg";
-import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, outputTable, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
+import { BODY_JOIN, type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, outputTable, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
-import { type Assignment, type SetPath, show as plain } from "./assign.ts";
+import { type Assignment, castFamily, type SetPath, show as plain, valueKeyFor } from "./assign.ts";
 import { type HookPlan, showUri } from "./hook.ts";
-import { signInDetail, signInKeyOf } from "./signin.ts";
+import { SIGN_IN, signInDetail, signInKeyOf } from "./signin.ts";
 
 /** One rule's SQL: a policy's USING or WITH CHECK, or a stream or bucket query. */
 export interface RuleSql {
@@ -45,6 +45,8 @@ export interface ClaimUse {
   /** Other comparisons, as written: audit cannot tell what value they need. */
   other: string[];
   casts: string[];
+  /** Every read casts it to a number, so its values compare as numbers ('01' and 1 are one). */
+  numeric?: boolean;
   /** Some rule holds when the claim is not one of its values (<>, NOT IN, IS NOT TRUE). */
   negated: boolean;
 }
@@ -139,13 +141,14 @@ export async function policyFunctions(client: pg.Client): Promise<Map<string, st
              or (not starts_with(fn.nspname, 'pg_')
                  and fn.nspname not in ('extensions', ${SUPABASE_SCHEMAS.map((x) => `'${x}'`).join(", ")})
                  and not exists (select from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = f.oid and e.deptype = 'e')))
-      order by 1, 2, 3`,
+      -- Overloads of one argument count by their arguments (names, then types) too, so their joined bodies keep one order.
+      order by 1, 2, 3, pg_get_function_identity_arguments(f.oid)`,
     ),
   );
   const out = new Map<string, string>();
   // Each overload by the argument counts it takes (name/min-max), and the name alone for all
   // of them: their bodies together, so a call matched by name alone sees any that reads the token.
-  const add = (key: string, body: string) => out.set(key, out.has(key) ? `${out.get(key)}\n;\n${body}` : body);
+  const add = (key: string, body: string) => out.set(key, out.has(key) ? `${out.get(key)}${BODY_JOIN}${body}` : body);
   for (const f of fns) {
     if (f.body === null) continue;
     const range = `${f.args - f.defaults}-${f.variadic ? "*" : f.args}`;
@@ -168,7 +171,13 @@ const valueKey = (v: ClaimValue) => JSON.stringify(v);
 export const claimKey = (path: readonly string[]) => path.map((k) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : JSON.stringify(k))).join(".");
 
 /** What the rules read, by claim path. */
-export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, string> = new Map()): ClaimsPlan {
+export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, string> = new Map(), options: { hook?: boolean } = {}): ClaimsPlan {
+  // A claim Supabase Auth leaves out of a password user's token (client_id, jti) is the
+  // hook's when the project enables one: only the hook could add it there.
+  const classOf = (path: string[]): ClaimClass => {
+    const cls = classify(path);
+    return options.hook && cls === "auth-state" && path.length === 1 && SIGN_IN[signInKeyOf(claimKey(path))]?.kind === "absent" ? "hook" : cls;
+  };
   const uses = new Map<string, ClaimUse>();
   const unreadable: ClaimsPlan["unreadable"] = [];
   const identityColumns = new Set<string>();
@@ -177,8 +186,11 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
     for (const u of found.unreadable) unreadable.push({ where: rule.where, ...u });
     for (const read of found.reads) {
       const key = claimKey(read.path);
-      const use = uses.get(key) ?? { path: read.path, key, cls: classify(read.path), rules: [], values: [], columns: [], columnTables: {}, other: [], casts: [], negated: false };
+      const use = uses.get(key) ?? { path: read.path, key, cls: classOf(read.path), rules: [], values: [], columns: [], columnTables: {}, other: [], casts: [], numeric: true, negated: false };
       uses.set(key, use);
+      // A read compared as text or JSON ('01' is not '1' there) makes every value exact.
+      const last = read.casts.at(-1);
+      if (last === undefined || castFamily(last.toLowerCase()) !== "number") use.numeric = false;
       if (!use.rules.includes(rule.where)) use.rules.push(rule.where);
       for (const c of read.casts) if (!use.casts.includes(c)) use.casts.push(c);
       const c = read.compared;
@@ -207,7 +219,12 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
       } else if (!use.other.includes(c.text)) use.other.push(c.text);
     }
   }
-  for (const use of uses.values()) use.values.sort((a, b) => valueKey(a).localeCompare(valueKey(b)));
+  for (const use of uses.values()) {
+    // Read as a number everywhere: two spellings of one number are one value.
+    const same = valueKeyFor(use.numeric);
+    use.values = use.values.filter((v, i, all) => all.findIndex((x) => same(x) === same(v)) === i);
+    use.values.sort((a, b) => valueKey(a).localeCompare(valueKey(b)));
+  }
   return { uses: [...uses.values()].sort((a, b) => a.key.localeCompare(b.key)), unreadable, identityColumns: [...identityColumns].sort() };
 }
 
@@ -246,7 +263,7 @@ export function claimFindings(
     add("ok", hookPlan.steer.summary);
     // Rows that differ, yet tokens that do not: the hook reads something else, or cannot read them.
     const keys = plan.uses.filter((u) => u.cls === "hook");
-    if (tokens && keys.length && keys.every((u) => new Set([...tokens.values()].map((t) => JSON.stringify(at(t, u.path) ?? null))).size <= 1)) {
+    if (tokens && keys.length && keys.every((u) => new Set([...tokens.values()].map((t) => valueKeyFor(u.numeric)(at(t, u.path)))).size <= 1)) {
       add("warn", `every run user's token carries the same ${keys.map((u) => u.key).join(", ")}, although audit gave them different ${hookPlan.steer.perUser.join(", ")} rows; the hook may not read them`);
     }
   }
@@ -320,21 +337,25 @@ export function claimFindings(
 
 /** admin u0 u3, editor u1, samesight-other u2, none u4: who holds each value, from the tokens. */
 function heldLine(tokens: Map<string, Record<string, unknown>>, set: SetPath): { line: string; all: boolean } {
-  const by = new Map<string, string[]>(set.pool.map((v) => [JSON.stringify(v), []]));
+  const same = valueKeyFor(set.numeric);
+  // Each value as audit gave it, and who holds it in any spelling the rules read alike.
+  const by = new Map<string, { value: unknown; labels: string[] }>(set.pool.map((v) => [same(v), { value: v, labels: [] }]));
   const none: string[] = [];
   for (const [label, claims] of tokens) {
     const v = at(claims, set.path);
     if (v === undefined || v === null) none.push(label);
     else {
-      const key = JSON.stringify(v);
-      by.set(key, [...(by.get(key) ?? []), label]);
+      const key = same(v);
+      const held = by.get(key) ?? { value: v, labels: [] };
+      held.labels.push(label);
+      by.set(key, held);
     }
   }
   // A run user's id (a claim compared with a user column) shows as that user.
   const userOf = new Map([...tokens].map(([label, claims]) => [JSON.stringify(claims.sub), label]));
-  const parts = [...by].map(([v, labels]) => `${userOf.has(v) ? `${userOf.get(v)}'s id` : plain(JSON.parse(v))} ${labels.length ? labels.join(" ") : "(nobody)"}`);
+  const parts = [...by.values()].map(({ value, labels }) => `${userOf.has(JSON.stringify(value)) ? `${userOf.get(JSON.stringify(value))}'s id` : plain(value)} ${labels.length ? labels.join(" ") : "(nobody)"}`);
   if (none.length) parts.push(`none ${none.join(" ")}`);
-  return { line: parts.join(", "), all: set.pool.every((v) => (by.get(JSON.stringify(v)) ?? []).length > 0) };
+  return { line: parts.join(", "), all: set.pool.every((v) => (by.get(same(v))?.labels ?? []).length > 0) };
 }
 
 /** A warning for each user whose token does not carry the value audit gave it. */
@@ -345,7 +366,8 @@ function mismatches(assignment: Assignment, tokens: Map<string, Record<string, u
     return assignment.paths.flatMap((p) => {
       const given = values.get(p.key) ?? null;
       const carried = at(claims, p.path) ?? null;
-      if (JSON.stringify(given) === JSON.stringify(carried)) return [];
+      const same = valueKeyFor(p.numeric);
+      if (same(given) === same(carried)) return [];
       return [{ status: "warn" as const, check: "claims", detail: `${label} was given ${p.key}=${JSON.stringify(given)}, but its token carries ${JSON.stringify(carried)} (an auth.users trigger or the access token hook changed it); it is labelled and tested by what the token carries` }];
     });
   });
@@ -370,10 +392,11 @@ function steeredDetail(
   const shown = showUri(hook.uri);
   if (!tokens) return { status: "ok", detail: `${read}; added by the access token hook ${shown}, which reads ${perUser.join(", ")}; a full run gives run users rows there before they sign in (not run: --static)` };
   const carried = [...tokens.values()].map((t) => at(t, u.path) ?? null);
-  const missing = u.values.filter((v) => !carried.some((c) => JSON.stringify(c) === JSON.stringify(v)));
+  const same = valueKeyFor(u.numeric);
+  const missing = u.values.filter((v) => !carried.some((c) => same(c) === same(v)));
   // A rule compared with a value goes both ways only if someone holds another value, or none.
-  const other = carried.some((c) => !u.values.some((v) => JSON.stringify(v) === JSON.stringify(c)));
-  const detail = `${read}; added by the access token hook ${shown} from rows audit gives each run user in ${perUser.join(", ")} before signing in; held: ${holders(tokens, u.path, steer.names)}${missing.length ? `; no token carries ${missing.map(show).join(", ")}` : ""}`;
+  const other = carried.some((c) => !u.values.some((v) => same(v) === same(c)));
+  const detail = `${read}; added by the access token hook ${shown} from rows audit gives each run user in ${perUser.join(", ")} before signing in; held: ${holders(tokens, u.path, steer.names, u.numeric)}${missing.length ? `; no token carries ${missing.map(show).join(", ")}` : ""}`;
   return { status: missing.length === 0 && other ? "ok" : "warn", detail };
 }
 
@@ -382,7 +405,7 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
   if (hook && hookPlan?.cannot) {
     const by = `added by the access token hook ${showUri(hook.uri)}, which audit cannot give rows to (${hookPlan.cannot})`;
     return tokens
-      ? `${read}; ${by}; held: ${holders(tokens, u.path)}. Rules that read it are tested for these values only`
+      ? `${read}; ${by}; held: ${holders(tokens, u.path, undefined, u.numeric)}. Rules that read it are tested for these values only`
       : `${read}; ${by}. Rules that read it are tested only for the values run users' tokens carry`;
   }
   const held = tokens ? [...tokens].map(([label, claims]) => [label, at(claims, u.path)] as const) : undefined;
@@ -392,7 +415,7 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
     if (carried.length === 0) return `${read}; no run user's token carries it (and supabase/config.toml enables no access token hook), so every user reads it as null`;
   }
   const values = held ? ` (${held.map(([label, v]) => `${label}: ${v === undefined ? "null" : JSON.stringify(v)}`).join(", ")})` : "";
-  const same = held && new Set(held.map(([, v]) => JSON.stringify(v ?? null))).size <= 1;
+  const same = held && new Set(held.map(([, v]) => valueKeyFor(u.numeric)(v))).size <= 1;
   const by = hook ? `added by the access token hook ${showUri(hook.uri)}` : "carried by the run users' tokens";
   if (!held) return `${read}; ${by}, whose values audit does not choose`;
   return same
@@ -401,16 +424,17 @@ function hookDetail(read: string, u: ClaimUse, hook: { uri: string } | undefined
 }
 
 /** lead u0 u3, member u1, none u2: the users whose tokens carry each value at `path`. */
-export function holders(tokens: Map<string, Record<string, unknown>>, path: string[], names: ReadonlyMap<string, string> = new Map()): string {
-  const by = new Map<string, string[]>();
+export function holders(tokens: Map<string, Record<string, unknown>>, path: string[], names: ReadonlyMap<string, string> = new Map(), numeric = false): string {
+  const by = new Map<string, { value: unknown; labels: string[] }>();
   const none: string[] = [];
+  const key = valueKeyFor(numeric);
   for (const [label, claims] of tokens) {
     const v = at(claims, path);
     if (v === undefined || v === null) none.push(label);
-    else by.set(JSON.stringify(v), [...(by.get(JSON.stringify(v)) ?? []), label]);
+    else by.set(key(v), { value: by.get(key(v))?.value ?? v, labels: [...(by.get(key(v))?.labels ?? []), label] });
   }
   const name = (v: unknown) => (typeof v === "string" && names.has(v) ? (names.get(v) as string) : plain(v));
-  return [...[...by].map(([v, labels]) => `${name(JSON.parse(v))} ${labels.join(" ")}`), ...(none.length ? [`none ${none.join(" ")}`] : [])].join(", ");
+  return [...[...by.values()].map(({ value, labels }) => `${name(value)} ${labels.join(" ")}`), ...(none.length ? [`none ${none.join(" ")}`] : [])].join(", ");
 }
 
 /** The value at a path in decoded token claims. */

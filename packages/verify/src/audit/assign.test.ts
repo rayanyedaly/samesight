@@ -4,7 +4,7 @@ import { claimLabel } from "../differential/run.ts";
 import type { TableModel } from "../differential/model.ts";
 import { createUsers, signIn } from "../differential/users.ts";
 import type { Stack } from "../stack.ts";
-import { assignClaims, fitsType, metadataOf, otherValue, pickCombinations, show } from "./assign.ts";
+import { assignClaims, canonicalNumber, castFamily, fitsType, metadataOf, otherValue, pickCombinations, show, valueKeyFor } from "./assign.ts";
 import { claimFindings, planClaims, type RuleSql, syncRules } from "./claims.ts";
 
 const policy = (where: string, sql: string): RuleSql => ({ where, sql, dialect: "postgres" });
@@ -445,7 +445,24 @@ describe("claims compared with columns", () => {
   });
 
   it("keeps decimals out of floats that cannot hold them, and out of negative-scale numerics", () => {
-    expect([fitsType(0.5, "real"), fitsType(0.1, "real"), fitsType(16777217, "real"), fitsType(0.1, "double precision"), fitsType("0.10", "double precision"), fitsType(101, "numeric(5,-2)")]).toEqual([true, false, false, true, false, false]);
+    expect([fitsType(0.5, "real"), fitsType(0.1, "real"), fitsType(16777217, "real"), fitsType(0.1, "double precision"), fitsType(101, "numeric(5,-2)")]).toEqual([true, false, false, true, false]);
+    // Read as a number: any spelling of a number a float holds exactly; none it would round.
+    const asNumber = (v: string, type: string) => fitsType(v, type, true);
+    expect([asNumber("1e2", "double precision"), asNumber("0.10", "double precision"), asNumber("0.50", "real"), asNumber("0.1", "real"), asNumber("1e400", "double precision"), asNumber("0x10", "double precision")]).toEqual([true, true, true, false, false, false]);
+  });
+
+  it("puts a claim read as text only where the column prints it back the same", () => {
+    // A row holding 1e2 prints as 100, which a token carrying "1e2" never equals as text.
+    expect([fitsType("1e2", "double precision"), fitsType("0.10", "double precision"), fitsType("0.5", "real"), fitsType("100", "double precision")]).toEqual([false, false, true, true]);
+    expect([fitsType("0100", "integer"), fitsType("-0", "integer"), fitsType("100", "integer"), fitsType(100, "integer")]).toEqual([false, false, true, true]);
+    expect([fitsType("0100", "integer", true), fitsType("1e2", "double precision", true)]).toEqual([true, true]);
+    // Where Postgres prints an exponent and JS does not (1e+15, 1e+06 as real, 1e-05).
+    expect(["100000000000000", "1000000000000000", "0.0001", "0.00001"].map((v) => fitsType(v, "double precision"))).toEqual([true, false, true, false]);
+    expect(["100000", "1000000"].map((v) => fitsType(v, "real"))).toEqual([true, false]);
+    // numeric keeps the scale it is given; numeric(p,s) prints s decimals.
+    expect(["1.50", "100", "0100", "-0", "1.5"].map((v) => fitsType(v, "numeric"))).toEqual([true, true, false, false, true]);
+    expect(["1.50", "1.5", "2"].map((v) => fitsType(v, "numeric(5,2)"))).toEqual([true, false, false]);
+    expect(["1.5", "0100"].map((v) => fitsType(v, "numeric(5,2)", true))).toEqual([true, true]);
   });
 
   it("treats a pattern with Postgres-only syntax as one audit cannot read", () => {
@@ -462,5 +479,47 @@ describe("claims compared with columns", () => {
     ];
     const [path] = assignClaims(planClaims([on("roles", `(code = ${read("c")})`), on("items", `(code = ${read("c")})`)]), fresh, t).paths;
     expect(path).toMatchObject({ pool: [101, 102], columns: ["items.code"], skipped: ["roles.code (a text key: keys take only fresh run uuids)"] });
+  });
+});
+
+describe("one number, one value, where the rules read numbers", () => {
+  it("takes every numeric type, with or without a typmod, as a number", () => {
+    expect(["float", "float8", "numeric(10,2)", "int8", "double precision", "text"].map(castFamily)).toEqual(["number", "number", "number", "number", "number", "text"]);
+  });
+
+  it("spells every number one way, from its digits, and nothing else as a number", () => {
+    expect(["1", 1, "01", "1.0", "1e0", " 1 ", "+1", ".1e1"].map(canonicalNumber)).toEqual(Array(8).fill("0.1e1"));
+    expect([0, "0.00", "-0", "-1.50", 1e21, "100", "9007199254740993"].map(canonicalNumber)).toEqual(["0", "0", "0", "-0.15e1", "0.1e22", "0.1e3", "0.9007199254740993e16"]);
+    expect(["", "0x10", "Infinity", "1e", "abc", true, null, "1e9999999999999999", "1e999999999999999999999"].map(canonicalNumber)).toEqual(Array(9).fill(undefined));
+  });
+
+  it("tells values apart by number only when the claim is read as one", () => {
+    expect(valueKeyFor(true)("01")).toBe(valueKeyFor(true)(1));
+    expect(valueKeyFor(false)("01")).not.toBe(valueKeyFor(false)("1"));
+    expect(valueKeyFor(true)("abc")).toBe('"abc"');
+  });
+
+  it("merges spellings of one number for a claim every rule casts to a number, and keeps them for one read as text", () => {
+    const lvl = "((auth.jwt() -> 'app_metadata'::text) ->> 'level'::text)";
+    const numeric = planClaims([policy("a", `((${lvl})::integer = 1)`), policy("b", `((${lvl})::numeric = 1.0)`), policy("c", `((${lvl})::integer = '01'::text)`)]);
+    expect(numeric.uses[0]).toMatchObject({ numeric: true, values: [1] });
+    const text = planClaims([policy("a", `(${lvl} = '01')`), policy("b", `(${lvl} = '1')`), policy("c", `((${lvl})::integer = 1)`)]);
+    expect(text.uses[0]).toMatchObject({ numeric: false });
+    expect(text.uses[0]?.values).toHaveLength(3);
+  });
+
+  it("never picks another value equal to a literal in another spelling", () => {
+    expect(otherValue(["01", 2], ["integer"], () => "x")).toBe(3);
+    expect(otherValue(["1"], ["integer"], () => "x")).toBe(0);
+  });
+
+  it("counts a token's '2' as holding 2 when the rules read the claim as a number", () => {
+    const lvl = "((auth.jwt() -> 'app_metadata'::text) ->> 'level'::text)";
+    const plan = planClaims([policy("p", `((${lvl})::integer = 2)`)]);
+    const a = assignClaims(plan, () => "fresh");
+    expect(a.paths[0]?.numeric).toBe(true);
+    const tokens = new Map(a.users.map((u, i) => [`u${i}`, { app_metadata: u.has("app_metadata.level") ? { level: String(u.get("app_metadata.level")) } : {} }]));
+    const lines = claimFindings(plan, undefined, tokens, a);
+    expect(lines.filter((f) => f.status !== "ok")).toEqual([]);
   });
 });

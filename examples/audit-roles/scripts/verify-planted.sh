@@ -18,7 +18,7 @@ case "$which" in
     ;;
   team)
     sed "s/^\( *- SELECT \* FROM documents WHERE team_id = auth.parameter('team_id')\) AND auth.parameter('team_role') = 'lead'\( AND status != 'archived'\)$/\1\2/" sync-config.yaml > "$planted"
-    caught="u[0-9]+ \([^)]*team_role=member\).*received documents .*\(stream team\); RLS returns no such row"
+    caught="u[0-9]+ \([^)]*team_role=member[,)].*received documents .*\(stream team\); RLS returns no such row"
     ;;
   *)
     echo "verify-planted.sh: plant editor or team, not $which" >&2

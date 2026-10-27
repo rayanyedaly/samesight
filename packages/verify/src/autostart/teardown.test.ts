@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { LEFT_FOR_NEXT, onSignals, type Signals, Teardown } from "./teardown.ts";
+import { LEFT_FOR_NEXT, leftForNext, onSignals, SERVICE_REMEDY, type Signals, Teardown } from "./teardown.ts";
 
 describe("Teardown", () => {
   it("runs steps last first, once, and goes on past a failing one", async () => {
@@ -10,16 +10,24 @@ describe("Teardown", () => {
     t.add("role", async () => {
       order.push("role");
     });
-    t.add("storage container", async () => {
-      throw new Error("docker is gone");
+    t.add(
+      "storage container",
+      async () => {
+        throw new Error("docker is gone");
+      },
+      "the next audit that starts PowerSync removes it",
+    );
+    t.add("sync config", async () => {
+      throw new Error("read-only file system");
     });
     t.add("powersync container", async () => {
       order.push("powersync");
     });
-    expect(await t.run()).toEqual(["storage container"]);
-    expect(await t.run()).toEqual(["storage container"]);
+    expect(await t.run()).toEqual(["sync config", "storage container"]);
+    expect(await t.run()).toEqual(["sync config", "storage container"]);
     expect(order).toEqual(["powersync", "role"]);
-    expect(lines).toEqual(["could not remove storage container: docker is gone; the next audit that starts PowerSync removes it"]);
+    // Each failure says its own remedy, if it has one.
+    expect(lines).toEqual(["could not remove sync config: read-only file system", "could not remove storage container: docker is gone; the next audit that starts PowerSync removes it"]);
   });
 });
 
@@ -95,6 +103,19 @@ describe("onSignals", () => {
     }
   });
 
+  it("takes Ctrl+Break (SIGBREAK) on Windows only", async () => {
+    const win = proc();
+    win.p.platform = "win32";
+    const t = new Teardown(() => {});
+    onSignals(t, () => {}, win.p);
+    win.p.emit("SIGBREAK");
+    expect(await win.exited).toBe(149);
+    const linux = proc();
+    linux.p.platform = "linux";
+    onSignals(new Teardown(() => {}), () => {}, linux.p);
+    expect(linux.p.listenerCount("SIGBREAK")).toBe(0);
+  });
+
   it("tears down and exits 141 when its output has gone (EPIPE), or 1 on another output error", async () => {
     for (const [errno, code] of [
       ["EPIPE", 141],
@@ -158,8 +179,41 @@ describe("onSignals", () => {
     onSignals(slow, (l) => lines.push(l), late.p, 20);
     late.p.emit("SIGHUP");
     expect(await late.exited).toBe(129);
-    // What is left may hold privileged run users: said, with how to remove them now.
-    expect(lines.at(-1)).toBe(`stopped before the clean-up finished: the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`);
+    // What is left may hold privileged run users: said, with how to remove them now; no service was started.
+    expect(lines.at(-1)).toBe(`stopped before the clean-up finished: ${LEFT_FOR_NEXT}`);
+
+    // With a service started, what is left of it too; in policy mode, the next verify run removes the users.
+    for (const [mode, service, said] of [
+      ["audit", true, `the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`],
+      ["policy", false, leftForNext("policy")],
+    ] as const) {
+      const p = proc();
+      const t = new Teardown(() => {}, mode);
+      t.service = service;
+      t.add("hung", () => new Promise(() => {}), service ? SERVICE_REMEDY : undefined);
+      const said2: string[] = [];
+      onSignals(t, (l) => said2.push(l), p.p, 20);
+      p.p.emit("SIGINT");
+      expect(await p.exited).toBe(130);
+      expect(said2.at(-1)).toBe(`stopped before the clean-up finished: ${said}`);
+    }
+    expect(leftForNext("policy")).toMatch(/^the next verify run removes the run's users and rows .*with no verify run running/);
+
+    // A step still running says what to do about what it was removing; one that ended, nothing.
+    const cut = proc();
+    const restoring = new Teardown(() => {}, "policy");
+    // Ended before the cut: its remedy is not said. Added first, it runs last, so add it after.
+    restoring.add("the mutant streams PowerSync serves", () => new Promise(() => {}), "restart PowerSync (docker compose restart powersync)");
+    restoring.add("the service", async () => {}, SERVICE_REMEDY);
+    restoring.service = true;
+    const told: string[] = [];
+    onSignals(restoring, (l) => told.push(l), cut.p, 20);
+    cut.p.emit("SIGINT");
+    expect(await cut.exited).toBe(130);
+    expect(told).toEqual([
+      "SIGINT: removing what this run made (Ctrl+C again to leave it for the next verify run)",
+      `stopped before the clean-up finished: the mutant streams PowerSync serves: restart PowerSync (docker compose restart powersync); ${leftForNext("policy")}`,
+    ]);
 
     // Begun by the run itself (its end): the grace starts with the signal.
     const own = proc();

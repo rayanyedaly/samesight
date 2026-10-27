@@ -7,7 +7,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { parseSyncConfig } from "samesight/compiler";
+import { BODY_JOIN, parseSyncConfig } from "samesight/compiler";
 import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import type pg from "pg";
@@ -21,7 +21,7 @@ import { checkAuditCatalog } from "./catalog.ts";
 import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
 import { planHook } from "./hook.ts";
-import { auditTables } from "./run.ts";
+import { auditTables, cleanupScope } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
 
 const DEMO = fileURLToPath(new URL("../../../../examples/audit-todolist/upstream/", import.meta.url));
@@ -148,13 +148,28 @@ describe("overloaded policy functions on the demo's catalog", () => {
     expect(plan.uses.find((u) => u.key === "app_metadata.role")?.rules).toEqual(['policy "samesight_role" on lists (USING)']);
     expect(plan.unreadable.filter((x) => x.where.includes("samesight_role2"))).toEqual([]);
   });
+
+  it("joins overloads that take the same counts in the order of their identity arguments", async () => {
+    const functions = await rolledBack(client, async () => {
+      await client.query("create function public.samesight_test_f(u uuid) returns text language sql stable as $$ select 'u' $$");
+      await client.query("create function public.samesight_test_f(t text) returns text language sql stable as $$ select 't' $$");
+      return policyFunctions(client);
+    });
+    expect(functions.get("public.samesight_test_f/1-1")).toBe(` select 't' ${BODY_JOIN} select 'u' `);
+  });
 });
 
 describe("an access token hook on the demo's catalog", () => {
   const URI = "pg-functions://postgres/public/samesight_test_hook";
-  const plan = (sql: string[]) =>
+  // As Supabase's guide has it: no API role may execute the hook (the warning has its own case).
+  const REVOKE = `do $$ begin
+      if to_regprocedure('public.samesight_test_hook(jsonb)') is not null then
+        revoke execute on function public.samesight_test_hook(jsonb) from public, anon, authenticated;
+      end if;
+    end $$`;
+  const plan = (sql: string[], revoke = true) =>
     rolledBack(client, async () => {
-      for (const q of sql) await client.query(q);
+      for (const q of [...sql, ...(revoke ? [REVOKE] : [])]) await client.query(q);
       return planHook(client, URI, await policyFunctions(client));
     });
   // A plpgsql hook reading lists, and todos through a SQL-standard helper two levels down.
@@ -234,6 +249,21 @@ describe("an access token hook on the demo's catalog", () => {
     expect(helper.findings).toEqual([]);
   });
 
+  it("warns when the API roles can execute the hook, and on calls deeper than audit reads", async () => {
+    // The helper two levels down calls a third, which reads todos.
+    const deeper = [
+      "create function public.samesight_test_deepest(u uuid) returns bigint language sql stable return (select count(*) from public.todos where created_by = u)",
+      "create function public.samesight_test_owned(u uuid) returns bigint language sql stable return public.samesight_test_deepest(u)",
+      ...hook.slice(1),
+    ];
+    const p = await plan(deeper, false);
+    expect(p.findings.map((f) => f.detail)).toEqual([
+      "the access token hook pg-functions://postgres/public/samesight_test_hook calls public.samesight_test_deepest three or more calls deep, which audit does not read: it may read tables audit gives no rows",
+      "anon, authenticated can execute the access token hook pg-functions://postgres/public/samesight_test_hook (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds; as Supabase's guide does, grant execute on function public.samesight_test_hook(jsonb) to supabase_auth_admin, then revoke execute on function public.samesight_test_hook(jsonb) from public, anon, authenticated",
+      expect.stringMatching(/^supabase_auth_admin cannot read lists/),
+    ]);
+  });
+
   it("names a view the hook reads, which audit gives no rows", async () => {
     const p = await plan([
       "create view public.samesight_test_owned as select owner_id from public.lists",
@@ -250,6 +280,20 @@ describe("an access token hook on the demo's catalog", () => {
     expect(missing.findings).toEqual([expect.objectContaining({ detail: expect.stringMatching(/names no function public\.samesight_test_hook\(jsonb\) in the database; its claims are not steered$/) })]);
     const none = await plan(["create function public.samesight_test_hook(event jsonb) returns jsonb language sql stable return event"]);
     expect(none).toMatchObject({ tables: [], cannot: "its body reads no public table" });
+  });
+});
+
+describe("the tables cleanup reaches beyond the run's", () => {
+  it("takes the tables pointing at auth.users and those they point at, leaving out the run's own", async () => {
+    const scope = await rolledBack(client, async () => {
+      await client.query("create table public.samesight_test_parent (id uuid primary key)");
+      await client.query("create table public.samesight_test_owned (id uuid primary key, user_id uuid not null references auth.users, parent_id uuid references public.samesight_test_parent)");
+      return cleanupScope(client, ["lists", "todos"]);
+    });
+    expect(scope).toContain("samesight_test_owned");
+    expect(scope).toContain("samesight_test_parent");
+    expect(scope).not.toContain("lists");
+    expect(scope).not.toContain("todos");
   });
 });
 

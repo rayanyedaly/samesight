@@ -13,6 +13,7 @@ describe("sign-in facts", () => {
     expect(signInDetail("iat")).toMatch(/^every run user's token carries iat \(when each token was issued\), which audit does not choose/);
     expect(signInDetail("session_id")).toMatch(/^each run user has its own session_id \(one per sign-in\)/);
     expect(signInDetail("jti")).toBe("no run user's token carries jti (Supabase Auth adds none for a user made by its admin API), so every run user reads it as null");
+    expect(signInDetail("client_id")).toBe("no run user's token carries client_id (Supabase Auth sets it only on tokens an OAuth client gets), so every run user reads it as null");
   });
 
   it("gives Coverage the same account, absent claims first", () => {

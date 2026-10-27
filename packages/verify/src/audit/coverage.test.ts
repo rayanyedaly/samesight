@@ -207,6 +207,10 @@ describe("coverageFindings", () => {
     expect(lines(cov([policy("p", 0, 3, { claims: ["is_anonymous"], reachable: false })], []))).toContain(
       'warn policy "p" on docs: only refused rows seen (it reads is_anonymous, which every run user has alike (an aal1 password user); see Claims)',
     );
+    // client_id under a hook is the hook's claim (Claims says so), not sign-in state.
+    const clientId = cov([policy("p", 0, 3, { claims: ["client_id"] })], []);
+    expect(lines(clientId)).toContain('warn policy "p" on docs: only refused rows seen (it reads client_id, which no run user\'s token carries; see Claims)');
+    expect(coverageFindings(clientId, new Set(), false, new Set(["client_id"])).map((f) => f.detail)).toContain('policy "p" on docs: only refused rows seen (it reads client_id, which no run user holds; see Claims)');
     expect(lines(cov([policy("p", 0, 3, { claims: ["email"], reachable: false })], []))).toContain(
       'warn policy "p" on docs: only refused rows seen (it reads email, whose values audit does not choose or put in generated rows; see Claims)',
     );

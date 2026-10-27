@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { accessTokenHook, at, claimFindings, planClaims, remoteHook, type RuleSql } from "./claims.ts";
+import { accessTokenHook, at, claimFindings, holders, planClaims, remoteHook, type RuleSql } from "./claims.ts";
 
 const policy = (where: string, sql: string): RuleSql => ({ where, sql, dialect: "postgres" });
 const stream = (where: string, sql: string): RuleSql => ({ where, sql, dialect: "streams" });
@@ -61,6 +61,15 @@ describe("planClaims", () => {
   it("reads through a policy's SQL wrapper function", () => {
     const wrapped = planClaims([policy('policy "w" on docs (USING)', "(app_role() = 'ADMIN'::text)")], new Map([["app_role", "select nullif(auth.jwt() ->> 'app_role', '')"]]));
     expect(wrapped.uses.map((u) => u.key)).toEqual(["app_role"]);
+  });
+
+  it("takes a claim Supabase Auth leaves out of a password user's token as the hook's when the project enables one", () => {
+    const rules = [policy("p", "(org_id = ((auth.jwt() ->> 'client_id'::text))::uuid)"), policy("q", "((auth.jwt() ->> 'aal'::text) = 'aal2'::text)")];
+    expect(planClaims(rules).uses.map((u) => [u.key, u.cls])).toEqual([["aal", "auth-state"], ["client_id", "auth-state"]]);
+    expect(planClaims(rules, new Map(), { hook: true }).uses.map((u) => [u.key, u.cls])).toEqual([["aal", "auth-state"], ["client_id", "hook"]]);
+    // A user made by signing up carries user_metadata.email: not only a hook could add it.
+    const email = [policy("e", "((auth.jwt() -> 'user_metadata'::text) ->> 'email'::text) = email")];
+    expect(planClaims(email, new Map(), { hook: true }).uses.map((u) => u.cls)).toEqual(["auth-state"]);
   });
 });
 
@@ -157,6 +166,12 @@ describe("claimFindings", () => {
     expect(remoteHook("http://[::1]:3000/hook")).toBe(false);
     expect(remoteHook("https://[2001:db8::1]/hook")).toBe(true);
     expect(remoteHook("pg-functions://postgres/public/hook")).toBe(false);
+  });
+
+  it("tells token values apart as numbers only when the rules read the claim as one", () => {
+    const tokens = new Map<string, Record<string, unknown>>([["u0", { level: 1 }], ["u1", { level: "1" }], ["u2", { level: "01" }], ["u3", {}]]);
+    expect(holders(tokens, ["level"], undefined, true)).toBe("1 u0 u1 u2, none u3");
+    expect(holders(tokens, ["level"])).toBe(`1 u0, "1" u1, "01" u2, none u3`);
   });
 
   it("says plainly when no rule reads a claim other than the user id", () => {

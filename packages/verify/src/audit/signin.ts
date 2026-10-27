@@ -13,7 +13,7 @@ export type SignInKind =
   | "set"
   /** Each run user has its own. */
   | "own"
-  /** No run user's token carries it. */
+  /** No run user's token carries it; `fact` says why when it is not the admin API's doing. */
   | "absent";
 
 export const SIGN_IN: Record<string, { kind: SignInKind; fact: string; value?: unknown }> = {
@@ -33,6 +33,7 @@ export const SIGN_IN: Record<string, { kind: SignInKind; fact: string; value?: u
   "user_metadata.email": { kind: "absent", fact: "" },
   "user_metadata.phone_verified": { kind: "absent", fact: "" },
   "user_metadata.sub": { kind: "absent", fact: "" },
+  client_id: { kind: "absent", fact: "Supabase Auth sets it only on tokens an OAuth client gets" },
 };
 
 /** The Claims section's reason a sign-in claim is not tested further. */
@@ -46,7 +47,7 @@ export function signInDetail(key: string): string {
     case "own":
       return `each run user has its own ${key} (${f.fact}), which audit does not choose or put in generated rows, so rules matching it are tested on rows that do not match it`;
     case "absent":
-      return `no run user's token carries ${key} (Supabase Auth adds none for a user made by its admin API), so every run user reads it as null`;
+      return `no run user's token carries ${key} (${f.fact || "Supabase Auth adds none for a user made by its admin API"}), so every run user reads it as null`;
     default:
       return `every run user is a password user at aal1 with no other sign-in state, so rules reading ${key} are tested for that state only`;
   }

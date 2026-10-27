@@ -33,7 +33,7 @@ import { findSupabase } from "./project.ts";
 import { PREFIX, runName, setUpReplication, tearDownReplication } from "./replication.ts";
 import { containerName, PROJECT_LABEL, RUN_LABEL, removeContainers, startStorage } from "./storage.ts";
 import { sweep } from "./sweep.ts";
-import { onSignals, type Signals, Teardown } from "./teardown.ts";
+import { onSignals, SERVICE_REMEDY, type Signals, Teardown } from "./teardown.ts";
 
 type Client = Pick<pg.Client, "query" | "escapeIdentifier" | "escapeLiteral">;
 
@@ -117,18 +117,26 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
   const stopListening = o.teardown ? () => {} : onSignals(teardown, log, o.proc);
   // Once a kept service is up, the steps that would remove it do nothing.
   let kept = false;
-  const add = (what: string, fn: () => Promise<void>) =>
-    teardown.add(what, async () => {
-      if (kept) return;
-      try {
-        await fn();
-      } catch (e) {
-        if (e instanceof Error) e.message = redact(e.message);
-        throw e;
-      }
-    });
+  const add = (what: string, fn: () => Promise<void>) => {
+    teardown.service = true;
+    teardown.add(
+      what,
+      async () => {
+        if (kept) return;
+        try {
+          await fn();
+        } catch (e) {
+          if (e instanceof Error) e.message = redact(e.message);
+          throw e;
+        }
+      },
+      SERVICE_REMEDY,
+    );
+  };
   const keepFromHere = () => {
     kept = true;
+    // Kept on purpose: a stop cut short leaves nothing of it to remove.
+    teardown.service = false;
     // Ctrl+C no longer removes it; a shared teardown still runs the caller's steps.
     stopListening();
   };

@@ -74,7 +74,9 @@ jobs:
       - run: pnpm --filter fieldbook stack:up
       - run: pnpm --filter fieldbook seed
       - run: pnpm --filter fieldbook test:db
-      # Catalog tamper cases, the differential and the write path (rolled back, or cleaned up).
+      # Catalog tamper cases, the differential and the write path (rolled back, or cleaned up),
+      # and a --mutate run stopped by Ctrl+C, which restarts PowerSync on the original sync
+      # config and waits for it to catch up before the gate below.
       - run: pnpm --filter @samesight/verify test:stack
       # The gate: static, catalog, differential, write path and every mutant caught, in under 5 minutes.
       - name: samesight-verify --mutate

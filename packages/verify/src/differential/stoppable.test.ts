@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import type { Stack } from "../stack.ts";
-import { LEFT_FOR_NEXT } from "../autostart/teardown.ts";
-import { holdingLock, stoppable } from "./run.ts";
+import { LEFT_FOR_NEXT, leftForNext } from "../autostart/teardown.ts";
+import type { TableModel } from "./model.ts";
+import { cleanup, holdingLock, setUp, setUpUsers, stoppable, tearDown } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
 const fresh = { sql: [] as string[], lock: true, ended: false };
@@ -17,7 +18,9 @@ const connect = vi.fn(async () => ({
   },
 }));
 vi.mock("../db.ts", async (original) => ({ ...(await original<typeof import("../db.ts")>()), connectLocal: () => connect() }));
-vi.mock("./model.ts", async (original) => ({ ...(await original<typeof import("./model.ts")>()), readModel: async () => [] }));
+/** What readModel finds, by the names asked for: none, unless a test says. */
+let modelOf: (names: string[]) => unknown[] = () => [];
+vi.mock("./model.ts", async (original) => ({ ...(await original<typeof import("./model.ts")>()), readModel: async (_: unknown, tables: { name: string }[]) => modelOf(tables.map((t) => t.name)) }));
 
 
 const stack = { db: "postgresql://postgres:postgres@127.0.0.1:54322/postgres" } as Stack;
@@ -78,6 +81,13 @@ describe("stoppable", () => {
     expect(holdingLock.has(client)).toBe(false);
     expect(fresh.sql.some((s) => /from auth\.users/.test(s))).toBe(false);
     expect(lines).toEqual([`could not take the run's lock to remove its users and rows; ${LEFT_FOR_NEXT}`]);
+    // In policy mode, the next verify run removes them.
+    const policy = runClient();
+    const said: string[] = [];
+    const stopPolicy = await stoppable(policy, stack, [], (l) => said.push(l), [], "policy");
+    holdingLock.add(policy);
+    await stopPolicy.step();
+    expect(said).toEqual([`could not take the run's lock to remove its users and rows; ${leftForNext("policy")}`]);
   });
 
   it("waits for the run's own tearDown when it has begun, instead of cleaning twice", async () => {
@@ -102,5 +112,110 @@ describe("stoppable", () => {
     });
     await expect(stop.step()).resolves.toBeUndefined();
     expect(lines).toEqual([`could not remove the run's users and rows: refusing to connect; ${LEFT_FOR_NEXT}`]);
+  });
+});
+
+describe("policy mode's setUp", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("lets Auth pick its users' ids: it asks for none", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        if (url.endsWith("/auth/v1/admin/users")) {
+          bodies.push(JSON.parse(String(init.body)));
+          return new Response(JSON.stringify({ id: `0c0c0c0c-0000-4000-8000-00000000000${bodies.length}` }), { status: 200 });
+        }
+        return new Response("no", { status: 400 });
+      }),
+    );
+    const client = {
+      on: vi.fn(),
+      query: async (text: string) => ({ rows: /pg_try_advisory_lock/.test(text) ? [{ locked: true }] : [] }),
+    } as unknown as pg.Client;
+    const ir = { tables: [], claims: { roles: ["admin", "member"] }, membership: { table: "members", user: "user_id", tenant: "org_id", role: "role" } };
+    await expect(setUp(client, { ...stack, api: "http://127.0.0.1:54321" }, ir as never)).rejects.toThrow(/\/token/);
+    expect(bodies.length).toBeGreaterThan(0);
+    expect(bodies.filter((b) => "id" in b)).toEqual([]);
+  });
+});
+
+describe("cleanup with tables beyond the run's", () => {
+  it("cleans them one at a time, children first, with their foreign keys on, and retries one that refused after the run's rows", async () => {
+    const sql: string[] = [];
+    let refuse = 1;
+    const client = {
+      query: async (text: string) => {
+        sql.push(text);
+        if (text.startsWith("delete from public.teams") && refuse-- > 0) throw new Error("still referenced");
+        return { rows: [] };
+      },
+    } as unknown as pg.Client;
+    const table = (name: string, parent?: string): TableModel => ({
+      name,
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [{ name: "id", type: "uuid", nullable: false, hasDefault: false, computed: false, hints: [] }],
+      foreignKeys: parent ? [{ columns: ["team_id"], schema: "public", table: parent, references: ["id"] }] : [],
+    });
+    await cleanup(client, stack, [table("documents")], [table("teams"), table("team_settings", "teams")]);
+    expect(sql.filter((x) => x.startsWith("delete") || x.includes("replica") || x === "rollback")).toEqual([
+      "delete from public.team_settings where id::text like $1",
+      "delete from public.teams where id::text like $1",
+      "rollback",
+      // The run's own rows, past the project's triggers.
+      "set local session_replication_role = replica",
+      "delete from public.documents where id::text like $1",
+      "delete from public.teams where id::text like $1",
+    ]);
+  });
+});
+
+describe("tearDown at a run's end", () => {
+  it("looks in the tables beyond the run's too, as every other cleanup does", async () => {
+    const sql: string[] = [];
+    const client = {
+      query: async (text: string) => {
+        sql.push(text);
+        return { rows: [] };
+      },
+    } as unknown as pg.Client;
+    const teams: TableModel = { name: "teams", primaryKey: ["id"], unique: ["id"], columns: [{ name: "id", type: "uuid", nullable: false, hasDefault: false, computed: false, hints: [] }], foreignKeys: [] };
+    modelOf = (names) => (names.includes("teams") ? [teams] : []);
+    try {
+      await tearDown({ client, stack, model: [], outside: ["teams"] } as never);
+    } finally {
+      modelOf = () => [];
+    }
+    expect(sql).toContain("delete from public.teams where id::text like $1");
+    expect(sql.at(-1)).toBe("select pg_advisory_unlock($1)");
+  });
+});
+
+describe("setUpUsers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("gives the run its cleanup scope, so its own tearDown looks there too", async () => {
+    const token = `x.${Buffer.from(JSON.stringify({ sub: "u", role: "authenticated" })).toString("base64url")}.y`;
+    let n = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        if (url.endsWith("/auth/v1/admin/users")) return new Response(JSON.stringify({ id: (JSON.parse(String(init.body)) as { id?: string }).id ?? `id-${++n}` }), { status: 200 });
+        return new Response(JSON.stringify({ access_token: token, expires_at: 2_000_000_000 }), { status: 200 });
+      }),
+    );
+    const client = {
+      on: vi.fn(),
+      query: async (text: string) => ({ rows: /pg_try_advisory_lock/.test(text) ? [{ locked: true }] : [] }),
+    } as unknown as pg.Client;
+    const run = await setUpUsers(client, { ...stack, api: "http://127.0.0.1:54321" }, { tables: [], synced: [], cleanup: ["teams"] });
+    holdingLock.delete(client);
+    expect(run.outside).toEqual(["teams"]);
   });
 });
