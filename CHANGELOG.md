@@ -18,6 +18,7 @@ The first published release.
 - `samesight init` drafts a compiling policy from the local database: the membership and tenant tables, each table's tenant column and the role values. Without a database it writes a template.
 - `samesight explain` prints the compiled policy in plain words: a role by operation matrix, each rule, the columns clients write and those each role never receives.
 - Policy files load as `samesight.policy.ts` or `samesight.policy.mts`, with a clear error for a CommonJS package and for Node without TypeScript support.
+- `claimReads` (from `samesight/compiler`) finds the token claims a piece of SQL reads, in RLS as Postgres prints it, in sync streams and in sync rules, and what each is compared with: literals, a column, or something it names but cannot follow. `classify` says who sets a claim (Auth, the app's `app_metadata`, the user's `user_metadata`, an access token hook).
 - Connects only to a database on this machine, found from the `[db]` port in `supabase/config.toml` unless `--db` says otherwise.
 - `apply_batch` treats a PUT whose row exists as a replay or an upsert: it updates the row where the caller may (last write wins) and otherwise leaves it, without ever putting it through the INSERT policy. It returns the number of ops it applied, and decodes json, jsonb and array values that PowerSync clients hold as text.
 - The compiler refuses what RLS and the streams would read differently: generated columns in read rules (logical replication does not send them), literals on arrays, json, citext and char(n), `real` literals a 4-byte float cannot hold, partitioned tables, and non-uuid ids or unquotable column names on tables clients write. A `powersync` publication made `FOR ALL TABLES` is replaced rather than failing the migration.
@@ -33,6 +34,9 @@ The first published release.
 - A row sent by two streams is compared copy by copy; values come from enum labels and from the literals in hand-written policies and stream queries; defaulted columns are sometimes left to their default; tables still untested get up to three more targeted datasets.
 - The static checks fail when the generated files are not what the policy generates now, and the catalog checks when the database no longer matches the schema snapshot.
 - Audit mode warns about policies and stream queries that read `user_metadata`, and about streams that read client parameters.
+- Audit reads which token claims the policies (through SQL wrapper functions, one level) and the sync config read, and gives its run users the `app_metadata` and `user_metadata` values they compare: each literal, a value none matches, and none at all, in every combination that fits in at most eight users; claims compared with columns (an org id) get values generated rows hold too, as keys or column values. The Claims section says who holds what, and why any other claim (one only an access token hook adds, one audit cannot follow) is not tested.
+- Audit's Coverage section says whether each RLS read policy and each stream was seen both allowing and refusing a run user a row, measured inside transactions that are always rolled back, and names each rule seen only one way with the reason; the Differential line says how many rules were not tested both ways. More datasets run while a rule could still be exercised.
+- A 429 from Supabase Auth at sign-in names the `[auth.rate_limit] sign_in_sign_ups` setting to raise.
 - The offline checks are exported for use in tests.
 
 ### @samesight/supabase
