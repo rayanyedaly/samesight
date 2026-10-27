@@ -1,0 +1,16 @@
+{
+  "name": "audit-roles",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A small app written for Samesight to exercise samesight-verify audit on roles and an org held in app_metadata",
+  "type": "module",
+  "scripts": {
+    "stack:up": "bash scripts/stack-up.sh",
+    "stack:down": "bash scripts/stack-down.sh",
+    "verify": "samesight-verify audit --sync-config sync-config.yaml",
+    "verify:planted": "bash scripts/verify-planted.sh"
+  },
+  "devDependencies": {
+    "@samesight/verify": "workspace:*"
+  }
+}

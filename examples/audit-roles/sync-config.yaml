@@ -1,0 +1,25 @@
+# The same access as the RLS in supabase/migrations, as PowerSync sync streams. The role is
+# read in both spellings seen in the wild: a $. path, and ->> on the app_metadata object.
+config:
+  edition: 3
+
+streams:
+  own:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM orgs WHERE owner_id = auth.user_id()
+      - SELECT * FROM documents WHERE owner_id = auth.user_id()
+  editor:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM documents WHERE auth.parameter('$.app_metadata.role') = 'editor' AND status = 'published'
+  admin:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM orgs WHERE auth.parameter('$.app_metadata.role') = 'admin'
+      - SELECT * FROM documents WHERE auth.parameter('app_metadata') ->> 'role' = 'admin' AND status != 'archived'
+  org:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM orgs WHERE id = auth.parameter('app_metadata') ->> 'org_id'
+      - SELECT * FROM documents WHERE org_id = auth.parameter('app_metadata') ->> 'org_id' AND status != 'archived'

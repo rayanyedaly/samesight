@@ -26,6 +26,8 @@ export interface ColumnModel {
   pattern?: string;
   /** Literals the policy compares this column with. */
   hints: string[];
+  /** Values run users hold in a claim the rules compare this column with (audit): drawn often. */
+  claimValues?: unknown[];
 }
 
 export interface ForeignKeyModel {
@@ -42,6 +44,10 @@ export interface ScopeTable {
   hints?: Map<string, Set<string>>;
   /** Columns a rule compares with the signed-in user: they get the run's users as values. */
   userColumns?: Set<string>;
+  /** Per column, values run users hold in a claim a rule compares the column with. */
+  claimValues?: Map<string, unknown[]>;
+  /** A key column whose first generated rows take these values, one each: keys run users hold in a claim. */
+  keyPool?: { column: string; values: unknown[] };
 }
 
 /**
@@ -85,6 +91,8 @@ export interface TableModel {
   unique: string[];
   columns: ColumnModel[];
   foreignKeys: ForeignKeyModel[];
+  /** The first generated rows take these keys, one each (see ScopeTable.keyPool). */
+  keyPool?: { column: string; values: unknown[] };
 }
 
 const literal = (s: string) => s.replace(/''/g, "'");
@@ -207,6 +215,7 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
           ...(values ? { values } : {}),
           ...(pattern !== undefined ? { pattern } : {}),
           hints: [...(hints.get(c.name) ?? [])],
+          ...(t.claimValues?.get(c.name)?.length ? { claimValues: t.claimValues.get(c.name) } : {}),
         };
       });
     const primaryKey = mine.find((k) => k.type === "p")?.columns ?? ["id"];
@@ -229,6 +238,7 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
       unique: unique.filter((u) => u.table === t.name).map((u) => u.column),
       columns: cols,
       foreignKeys,
+      ...(t.keyPool ? { keyPool: t.keyPool } : {}),
     };
   });
 }

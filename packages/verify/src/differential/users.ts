@@ -30,6 +30,12 @@ async function auth(stack: Stack, path: string, init: RequestInit & { admin?: bo
     headers: { apikey: key, ...(init.admin ? { authorization: `Bearer ${key}` } : {}), "content-type": "application/json" },
   });
   const text = await res.text();
+  if (res.status === 429 && path.startsWith("/token")) {
+    throw new Error(
+      `Auth ${init.method ?? "GET"} ${path}: 429 ${text.slice(0, 200)}. That is Supabase Auth's sign-in rate limit: every run signs each of its users in, ` +
+        "again in a long run; raise [auth.rate_limit] sign_in_sign_ups in supabase/config.toml for the local stack, then restart it",
+    );
+  }
   if (!res.ok) throw new Error(`Auth ${init.method ?? "GET"} ${path}: ${res.status} ${text.slice(0, 300)}`);
   return text ? JSON.parse(text) : null;
 }
@@ -50,8 +56,16 @@ export async function deleteUser(stack: Stack, id: string): Promise<void> {
   await auth(stack, `/admin/users/${encodeURIComponent(id)}`, { method: "DELETE", admin: true });
 }
 
-/** Creates `count` confirmed users sharing one random password, made for this run only. */
-export async function createUsers(stack: Stack, count: number, runId: string): Promise<{ users: User[]; password: string }> {
+/**
+ * Creates `count` confirmed users sharing one random password, made for this run only.
+ * `metadata[i]` is the app_metadata and user_metadata user i is created with, if any.
+ */
+export async function createUsers(
+  stack: Stack,
+  count: number,
+  runId: string,
+  metadata: Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>[] = [],
+): Promise<{ users: User[]; password: string }> {
   const password = randomBytes(18).toString("base64url");
   const users: User[] = [];
   for (let i = 0; i < count; i++) {
@@ -59,7 +73,7 @@ export async function createUsers(stack: Stack, count: number, runId: string): P
     const created = (await auth(stack, "/admin/users", {
       method: "POST",
       admin: true,
-      body: JSON.stringify({ email, password, email_confirm: true }),
+      body: JSON.stringify({ email, password, email_confirm: true, ...metadata[i] }),
     })) as { id: string };
     users.push({ id: created.id, email });
   }
