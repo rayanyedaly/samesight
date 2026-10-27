@@ -169,7 +169,15 @@ export function castFamily(cast: string): "uuid" | "number" | "boolean" | "text"
 
 const isPrefix = (a: string[], b: string[]) => a.length < b.length && a.every((k, i) => b[i] === k);
 
-export function assignClaims(plan: ClaimsPlan, fresh: () => string, model: TableModel[] = []): Assignment {
+export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: TableModel[] = []): Assignment {
+  // Only values minted here (the run's prefixed uuids) become keys: cleanup finds the run's
+  // rows by that prefix, so a row keyed by a rule's own literal would outlive the run.
+  const minted = new Set<string>();
+  const fresh = () => {
+    const v = mintKey();
+    minted.add(v);
+    return v;
+  };
   const notSet = new Map<string, string>();
   const claimValues = new Map<string, Map<string, unknown[]>>();
   const keyPools = new Map<string, { column: string; values: unknown[] }>();
@@ -218,13 +226,18 @@ export function assignClaims(plan: ClaimsPlan, fresh: () => string, model: Table
           continue;
         }
         if (x.key) {
+          const keys = fits.filter((v) => typeof v === "string" && minted.has(v));
+          if (!keys.length) {
+            skipped.push(`${x.table}.${x.column} (a key, which takes only the run's own uuids, never a rule's literal)`);
+            continue;
+          }
           // One pool of keys per table: a second claim keyed on the same table is not placed.
           const taken = keyPools.get(x.table);
           if (taken && taken.column !== x.column) {
             skipped.push(`${x.table}.${x.column} (the table's first rows already take another claim's keys)`);
             continue;
           }
-          keyPools.set(x.table, { column: x.column, values: [...new Set([...(taken?.values ?? []), ...fits])] });
+          keyPools.set(x.table, { column: x.column, values: [...new Set([...(taken?.values ?? []), ...keys])] });
         } else {
           const columns = claimValues.get(x.table) ?? new Map<string, unknown[]>();
           claimValues.set(x.table, columns);

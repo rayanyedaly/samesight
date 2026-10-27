@@ -396,7 +396,11 @@ const SIDES: Record<State, [string, string]> = {
 function reason(cov: Coverage, x: { table: string; claims: string[]; reachable: boolean; tally: Tally }, held: ReadonlySet<string>, together: boolean, kind: "permissive" | "restrictive" | "stream"): string {
   if (!cov.inserted.get(x.table)) return `no ${x.table} row was inserted`;
   const missing = x.claims.filter((k) => !held.has(k));
-  if (missing.length) return `it reads ${missing.join(", ")}, which no run user holds; see Claims`;
+  // Sign-in state (aal, email, is_anonymous): every run user has it, alike, as a password user.
+  const alikeState = missing.filter((k) => classify(k.split(".")) === "auth-state");
+  const unheld = missing.filter((k) => !alikeState.includes(k));
+  if (unheld.length) return `it reads ${unheld.join(", ")}, which no run user holds; see Claims`;
+  if (alikeState.length) return `it reads ${alikeState.join(", ")}, which every run user has alike (an aal1 password user); see Claims`;
   if (!x.reachable) return "it reads the token in a way audit cannot follow; see Claims";
   const state = stateOf(x.tally);
   if (kind === "restrictive") return state === "only refused" ? "it let no row through" : "it kept out no row the other policies let through";

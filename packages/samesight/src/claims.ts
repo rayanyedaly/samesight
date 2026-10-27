@@ -184,17 +184,20 @@ interface Span {
   unsupported?: string;
 }
 
-/** Whether a listed function's body reads the token, itself or through other listed functions. */
-function readsTokenThrough(fn: string, functions: ReadonlyMap<string, string>, seen = new Set<string>()): boolean {
+/** Token reads other than the user id: a helper that reads only auth.uid() tells users apart by id alone. */
+const READS_CLAIMS = /auth\s*\.\s*(jwt|role|email|parameters?)\s*\(|request\s*\.\s*jwt\s*\(|token_parameters\s*\.|current_setting\s*\(\s*'request\.jwt/i;
+
+/** Whether a listed function's body reads the token (or, with READS_CLAIMS, a claim other than the user id), itself or through other listed functions. */
+function readsTokenThrough(fn: string, functions: ReadonlyMap<string, string>, seen = new Set<string>(), reads = READS_TOKEN): boolean {
   const body = functions.get(fn);
   if (body === undefined || seen.has(fn)) return false;
   seen.add(fn);
-  if (READS_TOKEN.test(body)) return true;
+  if (reads.test(body)) return true;
   for (const other of functions.keys()) {
     const bare = other.split(".").at(-1) as string;
     // Any name, quoted ones with regex characters included, is matched as text.
     const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (other !== fn && new RegExp(`(^|[^A-Za-z0-9_$])${escaped}\\s*\\(`, "i").test(body) && readsTokenThrough(other, functions, seen)) return true;
+    if (other !== fn && new RegExp(`(^|[^A-Za-z0-9_$])${escaped}\\s*\\(`, "i").test(body) && readsTokenThrough(other, functions, seen, reads)) return true;
   }
   return false;
 }
@@ -262,6 +265,8 @@ export function wrapperRead(body: string): { path: string[]; casts: string[]; fa
   if (word(t[0], "begin") && word(t[1], "atomic")) t = t.slice(2);
   while (sym(t.at(-1), ";") || word(t.at(-1), "end")) t = t.slice(0, -1);
   if (word(t[0], "select") || word(t[0], "return")) t = t.slice(1);
+  // Postgres prints a BEGIN ATOMIC select list with its column alias: SELECT ... AS bool.
+  if (word(t.at(-2), "as") && name(t.at(-1))) t = t.slice(0, -2);
   for (let i = 0; i < t.length; i++) {
     const span = startAt(t, i, "postgres", {});
     if (!span) continue;
@@ -328,6 +333,8 @@ function extend(t: Token[], span: Span, dialect: ClaimDialect): Span {
     if ((sym(next, "->") || sym(next, "->>")) && isString(t[s.end + 2])) {
       const keys = keyPath(t[s.end + 2]?.text ?? "", dialect, "arrow");
       if (!keys) return { ...s, end: s.end + 2, unsupported: PATH_UNSUPPORTED };
+      // A cast before a key was the object's (current_setting(...)::jsonb -> 'k'), not the claim's.
+      s.casts = [];
       s.path.push(...keys);
       s.end += 2;
       // Postgres prints the key with its type: -> 'app_metadata'::text.
@@ -587,7 +594,14 @@ export function claimReads(sql: string, dialect: ClaimDialect, options: ClaimOpt
         const qualified = sym(t[i + 1], ".") && name(t[i + 2]) ? `${called}.${name(t[i + 2])}` : called;
         const open = qualified === called ? i + 1 : i + 3;
         if (sym(t[open], "(") && readsTokenThrough(qualified, options.functions)) {
-          unreadable.push({ text: qualified, reason: `calls ${qualified}, which reads the token in a way this cannot follow` });
+          if (readsTokenThrough(qualified, options.functions, new Set(), READS_CLAIMS)) {
+            unreadable.push({ text: qualified, reason: `calls ${qualified}, which reads the token in a way this cannot follow` });
+          } else {
+            // A helper that reads only the user id (is_member(org_id) over auth.uid()): it tells
+            // users apart, the way an owner rule does, and needs no claim audit could set.
+            const read = finish(t, { start: i, end: closing(t, open), path: ["sub"], casts: [] });
+            reads.push({ ...read, compared: { kind: "other", text: read.text } });
+          }
           i = open;
         }
       }
