@@ -139,4 +139,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout, the test tiers and how re
 
 ## License
 
-MIT. The PowerSync service image the examples run is FSL-licensed and used for local development and CI only.
+MIT. The PowerSync service image (FSL-1.1-ALv2) is never bundled or redistributed: the examples run it for local development and CI, and `samesight-verify audit` pulls the official image and runs it on your machine.

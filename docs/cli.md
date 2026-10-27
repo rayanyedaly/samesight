@@ -136,6 +136,8 @@ samesight-verify audit [--sync-config <file>] [--project <dir>] [--publication <
                        [--static] [--runs <n>] [--seed <n>] [--time-limit <s>]
 ```
 
+In audit, `--publication` needs `--powersync` or `--static` (the PowerSync audit starts always replicates `powersync`), and `--keep-powersync` goes with neither.
+
 ## Policy files and module types
 
 Node loads a `.ts` file as an ES module only when the nearest `package.json` says `"type": "module"`. Without a `type`, it loads anyway after a warning; under `"type": "commonjs"`, it cannot load the policy's imports, and the CLI says so. `samesight.policy.mts` always loads as a module, which is why `init` writes that name in such projects.
