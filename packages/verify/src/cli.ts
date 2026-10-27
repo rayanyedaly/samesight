@@ -131,7 +131,10 @@ async function main(argv: string[]): Promise<number> {
   const root = dirname(policyPath);
   const powersync = values.powersync ?? "http://127.0.0.1:8080";
   const findings: Finding[] = [];
+  // Once a signal has begun the teardown, what the run says as its connection ends under it is not news.
+  let stopped = () => false;
   const section = (title: string, f: Finding[]) => {
+    if (stopped()) return;
     findings.push(...f);
     process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
   };
@@ -283,7 +286,10 @@ async function auditMain(argv: string[]): Promise<number> {
   }
   const project = resolve(values.project ?? ".");
   const findings: Finding[] = [];
+  // Once a signal has begun the teardown, what the run says as its connection ends under it is not news.
+  let stopped = () => false;
   const section = (title: string, f: Finding[]) => {
+    if (stopped()) return;
     findings.push(...f);
     process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
   };
@@ -303,6 +309,9 @@ async function auditMain(argv: string[]): Promise<number> {
   // users and rows, and the PowerSync service audit started.
   const teardown = new Teardown(log);
   const stopListening = onSignals(teardown, log);
+  let auditDone = false;
+  stopped = () => teardown.stoppedBy !== undefined && !auditDone;
+  let signalled = false;
   // Without --powersync, a service of the run's own, on a connection of its own, once the checks before the differential pass.
   let client: pg.Client | undefined;
   let started: AutoStarted | undefined;
@@ -340,17 +349,23 @@ async function auditMain(argv: string[]): Promise<number> {
       teardown,
     });
   } catch (e) {
-    threw = true;
-    throw e;
+    if (!stopped()) {
+      threw = true;
+      throw e;
+    }
   } finally {
+    signalled = stopped();
+    auditDone = true;
     // A run that broke down (an error, or datasets the run could not finish) shows the service's last words before they are removed.
-    const brokeDown = threw || findings.some((f) => f.status === "fail" && /^the run failed: |\(then a run failed: /.test(f.detail));
+    const brokeDown = !signalled && (threw || findings.some((f) => f.status === "fail" && /^the run failed: |\(then a run failed: /.test(f.detail)));
     const left = (await started?.stop(brokeDown ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? (await teardown.run());
     stopListening();
-    if (left.length) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit that starts PowerSync removes it` })));
-    await client?.end();
-    await db.end();
+    if (left.length && !signalled) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit that starts PowerSync removes it` })));
+    await client?.end().catch(() => {});
+    await db.end().catch(() => {});
   }
+  // Stopped by a signal: onSignals exits with its code (130, 143, 129, 141) once the teardown is done.
+  if (signalled) return new Promise<number>(() => setInterval(() => {}, 60_000));
   return report(findings, startedAt);
 }
 

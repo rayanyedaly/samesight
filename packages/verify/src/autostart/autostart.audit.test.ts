@@ -103,6 +103,8 @@ describe("a full audit stopped by Ctrl+C mid-differential", () => {
     expect(await count("select count(*) as n from auth.users where email like '%@verify.samesight.test'")).toBeGreaterThan(0);
     child.kill("SIGINT");
     expect(await exit, out).toBe(130);
+    // What the run says as its connection ends under it is not reported as a breakdown.
+    expect(out).not.toMatch(/last log lines|a run failed|samesight-verify: |FAILED|PASSED/);
     expect(await count("select count(*) as n from auth.users where email like '%@verify.samesight.test'")).toBe(0);
     for (const table of ["lists", "todos"]) expect(await count(`select count(*) as n from public.${table} where id::text like '${PREFIX}%'`), table).toBe(0);
     expect(await leftovers()).toEqual([]);
