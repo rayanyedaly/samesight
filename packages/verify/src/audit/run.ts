@@ -14,7 +14,7 @@ import { worldArbitrary } from "../differential/world.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
-import { accessTokenHook, claimFindings, planClaims, policyFunctions, policyRules, type RuleSql } from "./claims.ts";
+import { accessTokenHook, claimFindings, planClaims, policyFunctions, policyRules, type RuleSql, syncRules } from "./claims.ts";
 import { auditScope } from "samesight/compiler";
 import { parseSyncConfig } from "samesight/compiler";
 import { checkWriteEscape } from "./writes.ts";
@@ -88,11 +88,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   let streamSql: RuleSql[];
   try {
     const config = parseSyncConfig(o.syncConfig.text);
-    const dialect = config.kind === "streams" ? "streams" : "rules";
-    streamSql = config.streams.flatMap((st) => [
-      ...[...st.ctes].map(([name, sql]) => ({ where: `${st.name}.${name}`, sql, dialect }) as const),
-      ...st.queries.map((q) => ({ where: `${st.name}.${q.label}`, sql: q.sql, dialect }) as const),
-    ]);
+    streamSql = syncRules(config);
     scope = auditScope(config.streams, config.kind);
     warnings = config.findings;
   } catch (e) {

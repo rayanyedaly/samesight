@@ -8,7 +8,7 @@
  */
 
 import type pg from "pg";
-import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, readSupabaseConfig } from "samesight/compiler";
+import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 
@@ -56,6 +56,15 @@ async function qualified<T>(client: pg.Client, fn: () => Promise<T>): Promise<T>
   } finally {
     await client.query("select pg_catalog.set_config('search_path', $1, false)", [current[0]?.path ?? ""]);
   }
+}
+
+/** Each stream's CTEs and queries, or each bucket's parameter and data queries. */
+export function syncRules(config: SyncConfig): RuleSql[] {
+  const dialect = config.kind === "streams" ? "streams" : "rules";
+  return config.streams.flatMap((st) => [
+    ...[...st.ctes].map(([name, sql]) => ({ where: `${st.name}.${name}`, sql, dialect }) as const),
+    ...st.queries.map((q) => ({ where: `${st.name}.${q.label}`, sql: q.sql, dialect }) as const),
+  ]);
 }
 
 /** Each public policy's USING and WITH CHECK, in a stable order. */
