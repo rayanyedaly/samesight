@@ -125,6 +125,21 @@ describe("claimFindings", () => {
     );
   });
 
+  it("says who holds a claim the hook adds from rows audit gave, ok only when every value compared and another are held", () => {
+    const hook = { uri: "pg-functions://postgres/public/custom_access_token_hook" };
+    const hookPlan = { uri: hook.uri, tables: ["memberships"], findings: [], steer: { perUser: ["memberships"], summary: "the access token hook reads memberships: rows" } };
+    const line = (tokens?: Map<string, Record<string, unknown>>) => claimFindings(plan, hook, tokens, undefined, hookPlan).find((f) => f.detail.startsWith("app_role"));
+    expect(line()).toMatchObject({ status: "ok", detail: expect.stringMatching(/which reads memberships; a full run gives run users rows there before they sign in \(not run: --static\)$/) });
+    const held = line(new Map([["u0", { app_role: "ADMIN" }], ["u1", { app_role: "VIEWER" }], ["u2", {}]]));
+    expect(held).toMatchObject({ status: "ok", detail: expect.stringMatching(/from rows audit gives each run user in memberships before signing in; held: ADMIN u0, VIEWER u1, none u2$/) });
+    const missing = line(new Map([["u0", { app_role: "VIEWER" }], ["u1", {}]]));
+    expect(missing).toMatchObject({ status: "warn", detail: expect.stringMatching(/held: VIEWER u0, none u1; no token carries 'ADMIN'$/) });
+    // The summary first, then a warning when rows differ and tokens do not.
+    const all = details(claimFindings(plan, hook, new Map([["u0", {}], ["u1", {}]]), undefined, hookPlan));
+    expect(all[0]).toBe("ok the access token hook reads memberships: rows");
+    expect(all[1]).toMatch(/^warn every run user's token carries the same app_role, although audit gave them different memberships rows; the hook may not read them$/);
+  });
+
   it("warns about a hook that runs off this machine, printed without its secrets", () => {
     expect(details(claimFindings(plan, { uri: "https://hooks.example.com/claims" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/\.\.\. is not on this machine/);
     expect(details(claimFindings(plan, { uri: "https://u:pw@hooks.example.com/claims?key=k" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/\.\.\. is not/);

@@ -242,6 +242,14 @@ export function claimFindings(
   const add = (status: Finding["status"], detail: string) => out.push({ status, check: "claims", detail });
   if (hook && remoteHook(hook.uri)) add("warn", `the access token hook ${showUri(hook.uri)} is not on this machine: every sign-in of a run user calls it`);
   out.push(...(hookPlan?.findings ?? []));
+  if (hookPlan?.steer) {
+    add("ok", hookPlan.steer.summary);
+    // Rows that differ, yet tokens that do not: the hook reads something else, or cannot read them.
+    const keys = plan.uses.filter((u) => u.cls === "hook");
+    if (tokens && keys.length && keys.every((u) => new Set([...tokens.values()].map((t) => JSON.stringify(at(t, u.path) ?? null))).size <= 1)) {
+      add("warn", `every run user's token carries the same ${keys.map((u) => u.key).join(", ")}, although audit gave them different ${hookPlan.steer.perUser.join(", ")} rows; the hook may not read them`);
+    }
+  }
   for (const u of plan.uses) {
     const compared = [
       ...(u.values.length ? [`compared with ${u.values.map(show).join(", ")}`] : []),
@@ -290,9 +298,12 @@ export function claimFindings(
         add("warn", values ? `${read}; the run users' tokens carry it, though audit did not set it${values}` : `${read}; run users do not carry ${u.key}, so every user reads it as null`);
         break;
       }
-      case "hook":
-        add("warn", hookDetail(read, u, hook, tokens, hookPlan));
+      case "hook": {
+        const steered = hook && hookPlan?.steer ? steeredDetail(read, u, hook, hookPlan.steer.perUser, tokens) : undefined;
+        if (steered) add(steered.status, steered.detail);
+        else add("warn", hookDetail(read, u, hook, tokens, hookPlan));
         break;
+      }
       case "object":
         add("warn", `${read}; it reads ${u.key || "the whole token"} as one value, which audit cannot give users`);
         break;
@@ -345,6 +356,18 @@ function heldBy(tokens: Map<string, Record<string, unknown>>, path: string[]): s
   const held = [...tokens].map(([label, claims]) => [label, at(claims, path)] as const);
   if (held.every(([, v]) => v === undefined || v === null)) return undefined;
   return ` (${held.map(([label, v]) => `${label}: ${v === undefined ? "null" : JSON.stringify(v)}`).join(", ")})`;
+}
+
+/** A claim the hook adds from the rows audit gave run users: who holds what, and which compared value none does. */
+function steeredDetail(read: string, u: ClaimUse, hook: { uri: string }, perUser: string[], tokens?: Map<string, Record<string, unknown>>): { status: Finding["status"]; detail: string } {
+  const shown = showUri(hook.uri);
+  if (!tokens) return { status: "ok", detail: `${read}; added by the access token hook ${shown}, which reads ${perUser.join(", ")}; a full run gives run users rows there before they sign in (not run: --static)` };
+  const carried = [...tokens.values()].map((t) => at(t, u.path) ?? null);
+  const missing = u.values.filter((v) => !carried.some((c) => JSON.stringify(c) === JSON.stringify(v)));
+  // A rule compared with a value goes both ways only if someone holds another value, or none.
+  const other = carried.some((c) => !u.values.some((v) => JSON.stringify(v) === JSON.stringify(c)));
+  const detail = `${read}; added by the access token hook ${shown} from rows audit gives each run user in ${perUser.join(", ")} before signing in; held: ${holders(tokens, u.path)}${missing.length ? `; no token carries ${missing.map(show).join(", ")}` : ""}`;
+  return { status: missing.length === 0 && other ? "ok" : "warn", detail };
 }
 
 /** What a hook-only claim means for this run, from the tokens when users have signed in. */

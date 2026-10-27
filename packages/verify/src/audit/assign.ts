@@ -18,6 +18,7 @@ import type { ClaimValue } from "samesight/compiler";
 import { jsPattern, type TableModel } from "../differential/model.ts";
 import type { Finding } from "../report.ts";
 import type { ClaimsPlan } from "./claims.ts";
+import { type Dim, dimLabel } from "./fixed.ts";
 
 /** Users before the copy and the user with no claims. */
 const SPREAD = 6;
@@ -56,6 +57,8 @@ export interface Assignment {
   claimValues: Map<string, Map<string, unknown[]>>;
   /** Per table, a key column whose first generated rows take these values. */
   keyPools: Map<string, { column: string; values: unknown[] }>;
+  /** Per run user, by index: the option each access token hook dim takes (see fixed.ts); absent: no hook rows. */
+  hookPicks: (number[] | undefined)[];
 }
 
 /** Values of a column's type that two users can tell apart. */
@@ -238,7 +241,7 @@ export function castFamily(cast: string): "uuid" | "number" | "boolean" | "text"
 
 const isPrefix = (a: string[], b: string[]) => a.length < b.length && a.every((k, i) => b[i] === k);
 
-export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: TableModel[] = [], userIds: string[] = []): Assignment {
+export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: TableModel[] = [], userIds: string[] = [], dims: Dim[] = []): Assignment {
   // Only values minted here (the run's prefixed uuids) become keys: cleanup finds the run's
   // rows by that prefix, so a row keyed by a rule's own literal would outlive the run.
   const minted = new Set<string>();
@@ -343,27 +346,42 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
     }
   }
 
-  const sizes = paths.map((p) => p.pool.length);
+  // Metadata values and the access token hook's rows are picked together: a role with a team.
+  const sizes = [...paths.map((p) => p.pool.length), ...dims.map((d) => d.options.length)];
   const combos = sizes.reduce((a, b) => a * b, 1);
-  const count = paths.length === 0 ? MIN_USERS : Math.min(Math.max(combos + 2, MIN_USERS), MAX_USERS);
+  const count = sizes.length === 0 ? MIN_USERS : Math.min(Math.max(combos + 2, MIN_USERS), MAX_USERS);
   const spread = count - 2;
   const picked = pickCombinations(sizes, spread);
   const users: Map<string, ClaimValue>[] = [];
-  if (paths.length > 0) {
-    for (let i = 0; i < spread; i++) users.push(new Map((picked[i % picked.length] ?? []).map((d, p) => [paths[p]?.key as string, paths[p]?.pool[d] as ClaimValue])));
+  const hookPicks: (number[] | undefined)[] = [];
+  if (sizes.length > 0) {
+    for (let i = 0; i < spread; i++) {
+      const c = picked[i % picked.length] ?? [];
+      users.push(new Map(c.slice(0, paths.length).map((d, p) => [paths[p]?.key as string, paths[p]?.pool[d] as ClaimValue])));
+      hookPicks.push(dims.length ? c.slice(paths.length) : undefined);
+    }
+    // Someone else with the same values and rows, so a role also sees others' rows.
     users.push(new Map(users[0]));
+    hookPicks.push(hookPicks[0]);
   }
-  while (users.length < count) users.push(new Map());
+  while (users.length < count) {
+    users.push(new Map());
+    hookPicks.push(undefined);
+  }
 
   const findings: Finding[] = [];
-  const unheld = paths.flatMap((p) => p.pool.filter((v) => !users.some((u) => u.has(p.key) && JSON.stringify(u.get(p.key)) === JSON.stringify(v))).map((v) => `${p.key}=${show(v)}`));
+  const unheld = [
+    ...paths.flatMap((p) => p.pool.filter((v) => !users.some((u) => u.has(p.key) && JSON.stringify(u.get(p.key)) === JSON.stringify(v))).map((v) => `${p.key}=${show(v)}`)),
+    ...dims.flatMap((d, i) => d.options.filter((_, o) => !hookPicks.some((h) => h?.[i] === o)).map((o) => `${dimLabel(d, o)} (an access token hook row)`)),
+  ];
   if (unheld.length) findings.push({ status: "warn", check: "claims", detail: `${count} users cannot hold every value: no user holds ${unheld.join(", ")}` });
-  const partial = paths.length > 1 && combos > spread;
+  const partial = sizes.length > 1 && combos > spread;
   if (partial) {
-    const held = new Set(users.filter((u) => u.size).map((u) => JSON.stringify([...u])));
-    findings.push({ status: "warn", check: "claims", detail: `${combos} combinations of claim values, and ${count} users hold ${held.size} of them; rules that need values together may not be tested` });
+    const held = new Set(users.map((u, i) => JSON.stringify([[...u], hookPicks[i] ?? null])).filter((_, i) => (users[i]?.size ?? 0) > 0 || hookPicks[i] !== undefined));
+    const of = dims.length ? (paths.length ? "claim values and access token hook rows" : "access token hook rows") : "claim values";
+    findings.push({ status: "warn", check: "claims", detail: `${combos} combinations of ${of}, and ${count} users hold ${held.size} of them; rules that need values together may not be tested` });
   }
-  return { paths, users, notSet, findings, partial, claimValues, keyPools };
+  return { paths, users, notSet, findings, partial, claimValues, keyPools, hookPicks };
 }
 
 /** Beyond this many combinations, users take value i of each pool, which still holds each value while pools fit. */

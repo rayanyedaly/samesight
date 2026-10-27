@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
-import { auditScope, parseSyncConfig } from "samesight/compiler";
+import { parseSyncConfig } from "samesight/compiler";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal } from "../db.ts";
 import { type AutoStarted, autoStart } from "../autostart/run.ts";
@@ -17,7 +17,8 @@ import { prefixedUuid } from "../differential/world.ts";
 import { readStack } from "../stack.ts";
 import { metadataOf } from "./assign.ts";
 import { checkAuditCatalog } from "./catalog.ts";
-import { type Assignment, assignClaims as assign } from "./assign.ts";
+import type { Assignment } from "./assign.ts";
+import { planRun } from "./run.ts";
 import { claimFindings, type ClaimsPlan, planClaims, policyFunctions, policyRules, syncRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
 import { SIGN_IN } from "./signin.ts";
@@ -48,22 +49,11 @@ beforeAll(async () => {
     log: (line) => process.stderr.write(`${line}\n`),
   });
   stack = { ...stack, powersync: started.url, slotPrefix: started.slotPrefix };
-  plan = await discover();
-  assignment = assign(plan, () => prefixedUuid(PREFIX), await readModel(client, SYNCED.map((name) => ({ name }))));
-  s = await setUpUsers(
-    client,
-    stack,
-    {
-      tables: SYNCED.map((name) => {
-        const pool = assignment.keyPools.get(name);
-        return { name, userColumns: new Set(plan.identityColumns), claimValues: assignment.claimValues.get(name) ?? new Map(), ...(pool ? { keyPool: pool } : {}) };
-      }),
-      synced: SYNCED,
-      // The own stream sends documents as d.
-      deviceTables: auditScope(parseSyncConfig(CONFIG).streams).deviceTables,
-    },
-    { metadata: assignment.users.map((v) => metadataOf(assignment.paths, v)), paths: assignment.paths.map((p) => p.path) },
-  );
+  // Planned as audit() plans it: the claims, the hook's rows, the values each user holds.
+  const p = await planRun(client, parseSyncConfig(CONFIG), APP);
+  plan = p.claims;
+  assignment = p.assignment;
+  s = await setUpUsers(client, stack, p.setUp.scope, p.setUp.claims);
 }, 180_000);
 afterAll(async () => {
   let left: string[] = [];
