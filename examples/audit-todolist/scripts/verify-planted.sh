@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The other half of the Phase 5 gate: the audit must catch a divergence planted in the
 # demo's sync config. The lists query loses its owner filter, so every device receives
-# every list; RLS still returns each user only their own. PowerSync is restarted on the
-# planted copy, the audit must fail with a leak, and the original is put back.
+# every list; RLS still returns each user only their own. The audit starts PowerSync on
+# the planted copy and must fail with that leak.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,21 +13,12 @@ if cmp -s upstream/sync-config.yaml "$planted"; then
   exit 1
 fi
 
-# shellcheck source=reload.sh
-source scripts/reload.sh
-
 log=$(mktemp)
-restore() {
-  rm -f "$log"
-  reload ./upstream/sync-config.yaml
-}
-trap restore EXIT
-reload "./$planted"
-
+trap 'rm -f "$log"' EXIT
 # One dataset shows the leak; the time limit bounds how long it is shrunk. Output streams
 # as it runs (tee), so a run killed by a timeout still leaves its log.
 set +e
-pnpm exec samesight-verify audit --project upstream --sync-config "$planted" --powersync http://127.0.0.1:8081 --runs 3 --time-limit 60 2>&1 | tee "$log"
+pnpm exec samesight-verify audit --project upstream --sync-config "$planted" --runs 3 --time-limit 60 2>&1 | tee "$log"
 code=${PIPESTATUS[0]}
 set -e
 if [ "$code" -eq 0 ]; then

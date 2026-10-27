@@ -1,10 +1,12 @@
 /**
  * Audit mode on PowerSync's to-do list demo, as fetched by examples/audit-todolist: the
  * demo as published must pass, and every breakage planted here, inside a transaction that
- * is rolled back, must be caught. (The sync-side half, a planted sync config, needs a
- * PowerSync restart and runs as examples/audit-todolist/scripts/verify-planted.sh.)
+ * is rolled back, must be caught. (The sync-side half, a planted sync config, runs as
+ * examples/audit-todolist/scripts/verify-planted.sh.) PowerSync is auto-started for the
+ * file, unless SAMESIGHT_AUDIT_POWERSYNC_URL names one already serving the demo.
  */
 
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import type pg from "pg";
@@ -12,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal, rolledBack } from "../db.ts";
 import { compareAll, differential, PREFIX, type Run, setUpUsers, tearDown, withWorld } from "../differential/run.ts";
 import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
+import { type AutoStarted, autoStart } from "../autostart/run.ts";
 import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
 import { auditTables } from "./run.ts";
@@ -21,16 +24,43 @@ const DEMO = fileURLToPath(new URL("../../../../examples/audit-todolist/upstream
 const SYNCED = ["lists", "todos"];
 
 let client: pg.Client;
+let own: pg.Client | undefined;
 let s: Run;
+let started: AutoStarted | undefined;
 beforeAll(async () => {
-  const stack = readStack(DEMO, process.env.SAMESIGHT_AUDIT_POWERSYNC_URL ?? "http://127.0.0.1:8081");
+  const given = process.env.SAMESIGHT_AUDIT_POWERSYNC_URL;
+  let stack = readStack(DEMO, given ?? "http://127.0.0.1");
   client = await connectLocal(stack.db);
   const tables = await auditTables(client, SYNCED);
+  if (!given) {
+    own = await connectLocal(stack.db);
+    started = await autoStart({
+      projectDir: DEMO,
+      client: own,
+      dbPort: Number(new URL(stack.db).port),
+      api: stack.api,
+      ...(stack.jwtSecret ? { jwtSecret: stack.jwtSecret } : {}),
+      syncConfig: readFileSync(`${DEMO}sync-config.yaml`, "utf8"),
+      tables: SYNCED,
+      log: (line) => process.stderr.write(`${line}\n`),
+    });
+    stack = { ...stack, powersync: started.url, slotPrefix: started.slotPrefix };
+  }
   s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name })), synced: SYNCED });
-}, 120_000);
+}, 180_000);
 afterAll(async () => {
-  if (s) await tearDown(s);
-  await client?.end();
+  let left: string[] = [];
+  try {
+    if (s) await tearDown(s);
+  } finally {
+    try {
+      left = (await started?.stop()) ?? [];
+    } finally {
+      await own?.end();
+      await client?.end();
+    }
+  }
+  expect(left).toEqual([]);
 });
 
 const world = () => fc.sample(worldArbitrary(s.tables, { minRows: 4, maxRows: 8 }), { numRuns: 1, seed: 11 })[0] ?? {};

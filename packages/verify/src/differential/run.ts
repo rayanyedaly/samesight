@@ -262,16 +262,20 @@ async function insertRow(client: pg.Client, table: string, row: Record<string, u
   );
 }
 
-/** Waits until PowerSync's replication slot has confirmed everything written so far. */
-export async function waitForReplication(client: pg.Client, timeoutMs = 60_000): Promise<void> {
+/**
+ * Waits until PowerSync's replication slots have confirmed everything written so far: the
+ * active ones named `slotPrefix` (powersync_ by default, the run's own under auto-start).
+ * An inactive slot is a stopped service's, which will never catch up.
+ */
+export async function waitForReplication(client: pg.Client, timeoutMs = 60_000, slotPrefix = "powersync"): Promise<void> {
   const [{ lsn } = { lsn: "" }] = await rows<{ lsn: string }>(client, "select pg_current_wal_lsn()::text as lsn");
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const slots = await rows<{ name: string; caught_up: boolean }>(
       client,
       `select slot_name as name, coalesce(confirmed_flush_lsn >= $1::pg_lsn, false) as caught_up
-         from pg_replication_slots where slot_type = 'logical' and slot_name like 'powersync%'`,
-      [lsn],
+         from pg_replication_slots where slot_type = 'logical' and active and starts_with(slot_name, $2)`,
+      [lsn, slotPrefix],
     );
     if (slots.length && slots.every((s) => s.caught_up)) return;
     if (Date.now() > deadline) {
@@ -356,7 +360,7 @@ export async function withWorld<T>(s: Run, world: World, fn: (inserted: Inserted
     throw e;
   }
   try {
-    await waitForReplication(s.client);
+    await waitForReplication(s.client, undefined, s.stack.slotPrefix);
     return await fn(inserted);
   } finally {
     await deleteRows(

@@ -14,15 +14,28 @@
  * RLS (pg_policies) against its own sync config.
  *
  * It refuses any database or service that is not on this machine: it creates users,
- * writes and deletes rows, and (with --mutate) restarts PowerSync.
+ * writes and deletes rows, (with --mutate) restarts PowerSync, and (audit) starts
+ * PowerSync containers and a replication role of its own.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import fc from "fast-check";
-import { buildIR, introspect, loadPolicy, outputPaths, PUBLICATION, parseStreams, plan, resolvePolicyPath, type SchemaInfo } from "samesight/compiler";
+import type pg from "pg";
+import {
+  buildIR,
+  introspect,
+  loadPolicy,
+  outputPaths,
+  PUBLICATION,
+  parseStreams,
+  plan,
+  resolvePolicyPath,
+  type SchemaInfo,
+} from "samesight/compiler";
 import { audit } from "./audit/run.ts";
+import { type AutoStarted, autoStart } from "./autostart/run.ts";
 import { connectLocal } from "./db.ts";
 import { differential, setUp, tearDown } from "./differential/run.ts";
 import { worldArbitrary } from "./differential/world.ts";
@@ -57,15 +70,20 @@ Options:
 Audit options (a project with hand-written RLS and sync config, no policy file):
   --sync-config <file>  the PowerSync sync config (default: sync-config.yaml)
   --project <dir>       the directory holding supabase/ (default: the current directory)
-  --publication <name>  the publication to check; PowerSync replicates "powersync" unless its config says otherwise
-  --compose <file>      the compose file that runs PowerSync, to check its version floor
-  --powersync <url>     the project's PowerSync service (default: http://127.0.0.1:8080; check the port)
+  --powersync <url>     audit a PowerSync service you run yourself; without it, audit starts one
+                        for this run (needs Docker) and removes it, and all it made, at the end
+  --keep-powersync      leave the service audit started up, for the next audit of the project to
+                        reuse (the next audit that starts PowerSync without the flag removes it)
+  --compose <file>      with --powersync or --static: the compose file that runs your PowerSync,
+                        to check its version floor
+  --publication <name>  with --powersync or --static: the publication to check (default: powersync)
   --static, --runs, --seed, --time-limit   as above
 
   -v, --version         print the version
   -h, --help            print this help
 
-Needs the project's local stack running: Supabase (supabase start) and PowerSync.
+Needs the project's local Supabase stack running (supabase start); the policy mode also needs
+its PowerSync service, and audit needs Docker unless given --powersync or --static.
 Docs: https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme
 `;
 
@@ -232,6 +250,7 @@ async function auditMain(argv: string[]): Promise<number> {
       project: { type: "string" },
       publication: { type: "string" },
       powersync: { type: "string" },
+      "keep-powersync": { type: "boolean" },
       compose: { type: "string" },
       static: { type: "boolean" },
       runs: { type: "string" },
@@ -243,6 +262,15 @@ async function auditMain(argv: string[]): Promise<number> {
   if (values.help) {
     process.stdout.write(USAGE);
     return 0;
+  }
+  const ownService = values.powersync !== undefined;
+  // The service audit starts replicates "powersync"; these only mean something with one of the user's own.
+  if (values["keep-powersync"] && (ownService || values.static)) throw new Error("--keep-powersync keeps the service audit starts; it cannot be combined with --powersync or --static");
+  if (values.compose !== undefined && !ownService && !values.static) {
+    throw new Error("--compose checks the version of a PowerSync service you run yourself; pass it with --powersync or --static");
+  }
+  if (values.publication !== undefined && values.publication !== "powersync" && !ownService && !values.static) {
+    throw new Error(`the PowerSync service audit starts replicates the "powersync" publication; --publication ${values.publication} needs --powersync or --static`);
   }
   const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
   const runs = int("runs", values.runs, 8);
@@ -258,8 +286,9 @@ async function auditMain(argv: string[]): Promise<number> {
     findings.push(...f);
     process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
   };
-  const started = Date.now();
-  const log = (line: string) => process.stdout.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
+  const startedAt = Date.now();
+  const log = (line: string) => process.stdout.write(`  ${((Date.now() - startedAt) / 1000).toFixed(0)}s  ${line}\n`);
+  const syncText = readFileSync(syncPath, "utf8");
   if (values.compose !== undefined) {
     const compose = existsSync(values.compose) ? readFileSync(values.compose, "utf8") : null;
     section(
@@ -267,11 +296,32 @@ async function auditMain(argv: string[]): Promise<number> {
       compose === null ? [{ status: "fail", check: "powersync version", detail: `no ${values.compose}` }] : checkVersionFloor(values.compose, compose),
     );
   }
-  const stack = readStack(project, values.powersync ?? "http://127.0.0.1:8080");
+  const stack = readStack(project, values.powersync ?? "http://127.0.0.1");
   const db = await connectLocal(stack.db);
+  // Without --powersync, a service of the run's own, on a connection of its own, once the checks before the differential pass.
+  let client: pg.Client | undefined;
+  let started: AutoStarted | undefined;
+  let threw = false;
+  const startPowerSync = async (tables: string[]) => {
+    client = await connectLocal(stack.db);
+    started = await autoStart({
+      projectDir: project,
+      client,
+      dbPort: Number(new URL(stack.db).port || 5432),
+      api: stack.api,
+      ...(stack.jwtSecret ? { jwtSecret: stack.jwtSecret } : {}),
+      syncConfig: syncText,
+      tables,
+      log,
+      keep: values["keep-powersync"] === true,
+    });
+    const how = started.reused ? "kept by an earlier audit and reused" : "started by audit for this run";
+    section("PowerSync", [{ status: "ok", check: "powersync version", detail: `${started.version}, ${how} (pinned; at least the 1.20.1 security floor)` }]);
+    return { powersync: started.url, slotPrefix: started.slotPrefix };
+  };
   try {
     await audit(db, stack, {
-      syncConfig: { path: syncPath, text: readFileSync(syncPath, "utf8") },
+      syncConfig: { path: syncPath, text: syncText },
       ...(values.publication !== undefined ? { publication: values.publication } : {}),
       staticOnly: values.static === true,
       runs,
@@ -279,11 +329,19 @@ async function auditMain(argv: string[]): Promise<number> {
       ...(seed !== undefined ? { seed } : {}),
       section,
       log,
+      ...(ownService ? {} : { startPowerSync }),
     });
+  } catch (e) {
+    threw = true;
+    throw e;
   } finally {
+    // A run that broke down shows the service's last words before they are removed.
+    const left = (await started?.stop(threw ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? [];
+    if (left.length) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit that starts PowerSync removes it` })));
+    await client?.end();
     await db.end();
   }
-  return report(findings, started);
+  return report(findings, startedAt);
 }
 
 function report(findings: Finding[], started: number): number {
@@ -296,7 +354,25 @@ function report(findings: Finding[], started: number): number {
 
 // PowerSync's worker threads can keep the process alive, so it exits explicitly, once the
 // report has been written out.
-const exit = (code: number) => process.stdout.write("", () => process.exit(code));
+// Output that has gone (| head, a closed terminal) is no reason to crash; while audit's
+// PowerSync is up, the teardown handles it (autostart/teardown.ts), and otherwise the run
+// ends as it would, exiting 141 as on SIGPIPE.
+let outputGone: number | undefined;
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (e: NodeJS.ErrnoException) => {
+    outputGone ??= e.code === "EPIPE" || e.code === "EIO" ? 141 : 1;
+  });
+}
+// A failed write calls back before it emits 'error': the callbacks' own errors count too.
+const exit = (code: number) => {
+  let left = 2;
+  const done = (e?: Error | null) => {
+    if (e) outputGone ??= ["EPIPE", "EIO"].includes((e as NodeJS.ErrnoException).code ?? "") ? 141 : 1;
+    if (--left === 0) process.exit(outputGone ?? code);
+  };
+  process.stdout.write("", done);
+  process.stderr.write("", done);
+};
 main(process.argv.slice(2)).then(exit, (e) => {
   process.stderr.write(`samesight-verify: ${(e as Error).message}\n`);
   exit(1);
