@@ -113,7 +113,11 @@ export interface UserClaims {
   ids?: string[];
 }
 
-/** Ids for run users: the run's prefix, so a row pointing at one is the run's too. */
+/**
+ * Ids for run users, minted before they are created so claims can hold them. They carry the
+ * run's prefix, so a row keyed by its user's id (a profile a signup trigger makes) counts as
+ * the run's own.
+ */
 export function runUserIds(count: number): string[] {
   return Array.from({ length: count }, () => prefixedUuid(PREFIX));
 }

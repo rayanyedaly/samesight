@@ -59,8 +59,7 @@ export async function deleteUser(stack: Stack, id: string): Promise<void> {
 /**
  * Creates `count` confirmed users sharing one random password, made for this run only.
  * `metadata[i]` is the app_metadata and user_metadata user i is created with, if any, and
- * `ids[i]` its id (the run's own prefixed uuids, so rows pointing at a run user are found by
- * the prefix too); Auth picks one when none is given.
+ * `ids[i]` its id (minted up front, so a claim can hold it); Auth picks one when none is given.
  */
 export async function createUsers(
   stack: Stack,
@@ -78,6 +77,8 @@ export async function createUsers(
       admin: true,
       body: JSON.stringify({ ...(ids[i] ? { id: ids[i] } : {}), email, password, email_confirm: true, ...metadata[i] }),
     })) as { id: string };
+    // An Auth that ignores the id would leave claims holding ids no user has.
+    if (ids[i] && created.id !== ids[i]) throw new Error(`Auth created ${email} with id ${created.id}, not the ${ids[i]} audit asked for; this Auth version does not take an id at creation`);
     users.push({ id: created.id, email });
   }
   return { users, password };

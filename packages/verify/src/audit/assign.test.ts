@@ -214,13 +214,21 @@ describe("Auth's rate limit", () => {
     const bodies: unknown[] = [];
     vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(String(init.body)));
-      return new Response(JSON.stringify({ id: `id${bodies.length}` }), { status: 200 });
+      const body = bodies.at(-1) as { id?: string };
+      return new Response(JSON.stringify({ id: body.id ?? `id${bodies.length}` }), { status: 200 });
     });
     await createUsers(stack, 2, "r", [{ app_metadata: { role: "admin" } }], ["5a3e5a3e-0000-4000-8000-000000000001"]);
     expect(bodies).toEqual([
       expect.objectContaining({ id: "5a3e5a3e-0000-4000-8000-000000000001", app_metadata: { role: "admin" }, email_confirm: true }),
       expect.not.objectContaining({ app_metadata: expect.anything() }),
     ]);
+  });
+
+  it("refuses a user Auth created with another id than the one asked for", async () => {
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ id: "11111111-1111-4111-8111-111111111111" }), { status: 200 }));
+    await expect(createUsers(stack, 1, "r", [], ["5a3e5a3e-0000-4000-8000-000000000001"])).rejects.toThrow(
+      /with id 11111111-1111-4111-8111-111111111111, not the 5a3e5a3e-0000-4000-8000-000000000001 audit asked for/,
+    );
   });
 });
 
@@ -391,7 +399,9 @@ describe("claims compared with columns", () => {
     const ids = ["5a3e5a3e-0000-4000-8000-000000000001", "5a3e5a3e-0000-4000-8000-000000000002", "5a3e5a3e-0000-4000-8000-000000000003", "5a3e5a3e-0000-4000-8000-000000000004"];
     const plan = planClaims([on("documents", `(owner_id = (${read("delegate")})::uuid)`)]);
     const a = assignClaims(plan, fresh, model, ids);
-    expect(a.paths).toEqual([{ path: ["app_metadata", "delegate"], key: "app_metadata.delegate", pool: ids.slice(0, 2), columns: ["documents.owner_id"], skipped: [], unkeyed: [] }]);
+    expect(a.paths).toEqual([{ path: ["app_metadata", "delegate"], key: "app_metadata.delegate", pool: ids.slice(0, 2), columns: ["documents.owner_id"], skipped: [], unkeyed: [], users: true }]);
+    // Ids are minted per run: --static names whose they are.
+    expect(claimFindings(plan, undefined, undefined, a)[0]?.detail).toMatch(/; a full run gives users u0's id, u1's id, and one user none of them \(not run: --static\); generated rows take them in documents\.owner_id$/);
     expect(a.claimValues).toEqual(new Map());
     expect(a.keyPools).toEqual(new Map());
     // Labels and the held line name the user, not the id.
@@ -402,6 +412,29 @@ describe("claims compared with columns", () => {
       ["u2", { sub: ids[2], app_metadata: {} }],
     ]);
     expect(claimFindings(plan, undefined, tokens, a)[0]?.detail).toMatch(/; held: u0's id u0, u1's id u1, none u2; generated rows take them in documents\.owner_id$/);
+  });
+
+  it("keeps fresh keys for a claim compared with a user column and a key to another table, and skips the user column", () => {
+    const ids = ["5a3e5a3e-0000-4000-8000-000000000001", "5a3e5a3e-0000-4000-8000-000000000002"];
+    const plan = planClaims([on("documents", `((owner_id = (${read("who")})::uuid) OR (org_id = (${read("who")})::uuid))`)]);
+    const a = assignClaims(plan, fresh, model, ids);
+    expect(a.paths[0]).toMatchObject({ columns: ["orgs.id"], skipped: ["documents.owner_id (a key to auth.users, which takes only run users' ids)"] });
+    expect(a.paths[0]?.users).toBeUndefined();
+    expect(a.paths[0]?.pool.some((v) => ids.includes(String(v)))).toBe(false);
+  });
+
+  it("takes only a key to auth.users as a user column, not one to another auth table", () => {
+    const sessions: TableModel = {
+      name: "devices",
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [col("id", "uuid"), col("session_id", "uuid")],
+      foreignKeys: [{ columns: ["session_id"], schema: "auth", table: "sessions", references: ["id"] }],
+    };
+    const plan = planClaims([on("devices", `(session_id = (${read("sid")})::uuid)`)]);
+    const a = assignClaims(plan, fresh, [sessions], ["5a3e5a3e-0000-4000-8000-000000000001", "5a3e5a3e-0000-4000-8000-000000000002"]);
+    expect(a.paths).toEqual([]);
+    expect(a.notSet.get("app_metadata.sid")).toMatch(/session_id/);
   });
 
   it("keeps decimals out of floats that cannot hold them, and out of negative-scale numerics", () => {
