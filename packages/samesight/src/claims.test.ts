@@ -87,7 +87,7 @@ describe("claimReads on Postgres policies", () => {
   });
 
   it("reports a rule it cannot tokenize only when it reads the token", () => {
-    expect(claimReads("(auth.jwt() ->> $$role$$) = 'a'", "postgres").unreadable).toHaveLength(1);
+    expect(claimReads("(auth.jwt() ->> $$role$$) = 'a'", "postgres").unreadable).toEqual([{ text: "(auth.jwt() ->> $$role$$) = 'a'", reason: expect.stringMatching(/^cannot be read \(.+\)$/) }]);
     expect(claimReads("(status = $$x$$)", "postgres")).toEqual({ reads: [], unreadable: [] });
   });
 

@@ -548,7 +548,7 @@ export function claimReads(sql: string, dialect: ClaimDialect, options: ClaimOpt
   try {
     t = tokenize(sql, dialect === "postgres" ? { dialect: "postgres" } : {});
   } catch (e) {
-    return READS_TOKEN.test(sql) ? { reads: [], unreadable: [{ text: sql, reason: (e as Error).message }] } : { reads: [], unreadable: [] };
+    return READS_TOKEN.test(sql) ? { reads: [], unreadable: [{ text: sql, reason: `cannot be read (${(e as Error).message})` }] } : { reads: [], unreadable: [] };
   }
   const reads: ClaimRead[] = [];
   const unreadable: Unreadable[] = [];

@@ -107,10 +107,15 @@ describe("claim discovery on the demo's catalog", () => {
       await client.query("create policy samesight_role on public.lists for select to authenticated using ((select public.samesight_test_role()) = 'admin')");
       await client.query("create policy samesight_check on public.lists for select to authenticated using (public.samesight_test_check())");
       await client.query("create policy samesight_sub on public.todos for select to authenticated using ((auth.jwt() ->> 'sub')::uuid = created_by)");
+      // Two levels: the policy's function reads the token through another one.
+      await client.query("create function public.samesight_test_tier() returns text language sql stable as $$ select auth.jwt() ->> 'tier' $$");
+      await client.query("create function public.samesight_test_gold() returns boolean language sql stable return public.samesight_test_tier() = 'gold'");
+      await client.query("create policy samesight_gold on public.todos for select to authenticated using (public.samesight_test_gold())");
       return discover();
     });
     expect(plan.uses.find((u) => u.key === "app_metadata.role")).toMatchObject({ values: ["admin"], rules: ['policy "samesight_role" on lists (USING)'] });
     expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_check" on lists (USING)', reason: expect.stringMatching(/calls public\.samesight_test_check, which reads the token/) }));
+    expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_gold" on todos (USING)', reason: expect.stringMatching(/calls public\.samesight_test_gold, which reads the token/) }));
     expect(plan.identityColumns).toEqual(["created_by", "owner_id"]);
   });
 });
