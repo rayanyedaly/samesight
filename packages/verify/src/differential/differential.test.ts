@@ -1,7 +1,7 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { compare, normalize } from "./compare.ts";
-import { rowsFromOps, streamOfBucket } from "./device.ts";
+import { type Flow, rowsFromOps, streamOfBucket, watchErrors } from "./device.ts";
 import { type ColumnModel, insertOrder, parseCheck, sqlHints, type TableModel } from "./model.ts";
 import { rowKey } from "./rls.ts";
 import { columnArbitrary } from "./world.ts";
@@ -173,5 +173,46 @@ describe("rowsFromOps", () => {
     expect(compare(rows, new Map([[rowKey("Inspection", "a"), { id: "a", title: "public" }]]), new Map(), model)).toEqual([
       expect.objectContaining({ kind: "differs", columns: ["title"] }),
     ]);
+  });
+});
+
+describe("watchErrors", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("gives up once the service has kept failing for the window, and not before", () => {
+    vi.useFakeTimers();
+    let flow: Flow = { downloading: false };
+    const gaveUp: string[] = [];
+    watchErrors(() => flow, 10_000, (e) => gaveUp.push(e.message));
+    vi.advanceTimersByTime(5_000);
+    flow = { downloading: false, error: new Error("fetch failed") };
+    vi.advanceTimersByTime(9_900);
+    expect(gaveUp).toEqual([]);
+    vi.advanceTimersByTime(500);
+    expect(gaveUp).toEqual(["fetch failed"]);
+    vi.advanceTimersByTime(30_000);
+    expect(gaveUp).toEqual(["fetch failed"]);
+  });
+
+  it("starts again after a download, so an error the service recovers from is waited out", () => {
+    vi.useFakeTimers();
+    let flow: Flow = { downloading: false, error: new Error("first") };
+    const gaveUp: string[] = [];
+    const stop = watchErrors(() => flow, 10_000, (e) => gaveUp.push(e.message));
+    vi.advanceTimersByTime(8_000);
+    flow = { downloading: true };
+    vi.advanceTimersByTime(1_000);
+    flow = { downloading: false, error: new Error("second") };
+    vi.advanceTimersByTime(8_000);
+    expect(gaveUp).toEqual([]);
+    // An error between attempts with nothing downloaded still counts from its start.
+    flow = { downloading: false };
+    vi.advanceTimersByTime(1_000);
+    flow = { downloading: false, error: new Error("third") };
+    vi.advanceTimersByTime(1_500);
+    expect(gaveUp).toEqual(["third"]);
+    stop();
   });
 });

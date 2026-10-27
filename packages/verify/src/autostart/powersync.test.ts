@@ -81,6 +81,33 @@ describe("startPowerSync", () => {
   });
 });
 
+describe("startPowerSync with a replication check", () => {
+  it("waits past readiness until the service replicates", async () => {
+    const port = await probe(0);
+    const { docker } = fake(port);
+    let checks = 0;
+    const ps = await startPowerSync(docker, { run: "a1", project: "todo", network: "n", config: "", pollMs: 5, replicating: async () => ++checks >= 3 });
+    expect([ps.container, checks]).toEqual(["samesight-audit-a1-powersync", 3]);
+  });
+
+  it("names a service that was ready but stopped before it replicated, as one refusing its sync config does", async () => {
+    const port = await probe(0);
+    let inspected = 0;
+    const { docker } = fake(port, () => ++inspected < 3);
+    await expect(startPowerSync(docker, { run: "a1", project: "todo", network: "n", config: "", pollMs: 5, replicating: async () => false })).rejects.toThrow(
+      /stopped before it began replicating \(it refuses a sync config it cannot use\); its last log lines:\nError: could not connect to storage/,
+    );
+  });
+
+  it("gives up on a ready service that never replicates", async () => {
+    const port = await probe(0);
+    const { docker } = fake(port);
+    await expect(startPowerSync(docker, { run: "a1", project: "todo", network: "n", config: "", timeoutMs: 50, pollMs: 5, replicating: async () => false })).rejects.toThrow(
+      /did not begin replicating within 0.05s/,
+    );
+  });
+});
+
 describe("ensureImage", () => {
   it("pulls missing images once, naming PowerSync and its license", async () => {
     const lines: string[] = [];
