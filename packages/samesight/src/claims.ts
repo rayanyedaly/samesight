@@ -866,7 +866,7 @@ function finish(t: Token[], span: Span): ClaimRead {
 export type ClaimClass = "identity" | "shared" | "auth-state" | "app_metadata" | "user_metadata" | "hook" | "object";
 
 const SHARED = new Set(["role", "aud", "iss"]);
-const AUTH_STATE = new Set(["aal", "amr", "is_anonymous", "session_id", "email", "phone", "exp", "iat", "nbf", "jti"]);
+const AUTH_STATE = new Set(["aal", "amr", "is_anonymous", "session_id", "email", "phone", "exp", "iat", "nbf", "jti", "client_id"]);
 const AUTH_APP = new Set(["provider", "providers"]);
 const AUTH_USER = new Set(["email", "email_verified", "phone_verified", "sub"]);
 

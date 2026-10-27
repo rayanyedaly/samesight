@@ -266,6 +266,8 @@ describe("classify", () => {
     [["aud"], "shared"],
     [["aal"], "auth-state"],
     [["is_anonymous"], "auth-state"],
+    // Supabase Auth sets it for OAuth clients; no hook adds it.
+    [["client_id"], "auth-state"],
     [["app_metadata", "provider"], "auth-state"],
     [["user_metadata", "email_verified"], "auth-state"],
     [["app_metadata", "role"], "app_metadata"],
