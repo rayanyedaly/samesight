@@ -282,7 +282,7 @@ function mismatches(assignment: Assignment, tokens: Map<string, Record<string, u
 const AUTH_STATE: Record<string, string> = {
   email: "each run user has its own email, which audit does not put in generated rows, so rules matching it are tested on rows that do not match it",
   session_id: "each sign-in has its own session_id, which audit does not put in generated rows, so rules matching it are tested on rows that do not match it",
-  phone: "run users have no phone, so every user reads it as null",
+  phone: "run users have no phone: every token carries an empty one",
 };
 
 /** " (u0: "admin", u1: null)" when some token carries a value at the path, else undefined. */

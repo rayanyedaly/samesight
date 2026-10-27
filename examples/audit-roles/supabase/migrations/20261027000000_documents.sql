@@ -1,5 +1,6 @@
 -- Orgs and their documents. Who reads what comes from the user id and from two claims an
--- admin sets in the user's app_metadata: a role (editor or admin) and the user's org.
+-- admin sets in the user's app_metadata: a role (editor or admin) and the user's org (its
+-- id, as Postgres prints a uuid).
 -- Written for Samesight; modelled on patterns common in public Supabase apps, none copied.
 
 create table public.orgs (
@@ -35,22 +36,23 @@ create policy "org members" on public.orgs
 
 create policy "admins read orgs" on public.orgs
   for select to authenticated
-  using ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin');
+  using (((select auth.jwt()) -> 'app_metadata' ->> 'role') = 'admin');
 
--- Documents: owners read and write their own; editors read published ones; admins and the
--- org's members read the rest. Nobody but the owner reads an archived document.
+-- Documents: owners read and write their own, in an org they can read; editors read
+-- published ones; admins and the org's members read the rest. Nobody but the owner reads
+-- an archived document.
 create policy "own documents" on public.documents
   for all to authenticated
   using (owner_id = (select auth.uid()))
-  with check (owner_id = (select auth.uid()));
+  with check (owner_id = (select auth.uid()) and org_id in (select id from public.orgs));
 
 create policy "editors read published" on public.documents
   for select to authenticated
-  using ((auth.jwt() -> 'app_metadata' ->> 'role') = 'editor' and status = 'published');
+  using (((select auth.jwt()) -> 'app_metadata' ->> 'role') = 'editor' and status = 'published');
 
 create policy "admins read all" on public.documents
   for select to authenticated
-  using ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin');
+  using (((select auth.jwt()) -> 'app_metadata' ->> 'role') = 'admin');
 
 create policy "org members read" on public.documents
   for select to authenticated
