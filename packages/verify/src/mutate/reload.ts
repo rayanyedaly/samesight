@@ -51,9 +51,13 @@ async function ready(url: string): Promise<boolean> {
  */
 export async function reload(client: pg.Client, ps: PowerSyncControl, expectNew: boolean, timeoutMs = 120_000): Promise<void> {
   const before = new Set(await slots(client));
-  const [cmd, ...args] = ps.restart;
-  if (!cmd) throw new Error("no restart command");
-  execFileSync(cmd, args, { cwd: ps.cwd, stdio: ["ignore", "ignore", "pipe"] });
+  // Not blocking: signal handlers, and a teardown's steps and grace, go on during it.
+  await restartAsync(ps, timeoutMs);
+  await settle(client, ps, before, expectNew, timeoutMs);
+}
+
+/** Waits, after a restart, until PowerSync serves the config on disk, as reload says. */
+async function settle(client: pg.Client, ps: PowerSyncControl, before: Set<string>, expectNew: boolean, timeoutMs = 120_000): Promise<void> {
   const started = Date.now();
   for (;;) {
     const now = await slots(client);
@@ -75,11 +79,13 @@ function restartAsync(ps: PowerSyncControl, timeoutMs: number): Promise<void> {
   const [cmd, ...args] = ps.restart;
   if (!cmd) return Promise.reject(new Error("no restart command"));
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { cwd: ps.cwd, timeout: timeoutMs }, (e, _out, err) => {
+    const child = execFile(cmd, args, { cwd: ps.cwd, timeout: timeoutMs }, (e, _out, err) => {
       if (!e) return resolve();
       const why = String(err).trim() || (e.killed ? `no end within ${timeoutMs / 1000}s` : `exit code ${e.code}`);
       reject(new Error(`${ps.restart.join(" ")}: ${why}`));
     });
+    // Nothing to read: a command that asks would wait out the timeout.
+    child.stdin?.end();
   });
 }
 
@@ -115,20 +121,52 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
     process.exit(({ SIGTERM: 143, SIGHUP: 129, SIGBREAK: 149 } as Record<string, number>)[signal] ?? 130);
   };
   const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP", ...(process.platform === "win32" ? (["SIGBREAK"] as const) : [])];
-  // Whether PowerSync has restarted on the original: then neither the run's putBack nor the
-  // teardown's step has anything left to do. Until then either may restart it, even while the
-  // other is under way (a Ctrl+C mid put-back can kill its restart).
+  // Whether PowerSync's restart command ran on the original: then neither the run's putBack
+  // nor the teardown's step has anything left to do.
   let reloaded = false;
+  // A message has named the copy: it stays, whatever restarts PowerSync after.
+  let named = false;
+  // One restore at a time: whoever asks while another is under way waits for it, and tries
+  // again only if it failed (a Ctrl+C that kills the run's own restart, say).
+  // Only the restart is shared: the run's wait for PowerSync to replicate after it is its own,
+  // so a stop waits at most for one restart before removing the run's users.
+  let restoring: Promise<void> | undefined;
+  // True when this call's own attempt restarted PowerSync; false when another had already.
+  const restoreOnce = async (how: () => Promise<void>): Promise<boolean> => {
+    while (restoring) await restoring.catch(() => {});
+    if (reloaded) return false;
+    // No await between the check and this: one attempt at a time.
+    const attempt = (async () => {
+      restore();
+      process.off("exit", restore);
+      await how();
+      reloaded = true;
+    })();
+    restoring = attempt;
+    try {
+      await attempt;
+    } finally {
+      if (restoring === attempt) restoring = undefined;
+    }
+    return true;
+  };
+  // The copy goes once PowerSync is back on the original, unless a message has named it.
+  const done = () => {
+    if (!named) rmSync(dir, { recursive: true, force: true });
+  };
   if (teardown) {
     teardown.add(
       "the mutant streams PowerSync serves",
       async () => {
-        if (reloaded) return;
-        restore();
-        process.off("exit", restore);
-        await restartAsync(ps, 60_000);
-        reloaded = true;
-        rmSync(dir, { recursive: true, force: true });
+        try {
+          // Back on the original, whoever restarted it: after a stop, the put-back names no copy.
+          await restoreOnce(() => restartAsync(ps, 60_000));
+          done();
+        } catch (e) {
+          // Its message names the copy.
+          named = true;
+          throw e;
+        }
       },
       `PowerSync serves them to every device until it restarts on the original sync config: the original is at ${backup}; copy it to ${ps.configPath} if it is not there, then restart PowerSync (${ps.restart.join(" ")})`,
     );
@@ -138,15 +176,21 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
   // Puts the original back. A failed reload fails the run, unless an earlier error is
   // already on its way out.
   const putBack = async (strict: boolean) => {
-    if (reloaded) return;
-    restore();
     for (const s of signals) process.off(s, onSignal);
-    process.off("exit", restore);
     try {
-      await reload(client, ps, false);
-      reloaded = true;
-      rmSync(dir, { recursive: true, force: true });
+      let before = new Set<string>();
+      const own = await restoreOnce(async () => {
+        // Taken after the file is back, and never in the way of the restart.
+        before = new Set(await slots(client).catch(() => []));
+        // A minute at most, so a stop that waits for it still has time to remove the run's users.
+        await restartAsync(ps, 60_000);
+      });
+      // The stop's step restarted it: the stop goes on from there, and the run's connection may be gone.
+      if (!own || teardown?.started) return;
+      await settle(client, ps, before, false);
+      done();
     } catch (e) {
+      named = true;
       const message = `restored ${ps.configPath} (a copy is at ${backup}), but PowerSync did not reload it and may still serve the mutants: ${(e as Error).message}`;
       if (strict) throw new Error(message);
       process.stderr.write(`samesight verify: ${message}\n`);

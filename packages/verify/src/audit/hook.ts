@@ -165,13 +165,69 @@ export function unfollowed(scans: DeepScan[], functions: ReadonlyMap<string, str
 /** A select of every column: select *, select t.*; not exists (select * ...), which reads none. */
 export const SELECTS_ALL = /(?<![A-Za-z0-9_$])(?<!exists\s*\(\s*)select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i;
 
+/** A select's list: the text up to its own from or into, past any parentheses. */
+function selectList(rest: string): string {
+  let depth = 0;
+  for (let i = 0; i < rest.length; i++) {
+    const c = rest[i];
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (depth === 0 && /[^A-Za-z0-9_$.]/.test(rest[i - 1] ?? " ") && /^(from|into)(?![A-Za-z0-9_$"])/i.test(rest.slice(i))) return rest.slice(0, i);
+  }
+  return rest;
+}
+
+/** The items of a select list, split at its top-level commas, after distinct (on (...)) or all. */
+function listItems(list: string): string[] {
+  const body = list.replace(/^\s*(?:all|distinct(?:\s+on\s*\((?:[^()]|\([^()]*\))*\))?)(?![A-Za-z0-9_$"])/i, "");
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i <= body.length; i++) {
+    const c = body[i];
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (i === body.length || (c === "," && depth === 0)) {
+      out.push(body.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
+const escapeName = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
- * The tables a body may select every column of, as schema.name: every table a statement with
- * a select * reads (select * into r from t, a join, t.* of one of several), not those of its
- * other statements.
+ * The tables a body may select every column of, as schema.name. A select takes whole rows when
+ * its list has *, t.* (after distinct too), or a whole row of a table it reads (to_jsonb(t),
+ * row_to_json(t)); then every table it reads, from that select to its statement's end (or a
+ * loop's body), counts. A select under exists (...) reads no columns, and a guard before the
+ * select (if exists (select 1 from x) then ...) or another statement is not counted.
  */
 export function starredTables(body: string): string[] {
-  return [...new Set(codeOnly(body).split(";").filter((x) => SELECTS_ALL.test(x)).flatMap((x) => scanBody(x).reads))];
+  const out = new Set<string>();
+  for (const chunk of codeOnly(body).split(";")) {
+    for (const m of chunk.matchAll(/(?<![A-Za-z0-9_$"])select(?![A-Za-z0-9_$"])/gi)) {
+      const at = m.index ?? 0;
+      if (/exists\s*\(\s*$/i.test(chunk.slice(0, at))) continue;
+      const rest = chunk.slice(at + m[0].length);
+      const list = selectList(rest);
+      const after = rest.slice(list.length);
+      // A whole row of x: x names a table it reads, or that table's alias.
+      const reads = (x: string) =>
+        new RegExp(String.raw`(?:from|join|,)\s+(?:only\s+)?(?:[A-Za-z0-9_$"]+\s*\.\s*)?"?${escapeName(x)}"?(?![A-Za-z0-9_$"])|(?:from|join|,)\s+(?:only\s+)?[A-Za-z0-9_$."]+\s+(?:as\s+)?"?${escapeName(x)}"?(?![A-Za-z0-9_$"])`, "i").test(after);
+      const whole = listItems(list).some((item) => {
+        if (/^(?:"?[A-Za-z_][A-Za-z0-9_$]*"?\s*\.\s*)?\*$/.test(item)) return true;
+        const call = /^(?:to_jsonb|to_json|row_to_json|hstore)\s*\(\s*"?([A-Za-z_][A-Za-z0-9_$]*)"?\s*\)/i.exec(item);
+        return call !== null && reads(call[1] as string);
+      });
+      if (!whole) continue;
+      const statement = chunk.slice(at);
+      const loop = /\sloop(?![A-Za-z0-9_$"])/i.exec(statement);
+      for (const t of scanBody(loop ? statement.slice(0, loop.index) : statement).reads) out.add(t);
+    }
+  }
+  return [...out];
 }
 
 export interface HookPlan {
@@ -195,6 +251,20 @@ export interface HookPlan {
 
 const warn = (detail: string): Finding => ({ status: "warn", check: "access token hook", detail });
 
+/**
+ * The warning for API roles that can execute the hook, with the SQL Supabase's guide runs:
+ * usage on the hook's schema and execute for supabase_auth_admin, then the revoke. Names
+ * with capitals or other characters are quoted.
+ */
+export function executeAdvice(callers: string[], shown: string, schema: string, fn: string): string {
+  const fnSql = `${ident(schema)}.${ident(fn)}(jsonb)`;
+  return (
+    `${callers.join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds. ` +
+    `As Supabase's guide does: grant usage on schema ${ident(schema)} to supabase_auth_admin; grant execute on function ${fnSql} to supabase_auth_admin; revoke execute on function ${fnSql} from public, anon, authenticated ` +
+    "(and from any role they are members of that holds execute; supabase_auth_admin keeps the grant above)"
+  );
+}
+
 /** What audit makes of the hook: its function, the tables it reads, and what to warn about. */
 export async function planHook(client: pg.Client, uri: string, functions: ReadonlyMap<string, string>): Promise<HookPlan> {
   const shown = showUri(uri);
@@ -210,8 +280,6 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
     [parsed.schema, parsed.fn],
   );
   const qualified = `${parsed.schema}.${parsed.fn}(jsonb)`;
-  // As SQL: a name with capitals or other characters quoted.
-  const fnSql = `${ident(parsed.schema)}.${ident(parsed.fn)}(jsonb)`;
   if (!fn || fn.body === null) {
     const cannot = `it names no function ${qualified} in the database`;
     return { uri, tables: [], cannot, findings: [warn(`the access token hook ${shown} names no function ${qualified} in the database; its claims are not steered`)] };
@@ -233,13 +301,7 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
     "select r.rolname as name from pg_roles r where r.rolname in ('anon', 'authenticated') and has_function_privilege(r.oid, $1::oid, 'execute') order by 1",
     [fn.oid],
   );
-  if (callers.length) {
-    findings.push(
-      warn(
-        `${callers.map((r) => r.name).join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds; as Supabase's guide does, grant execute on function ${fnSql} to supabase_auth_admin, then revoke execute on function ${fnSql} from public, anon, authenticated`,
-      ),
-    );
-  }
+  if (callers.length) findings.push(warn(executeAdvice(callers.map((r) => r.name), shown, parsed.schema, parsed.fn)));
 
   const [depends] = await rows<{ tables: string[] }>(
     client,

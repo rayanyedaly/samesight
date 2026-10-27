@@ -42,7 +42,18 @@ async function auth(stack: Stack, path: string, init: RequestInit & { admin?: bo
         "again in a long run; raise [auth.rate_limit] sign_in_sign_ups in supabase/config.toml for the local stack, then restart it",
     );
   }
-  if (!res.ok) throw new Error(`Auth ${init.method ?? "GET"} ${path}: ${res.status} ${text.slice(0, 300)}`);
+  if (!res.ok) {
+    // A database error's detail (the table a row that blocks a delete is in) comes whole.
+    const detail = (() => {
+      try {
+        const body = JSON.parse(text) as { code?: unknown; message?: unknown; detail?: unknown };
+        return typeof body.code === "string" && typeof body.detail === "string" ? `${body.code}: ${typeof body.message === "string" ? `${body.message} (${body.detail})` : body.detail}` : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    throw new Error(`Auth ${init.method ?? "GET"} ${path}: ${res.status} ${detail ?? text.slice(0, 300)}`);
+  }
   return text ? JSON.parse(text) : null;
 }
 
