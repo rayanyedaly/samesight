@@ -148,3 +148,30 @@ jobs:
         run: docker logs supabase_db_react-supabase-todolist --tail 100 || true
       - if: always()
         run: pnpm --filter audit-todolist stack:down
+
+  roles:
+    name: audit mode on the roles app
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Supabase only; each audit below starts its own PowerSync (auto-start) and removes it.
+      - run: pnpm --filter audit-roles stack:up
+      # Claim discovery and the catalog on an app whose rules read app_metadata.
+      - run: pnpm --filter @samesight/verify test:roles
+      - name: samesight-verify audit
+        working-directory: examples/audit-roles
+        run: timeout 300 pnpm run verify --runs 4
+      - name: nothing left behind
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/left-behind.sh supabase_db_samesight-audit-roles powersync
+      - if: failure()
+        run: docker logs supabase_db_samesight-audit-roles --tail 100 || true
+      - if: always()
+        run: pnpm --filter audit-roles stack:down

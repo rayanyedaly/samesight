@@ -1,0 +1,4 @@
+supabase/signing_keys.json
+supabase/.temp/
+supabase/.branches/
+*.planted.yaml
