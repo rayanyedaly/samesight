@@ -24,9 +24,9 @@ const started = await autoStart({
   log: (line) => process.stderr.write(`${line}\n`),
   keep: process.env.SAMESIGHT_KEEP === "1",
 });
-process.stdout.write(`READY ${started.url}\n`);
 process.on("SIGUSR2", () => {
   process.stdout.write("still here\n");
   process.stderr.write("still here\n");
 });
+process.stdout.write(`READY ${started.url}\n`);
 setInterval(() => {}, 60_000);

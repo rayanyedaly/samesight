@@ -4,7 +4,7 @@
  * against a PowerSync service run some other way.
  */
 
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 
 /**
  * Runs `docker` with these arguments; rejects with the process error, stdout and stderr
@@ -15,9 +15,26 @@ export type Exec = (args: string[], env?: Record<string, string>) => Promise<{ s
 
 export const execDocker: Exec = (args, env) =>
   new Promise((resolve, reject) => {
-    execFile("docker", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true, env: { ...process.env, ...env } }, (err, stdout, stderr) => {
-      if (err) reject(Object.assign(err, { stdout, stderr }));
-      else resolve({ stdout, stderr });
+    // In a process group of its own (not on Windows, where that means a console of its own):
+    // a Ctrl+C typed at the terminal is the CLI's to handle, never cutting a docker call short.
+    const child = spawn("docker", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      detached: process.platform !== "win32",
+      env: { ...process.env, ...env },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (d: string) => {
+      stdout += d;
+    });
+    child.stderr.setEncoding("utf8").on("data", (d: string) => {
+      stderr += d;
+    });
+    child.on("error", (err) => reject(Object.assign(err, { stdout, stderr })));
+    child.on("close", (code, signal) => {
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(Object.assign(new Error(`docker ${args[0] ?? ""} exited ${code ?? signal}`), { stdout, stderr }));
     });
   });
 

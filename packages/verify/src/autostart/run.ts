@@ -228,20 +228,27 @@ async function keptRun(
   if (!rows[0]?.ok) return null;
   const url = await serviceUrl(docker, name).catch(() => null);
   if (!url || !(await isReady(url))) return null;
-  return { run, url, secrets: keptSecrets(info?.Config.Env ?? []) };
+  // Without its passwords, what it prints could not be masked: started afresh instead.
+  const secrets = keptSecrets(info?.Config.Env ?? []);
+  return secrets.length ? { run, url, secrets } : null;
 }
 
 /** A kept service's passwords, from the config it was given, to keep out of what this run prints. */
 function keptSecrets(env: string[]): string[] {
   const b64 = env.find((e) => e.startsWith("POWERSYNC_CONFIG_B64="))?.slice("POWERSYNC_CONFIG_B64=".length) ?? "";
+  let config: { replication?: { connections?: unknown }; storage?: { uri?: unknown } } | null;
   try {
-    const config = parse(Buffer.from(b64, "base64").toString()) as { replication?: { connections?: { uri?: string }[] }; storage?: { uri?: string } } | null;
-    const uris = [...(config?.replication?.connections ?? []).map((c) => c.uri), config?.storage?.uri];
-    return uris.flatMap((u) => {
-      const password = u ? decodeURIComponent(new URL(u).password) : "";
-      return password ? [password] : [];
-    });
+    config = parse(Buffer.from(b64, "base64").toString(), { customTags: [{ tag: "!env", resolve: (v: string) => v }] });
   } catch {
     return [];
   }
+  const connections = Array.isArray(config?.replication?.connections) ? (config.replication.connections as { uri?: unknown }[]) : [];
+  return [...connections.map((c) => c?.uri), config?.storage?.uri].flatMap((u) => {
+    try {
+      const password = typeof u === "string" ? decodeURIComponent(new URL(u).password) : "";
+      return password ? [password] : [];
+    } catch {
+      return [];
+    }
+  });
 }

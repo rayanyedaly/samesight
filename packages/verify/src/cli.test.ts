@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -33,4 +33,17 @@ describe("samesight-verify audit flags", () => {
     expect(stderr).not.toMatch(/--compose checks/);
     expect(stderr).toMatch(/No sync config at/);
   });
+
+  it.each([["stdout"], ["stderr"], ["stdout", "stderr"]])(
+    "exits 141 when its %s has gone",
+    async (...closed) => {
+      for (const args of [["--help"], ["audit", "--static", "--sync-config", "nowhere.yaml"]]) {
+        const child = spawn(process.execPath, [CLI, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+        for (const name of closed) child[name as "stdout" | "stderr"].destroy();
+        const code = await new Promise<number | null>((r) => child.on("close", r));
+        expect(code, args.join(" ")).toBe(141);
+      }
+    },
+    20_000,
+  );
 });

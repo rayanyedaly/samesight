@@ -74,29 +74,34 @@ export interface Signals {
  * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP, then exits as a killed process would
  * (130, 143, 129); and when the output fails (a closed terminal, or a reader that left:
  * | head, | tee), exits 141 as on SIGPIPE (129 when SIGHUP comes first), or 1 for any
- * other output error. While it runs, more signals do not cut it short, except Ctrl+C
- * twice. Returns a function that stops listening.
+ * other output error. During it, a different signal does not cut it short; the same one
+ * twice (Ctrl+C twice, a second SIGTERM) exits at once, and so does a teardown still
+ * running after `graceMs`. A teardown begun by the run itself (its end, an error) is left
+ * to finish and report; a signal then only arms the exit for a second one. Returns a
+ * function that stops listening.
  */
-export function onSignals(teardown: Teardown, log: (line: string) => void, proc: Signals = process): () => void {
+export function onSignals(teardown: Teardown, log: (line: string) => void, proc: Signals = process, graceMs = 120_000): () => void {
   let code: number | undefined;
-  let interrupts = 0;
+  const seen = new Map<string, number>();
   const end = (why: string, exitCode: number) => {
-    if (code !== undefined) return;
+    const count = (seen.get(why) ?? 0) + 1;
+    seen.set(why, count);
+    if (code !== undefined) {
+      // A broken output errors on each write: only a signal sent twice means "now".
+      if (count >= 2 && why !== "output closed") proc.exit(code);
+      return;
+    }
     code = exitCode;
+    const already = teardown.started;
     try {
-      log(`${why}: removing what this run started (Ctrl+C ${why === "SIGINT" ? "again" : "twice"} to leave it for the next audit that starts PowerSync)`);
+      log(`${why}: removing what this run started (${why === "SIGINT" ? "Ctrl+C again" : "Ctrl+C twice"} to leave it for the next audit that starts PowerSync)`);
     } catch {}
+    if (already) return;
+    setTimeout(() => proc.exit(exitCode), graceMs).unref();
     void teardown.run().then(() => proc.exit(exitCode));
   };
   const handlers = [
-    [
-      "SIGINT",
-      () => {
-        interrupts++;
-        if (code === undefined) end("SIGINT", 130);
-        else if (interrupts >= 2) proc.exit(code);
-      },
-    ],
+    ["SIGINT", () => end("SIGINT", 130)],
     ["SIGTERM", () => end("SIGTERM", 143)],
     ["SIGHUP", () => end("SIGHUP", 129)],
   ] as const;
