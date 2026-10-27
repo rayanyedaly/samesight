@@ -46,8 +46,8 @@ async function auth(stack: Stack, path: string, init: RequestInit & { admin?: bo
     // A database error's detail (the table a row that blocks a delete is in) comes whole.
     const detail = (() => {
       try {
-        const body = JSON.parse(text) as { code?: unknown; detail?: unknown };
-        return typeof body.code === "string" && typeof body.detail === "string" ? `${body.code}: ${body.detail}` : undefined;
+        const body = JSON.parse(text) as { code?: unknown; message?: unknown; detail?: unknown };
+        return typeof body.code === "string" && typeof body.detail === "string" ? `${body.code}: ${typeof body.message === "string" ? `${body.message} (${body.detail})` : body.detail}` : undefined;
       } catch {
         return undefined;
       }

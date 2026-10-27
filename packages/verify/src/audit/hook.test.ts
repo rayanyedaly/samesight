@@ -151,6 +151,8 @@ describe("scanDeep", () => {
     // No space before from.
     expect(starredTables("select *from public.profiles into r")).toEqual(["public.profiles"]);
     expect(starredTables("select t.*from teams t")).toEqual(["public.teams"]);
+    // A column named from, after a dot, is no from.
+    expect(starredTables("select t.from, t.* from teams t")).toEqual(["public.teams"]);
   });
 
   it("takes select * as reading every column, but not exists (select * ...)", () => {

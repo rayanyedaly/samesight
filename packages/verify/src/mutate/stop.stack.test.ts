@@ -39,10 +39,18 @@ const signal = (name: NodeJS.Signals) => {
     process.kill(-(child?.pid as number), name);
   } catch {}
 };
-// In a group of its own, the run does not get a Ctrl+C that stops the tests: pass it on.
+// In a group of its own, the run does not get a Ctrl+C that stops the tests: pass it on, then
+// end as the signal would (a worker killed by one emits no exit).
+const running = () => child !== undefined && child.exitCode === null && child.signalCode === null;
 process.once("exit", () => {
-  if (child && child.exitCode === null && child.signalCode === null) signal("SIGINT");
+  if (running()) signal("SIGINT");
 });
+for (const name of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.once(name, () => {
+    if (running()) signal("SIGINT");
+    process.kill(process.pid, name);
+  });
+}
 afterAll(async () => {
   try {
     if (child && !settledOnOriginal) process.stderr.write(`\nthe --mutate run's output:\n${out.slice(-4000)}\n`);

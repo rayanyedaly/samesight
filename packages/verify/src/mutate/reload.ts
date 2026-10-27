@@ -131,16 +131,16 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
   // Only the restart is shared: the run's wait for PowerSync to replicate after it is its own,
   // so a stop waits at most for one restart before removing the run's users.
   let restoring: Promise<void> | undefined;
-  const restoreOnce = async (how: () => Promise<void>) => {
+  // True when this call's own attempt restarted PowerSync; false when another had already.
+  const restoreOnce = async (how: () => Promise<void>): Promise<boolean> => {
     while (restoring) await restoring.catch(() => {});
-    if (reloaded) return;
+    if (reloaded) return false;
     // No await between the check and this: one attempt at a time.
     const attempt = (async () => {
       restore();
       process.off("exit", restore);
       await how();
       reloaded = true;
-      if (!named) rmSync(dir, { recursive: true, force: true });
     })();
     restoring = attempt;
     try {
@@ -148,13 +148,20 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
     } finally {
       if (restoring === attempt) restoring = undefined;
     }
+    return true;
+  };
+  // The copy goes once PowerSync is back on the original, unless a message has named it.
+  const done = () => {
+    if (!named) rmSync(dir, { recursive: true, force: true });
   };
   if (teardown) {
     teardown.add(
       "the mutant streams PowerSync serves",
       async () => {
         try {
+          // Back on the original, whoever restarted it: after a stop, the put-back names no copy.
           await restoreOnce(() => restartAsync(ps, 60_000));
+          done();
         } catch (e) {
           // Its message names the copy.
           named = true;
@@ -171,9 +178,17 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
   const putBack = async (strict: boolean) => {
     for (const s of signals) process.off(s, onSignal);
     try {
-      const before = new Set(await slots(client));
-      await restoreOnce(() => restartAsync(ps, 120_000));
+      let before = new Set<string>();
+      const own = await restoreOnce(async () => {
+        // Taken after the file is back, and never in the way of the restart.
+        before = new Set(await slots(client).catch(() => []));
+        // A minute at most, so a stop that waits for it still has time to remove the run's users.
+        await restartAsync(ps, 60_000);
+      });
+      // The stop's step restarted it: the stop goes on from there, and the run's connection may be gone.
+      if (!own || teardown?.started) return;
       await settle(client, ps, before, false);
+      done();
     } catch (e) {
       named = true;
       const message = `restored ${ps.configPath} (a copy is at ${backup}), but PowerSync did not reload it and may still serve the mutants: ${(e as Error).message}`;
