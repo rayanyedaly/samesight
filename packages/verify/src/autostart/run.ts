@@ -23,7 +23,7 @@
  * reuses it removes it at the end.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type pg from "pg";
 import { chooseAuth, fetchJwks, serviceConfig } from "./config.ts";
 import { Docker } from "./docker.ts";
@@ -122,7 +122,7 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
       }
       stopListening();
       await unlock().catch(() => {});
-      o.log(`kept the PowerSync service at ${url}; the next audit of this project that starts PowerSync reuses it if nothing changed, and removes it unless given --keep-powersync`);
+      o.log(`kept the PowerSync service at ${url}; the next audit of this project that starts PowerSync reuses it if nothing changed and otherwise replaces it, and removes it at its end unless given --keep-powersync`);
       return [];
     };
 
@@ -130,6 +130,7 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
     const kept = await keptRun(docker, o.client, supabase.project, fingerprint, o.tables);
     if (kept) {
       o.log(`reusing the PowerSync service an earlier run kept (${kept.run}) at ${kept.url}`);
+      secrets.push(...kept.secrets);
       const role = `${PREFIX}${kept.run}`;
       teardown.add(`role ${role} and its replication slots`, () => tearDownReplication(o.client, { role, slotPrefix: `${role}_` }));
       const containers = [containerName(kept.run, "storage"), containerName(kept.run, "powersync")];
@@ -155,8 +156,9 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
     o.log(`starting PowerSync ${POWERSYNC_VERSION} for this run (${run}) on ${supabase.network}`);
     const replication = await teardown.step(() => setUpReplication(o.client, run, o.tables));
     secrets.push(replication.password);
-    const storage = await teardown.step(() => startStorage(docker, run, supabase.project, supabase.network, undefined, () => teardown.started));
-    secrets.push(decodeURIComponent(new URL(storage.uri).password));
+    const storagePassword = randomBytes(24).toString("hex");
+    secrets.push(storagePassword);
+    const storage = await teardown.step(() => startStorage(docker, run, supabase.project, supabase.network, undefined, () => teardown.started, storagePassword));
     const config = serviceConfig({
       dataSource: `postgresql://${replication.role}:${replication.password}@${supabase.db}:5432/postgres`,
       storage: storage.uri,
@@ -181,7 +183,10 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
   } catch (e) {
     await teardown.run();
     stopListening();
-    if (e instanceof Error) e.message = redact(e.message);
+    if (e instanceof Error) {
+      e.message = redact(e.message);
+      if (e.stack) e.stack = redact(e.stack);
+    }
     throw e;
   }
 }
@@ -192,10 +197,16 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
  * whose role can still read the tables (a recreated table has lost its grant); null
  * otherwise, and the sweep removes it.
  */
-async function keptRun(docker: Docker, client: Client, project: string, fingerprint: string, tables: string[]): Promise<{ run: string; url: string } | null> {
+async function keptRun(
+  docker: Docker,
+  client: Client,
+  project: string,
+  fingerprint: string,
+  tables: string[],
+): Promise<{ run: string; url: string; secrets: string[] } | null> {
   const [name] = await docker.containers([`label=${PROJECT_LABEL}=${project}`, `label=${KEEP_LABEL}=${fingerprint}`, "status=running"]);
   if (!name) return null;
-  const info = await docker.inspect<{ Config: { Labels: Record<string, string> | null } }>("container", name);
+  const info = await docker.inspect<{ Config: { Labels: Record<string, string> | null; Env?: string[] | null } }>("container", name);
   const run = info?.Config.Labels?.[RUN_LABEL];
   if (!run || !/^[0-9a-f]+$/.test(run)) return null;
   // Its storage must still be up too.
@@ -208,5 +219,9 @@ async function keptRun(docker: Docker, client: Client, project: string, fingerpr
   );
   if (!rows[0]?.ok) return null;
   const url = await serviceUrl(docker, name).catch(() => null);
-  return url && (await isReady(url)) ? { run, url } : null;
+  if (!url || !(await isReady(url))) return null;
+  // Its passwords, from the config it was given, to keep out of what this run prints.
+  const config = Buffer.from(info?.Config.Env?.find((e) => e.startsWith("POWERSYNC_CONFIG_B64="))?.slice(21) ?? "", "base64").toString();
+  const secrets = [...config.matchAll(/postgresql:\/\/[^:/@\s]+:([^@\s]+)@/g)].flatMap((m) => (m[1] ? [m[1]] : []));
+  return { run, url, secrets };
 }

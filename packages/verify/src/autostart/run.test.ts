@@ -38,7 +38,7 @@ const supabase = (name: string, image: string) => ({
 });
 
 /** A fake Docker with the demo's Supabase stack, optionally a kept run, recording calls. */
-function docker(o: { kept?: string; keptFingerprint?: string; failOn?: RegExp; failure?: string; systemId?: string } = {}) {
+function docker(o: { kept?: string; keptFingerprint?: string; keptConfig?: string; logs?: string; failOn?: RegExp; failure?: string; systemId?: string } = {}) {
   const calls: string[][] = [];
   const containers: Record<string, unknown> = {
     supabase_db_todo: supabase("supabase_db_todo", "supabase/postgres:17"),
@@ -61,7 +61,10 @@ function docker(o: { kept?: string; keptFingerprint?: string; failOn?: RegExp; f
     }
     if (args[0] === "container" && args[1] === "inspect") {
       const name = args[2] as string;
-      if (o.kept && name === `samesight-audit-${o.kept}-powersync`) return out(JSON.stringify([{ Config: { Labels: { "dev.samesight.audit.run": o.kept } } }]));
+      if (o.kept && name === `samesight-audit-${o.kept}-powersync`) {
+        const env = o.keptConfig ? [`POWERSYNC_CONFIG_B64=${Buffer.from(o.keptConfig).toString("base64")}`] : [];
+        return out(JSON.stringify([{ Config: { Labels: { "dev.samesight.audit.run": o.kept }, Env: env } }]));
+      }
       if (name in containers) return out(JSON.stringify([containers[name]]));
       if (name.startsWith("samesight-audit-")) return out(JSON.stringify([{ State: { Running: true } }]));
       throw Object.assign(new Error("failed"), { stderr: `Error: No such container: ${name}` });
@@ -69,7 +72,7 @@ function docker(o: { kept?: string; keptFingerprint?: string; failOn?: RegExp; f
     if (args[0] === "image") return out(JSON.stringify([{ Id: "sha256:1" }]));
     if (args[0] === "exec" && args.includes("psql")) return out(o.systemId ?? "7700833229969797152");
     if (args[0] === "port") return out(url.replace("http://", ""));
-    if (args[0] === "logs") return out("the last words");
+    if (args[0] === "logs") return out(o.logs ?? "the last words");
     return out("");
   };
   return { docker: new Docker(exec), calls, ran: () => calls.filter((c) => c[0] === "run").map((c) => c[c.indexOf("--name") + 1]) };
@@ -209,6 +212,19 @@ describe("autoStart", () => {
     expect(d.calls.some((c) => c[0] === "rm")).toBe(false);
     expect(c.sql.some((s) => /drop role/.test(s))).toBe(false);
     expect(c.sql.at(-1)).toBe("select pg_advisory_unlock($1)");
+  });
+
+  it("masks a reused service's passwords in the log lines it hands out", async () => {
+    const d = docker({
+      kept: "0a0b0c0d",
+      keptFingerprint: await fingerprint(),
+      keptConfig: "uri: postgresql://samesight_audit_0a0b0c0d:role-pw-123@db:5432/postgres\nstorage: postgresql://powersync_storage:storage-pw-456@s:5432/x",
+      logs: "auth failed for role-pw-123, then storage-pw-456",
+    });
+    const started = await autoStart(options(d.docker, db({ keptAlive: true }), proc()));
+    const logs: string[] = [];
+    await started.stop({ logs: (t) => logs.push(t) });
+    expect(logs).toEqual(["auth failed for ***, then ***"]);
   });
 
   it("does not reuse a service kept for another sync config or token check, and sweeps it", async () => {

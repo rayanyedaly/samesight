@@ -35,9 +35,9 @@ export async function startStorage(
   network: string,
   timeoutMs = 60_000,
   aborted: () => boolean = () => false,
+  password = randomBytes(24).toString("hex"),
 ): Promise<Storage> {
   const container = containerName(run, "storage");
-  const password = randomBytes(24).toString("hex");
   await docker.run([
     "run",
     "--detach",

@@ -65,7 +65,7 @@ export class Docker {
     }
   }
 
-  /** A container's last log lines, from its stdout and stderr both. */
+  /** A container's last log lines: those of its stdout, then those of its stderr. */
   async logs(container: string, tail: number): Promise<string> {
     try {
       const { stdout, stderr } = await this.exec(["logs", "--tail", String(tail), container]);
