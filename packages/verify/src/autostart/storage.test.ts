@@ -21,17 +21,19 @@ function fake(notReady: number, rmError?: string) {
 describe("startStorage", () => {
   it("runs the pinned Postgres on the network, labelled, on a tmpfs, and waits for TCP", async () => {
     const { docker, calls, envs } = fake(2);
-    const s = await startStorage(docker, "a1b2c3d4", "supabase_network_todo");
+    const s = await startStorage(docker, "a1b2c3d4", "todo", "supabase_network_todo");
     expect(s.container).toBe("samesight-audit-a1b2c3d4-storage");
     expect(s.uri).toMatch(/^postgresql:\/\/powersync_storage:[0-9a-f]{48}@samesight-audit-a1b2c3d4-storage:5432\/powersync_storage$/);
     const run = calls[0] as string[];
-    expect(run.slice(0, 11)).toEqual([
+    expect(run.slice(0, 13)).toEqual([
       "run",
       "--detach",
       "--name",
       "samesight-audit-a1b2c3d4-storage",
       "--label",
       "dev.samesight.audit.run=a1b2c3d4",
+      "--label",
+      "dev.samesight.audit.project=todo",
       "--network",
       "supabase_network_todo",
       "--tmpfs",
@@ -50,7 +52,7 @@ describe("startStorage", () => {
 
   it("gives up with the container's last log lines", async () => {
     const { docker } = fake(Number.POSITIVE_INFINITY);
-    await expect(startStorage(docker, "a1b2c3d4", "net", 600)).rejects.toThrow(/did not start within 0.6s:\ndatabase system is starting up/);
+    await expect(startStorage(docker, "a1b2c3d4", "todo", "net", 600)).rejects.toThrow(/did not start within 0.6s:\ndatabase system is starting up/);
   });
 });
 

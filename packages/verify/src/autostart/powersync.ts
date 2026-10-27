@@ -7,7 +7,7 @@
  */
 
 import { type Docker, streamDocker } from "./docker.ts";
-import { containerName, RUN_LABEL } from "./storage.ts";
+import { containerName, labels } from "./storage.ts";
 
 /** Pinned by digest; the version the examples' compose files run. Above the security floor (1.20.1). */
 export const POWERSYNC_VERSION = "1.27.2";
@@ -29,7 +29,7 @@ export interface PowerSync {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Starts the service with this config and waits for its readiness probe. */
-export async function startPowerSync(docker: Docker, o: { run: string; network: string; config: string; timeoutMs?: number }): Promise<PowerSync> {
+export async function startPowerSync(docker: Docker, o: { run: string; project: string; network: string; config: string; timeoutMs?: number }): Promise<PowerSync> {
   const container = containerName(o.run, "powersync");
   await docker.run(
     [
@@ -37,8 +37,7 @@ export async function startPowerSync(docker: Docker, o: { run: string; network: 
       "--detach",
       "--name",
       container,
-      "--label",
-      `${RUN_LABEL}=${o.run}`,
+      ...labels(o.run, o.project),
       "--network",
       o.network,
       "--publish",

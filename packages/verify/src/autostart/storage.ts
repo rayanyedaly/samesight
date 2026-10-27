@@ -10,8 +10,12 @@ import type { Docker } from "./docker.ts";
 /** The official image, pinned by digest; the same one the examples' compose files run. */
 export const POSTGRES_IMAGE = "postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6";
 
-/** Every container auto-start runs carries this label, with the run's name as its value. */
+/** Every container auto-start runs carries these labels: the run's name, and the Supabase project it serves. */
 export const RUN_LABEL = "dev.samesight.audit.run";
+export const PROJECT_LABEL = "dev.samesight.audit.project";
+
+/** The --label arguments for a run's container. */
+export const labels = (run: string, project: string) => ["--label", `${RUN_LABEL}=${run}`, "--label", `${PROJECT_LABEL}=${project}`];
 
 export const containerName = (run: string, part: "storage" | "powersync") => `samesight-audit-${run}-${part}`;
 
@@ -24,7 +28,7 @@ export interface Storage {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Starts the storage container and waits until it accepts connections over TCP. */
-export async function startStorage(docker: Docker, run: string, network: string, timeoutMs = 60_000): Promise<Storage> {
+export async function startStorage(docker: Docker, run: string, project: string, network: string, timeoutMs = 60_000): Promise<Storage> {
   const container = containerName(run, "storage");
   const password = randomBytes(24).toString("hex");
   await docker.run([
@@ -32,8 +36,7 @@ export async function startStorage(docker: Docker, run: string, network: string,
     "--detach",
     "--name",
     container,
-    "--label",
-    `${RUN_LABEL}=${run}`,
+    ...labels(run, project),
     "--network",
     network,
     "--tmpfs",
