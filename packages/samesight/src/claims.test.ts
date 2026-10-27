@@ -17,6 +17,19 @@ const lit = (values: unknown[], negated = false) => ({ kind: "literals", values,
 const col = (column: string, negated = false) => ({ kind: "column", column, negated });
 
 // Policies as pg_policies prints them (captured from Postgres 17 for the same CREATE POLICY).
+describe("claimReads on SQL it used to refuse or misread", () => {
+  it("reads a policy with an array slice in it", () => {
+    expect(reads("((((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text) = 'admin'::text) AND ((tags)[1:2] = ARRAY['a'::text]))", "postgres")).toEqual([
+      { path: "app_metadata.role", compared: lit(["admin"]) },
+    ]);
+  });
+
+  it("reads public.table.column as that table's column, and another schema's as no column of the run's", () => {
+    expect(reads("(auth.uid() = public.lists.owner_id)", "postgres")).toEqual([{ path: "sub", compared: { ...col("owner_id"), qualifier: "lists" } }]);
+    expect(reads("(auth.uid() = private.lists.owner_id)", "postgres")).toEqual([{ path: "sub", compared: { kind: "other", text: "private.lists.owner_id" } }]);
+  });
+});
+
 describe("claimReads on Postgres policies", () => {
   it.each([
     ["(((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text) = 'admin'::text)", [{ path: "app_metadata.role", compared: lit(["admin"]) }]],
@@ -319,6 +332,11 @@ describe("negations around a comparison, as Postgres prints them", () => {
 });
 
 describe("callsIn", () => {
+  it("reads db.schema.fn(...) as schema.fn, tokenized or scanned", () => {
+    expect(callsIn("select postgres.app.helper(1)")).toEqual(["app.helper"]);
+    expect(callsIn("begin v := postgres.app.helper(1); end")).toEqual(["app.helper"]);
+  });
+
   it("names each call as Postgres resolves it: unquoted names folded, quoted ones kept, schemas kept", () => {
     expect(callsIn('select public.Get_Org(x) and "getOrg"() and auth.jwt() ->> \'a\'').sort()).toEqual(["auth.jwt", "getOrg", "public.get_org"]);
   });

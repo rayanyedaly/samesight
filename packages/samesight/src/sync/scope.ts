@@ -28,6 +28,9 @@ interface TableRef {
 function tableRef(tokens: Token[], i: number): { ref: TableRef; next: number } {
   let table: string | undefined;
   if (isName(tokens[i]) && sym(tokens[i + 1], ".") && isName(tokens[i + 2])) {
+    if (tokens[i + 3]?.text === "." && isName(tokens[i + 4])) {
+      throw new Error(`names ${tokens[i]?.text}.${tokens[i + 2]?.text}.${tokens[i + 4]?.text} with its database; only tables named public.t or t are read`);
+    }
     if (tokens[i]?.text !== "public") throw new Error(`reads ${tokens[i]?.text}.${tokens[i + 2]?.text}, outside public`);
     table = tokens[i + 2]?.text;
     i += 3;

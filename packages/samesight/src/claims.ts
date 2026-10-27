@@ -241,7 +241,9 @@ export function callsIn(body: string): string[] {
     for (let i = 0; i < t.length; i++) {
       const a = t[i];
       if (!a || (a.kind !== "word" && a.kind !== "quoted") || sym(t[i - 1], ".")) continue;
-      if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], "(")) out.add(`${a.text}.${name(t[i + 2])}`);
+      // db.schema.fn(...): the schema and the name, as Postgres resolves it in this database.
+      if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], ".") && name(t[i + 4]) && sym(t[i + 5], "(")) out.add(`${name(t[i + 2])}.${name(t[i + 4])}`);
+      else if (sym(t[i + 1], ".") && name(t[i + 2]) && sym(t[i + 3], "(")) out.add(`${a.text}.${name(t[i + 2])}`);
       else if (sym(t[i + 1], "(") && !(a.kind === "word" && NOT_CALLS.has(a.text))) out.add(a.text);
     }
     return [...out];
@@ -249,10 +251,12 @@ export function callsIn(body: string): string[] {
   const text = codeOnly(body);
   const part = `("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
   const unquote = (x: string) => (x.startsWith('"') ? x.slice(1, -1).replace(/""/g, '"') : x.toLowerCase());
-  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
+  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
     // A keyword before a parenthesis is no call; a quoted name ("if") is one.
     if (m[2] === undefined && !(m[1] as string).startsWith('"') && NOT_CALLS.has((m[1] as string).toLowerCase())) continue;
-    out.add(m[2] === undefined ? unquote(m[1] as string) : `${unquote(m[1] as string)}.${unquote(m[2])}`);
+    // db.schema.fn(...) is schema.fn.
+    const parts = [m[1], m[2], m[3]].filter((x): x is string => x !== undefined).map(unquote).slice(-2);
+    out.add(parts.join("."));
   }
   return [...out];
 }
@@ -645,6 +649,10 @@ function classifySide(side: Token[], negated: boolean): Compared {
   // alias.column (not a call: no parenthesis follows).
   if (b.tokens.length === 3 && name(b.tokens[0]) && sym(b.tokens[1], ".") && name(b.tokens[2])) {
     return { kind: "column", column: name(b.tokens[2]) as string, negated, qualifier: name(b.tokens[0]) as string };
+  }
+  // public.table.column; a column of another schema's table is not one of the run's.
+  if (b.tokens.length === 5 && word(b.tokens[0], "public") && sym(b.tokens[1], ".") && name(b.tokens[2]) && sym(b.tokens[3], ".") && name(b.tokens[4])) {
+    return { kind: "column", column: name(b.tokens[4]) as string, negated, qualifier: name(b.tokens[2]) as string };
   }
   return { kind: "other", text: sqlText(side) };
 }
