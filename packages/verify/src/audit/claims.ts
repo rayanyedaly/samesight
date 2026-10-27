@@ -312,7 +312,9 @@ function heldLine(tokens: Map<string, Record<string, unknown>>, set: SetPath): {
       by.set(key, [...(by.get(key) ?? []), label]);
     }
   }
-  const parts = [...by].map(([v, labels]) => `${plain(JSON.parse(v))} ${labels.length ? labels.join(" ") : "(nobody)"}`);
+  // A run user's id (a claim compared with a user column) shows as that user.
+  const userOf = new Map([...tokens].map(([label, claims]) => [JSON.stringify(claims.sub), label]));
+  const parts = [...by].map(([v, labels]) => `${userOf.has(v) ? `${userOf.get(v)}'s id` : plain(JSON.parse(v))} ${labels.length ? labels.join(" ") : "(nobody)"}`);
   if (none.length) parts.push(`none ${none.join(" ")}`);
   return { line: parts.join(", "), all: set.pool.every((v) => (by.get(JSON.stringify(v)) ?? []).length > 0) };
 }

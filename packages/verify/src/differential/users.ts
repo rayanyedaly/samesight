@@ -58,13 +58,16 @@ export async function deleteUser(stack: Stack, id: string): Promise<void> {
 
 /**
  * Creates `count` confirmed users sharing one random password, made for this run only.
- * `metadata[i]` is the app_metadata and user_metadata user i is created with, if any.
+ * `metadata[i]` is the app_metadata and user_metadata user i is created with, if any, and
+ * `ids[i]` its id (the run's own prefixed uuids, so rows pointing at a run user are found by
+ * the prefix too); Auth picks one when none is given.
  */
 export async function createUsers(
   stack: Stack,
   count: number,
   runId: string,
   metadata: Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>[] = [],
+  ids: string[] = [],
 ): Promise<{ users: User[]; password: string }> {
   const password = randomBytes(18).toString("base64url");
   const users: User[] = [];
@@ -73,7 +76,7 @@ export async function createUsers(
     const created = (await auth(stack, "/admin/users", {
       method: "POST",
       admin: true,
-      body: JSON.stringify({ email, password, email_confirm: true, ...metadata[i] }),
+      body: JSON.stringify({ ...(ids[i] ? { id: ids[i] } : {}), email, password, email_confirm: true, ...metadata[i] }),
     })) as { id: string };
     users.push({ id: created.id, email });
   }

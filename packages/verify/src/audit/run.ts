@@ -9,9 +9,9 @@ import fc from "fast-check";
 import type pg from "pg";
 import { rows } from "../db.ts";
 import { readModel, sqlHints } from "../differential/model.ts";
-import { differential, PREFIX, type Run, setUpUsers, tearDown } from "../differential/run.ts";
+import { differential, PREFIX, type Run, runUserIds, setUpUsers, tearDown } from "../differential/run.ts";
 import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
-import { assignClaims, metadataOf } from "./assign.ts";
+import { assignClaims, MAX_USERS, metadataOf } from "./assign.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
@@ -122,7 +122,9 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const { hints, users } = sqlHints(rules.map((r) => r.sql).join("\n"));
   // Columns compared with the user id in any spelling (auth.uid(), auth.jwt() ->> 'sub', token_parameters.user_id).
   const userColumns = new Set([...users, ...claims.identityColumns]);
-  const assignment = assignClaims(claims, () => prefixedUuid(PREFIX), await readModel(client, tables.map((name) => ({ name, hints, userColumns }))));
+  // Run users' ids are minted up front, so a claim compared with a user column can hold two of them.
+  const userIds = runUserIds(MAX_USERS);
+  const assignment = assignClaims(claims, () => prefixedUuid(PREFIX), await readModel(client, tables.map((name) => ({ name, hints, userColumns }))), userIds);
   if (o.staticOnly || failed(findings)) {
     section("Claims", claimFindings(claims, hook, undefined, assignment));
     if (!o.staticOnly) o.log("skipping the differential: fix the failures above first");
@@ -144,7 +146,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
         }),
         synced: scope.synced,
       },
-      { metadata: assignment.users.map((values) => metadataOf(assignment.paths, values)), paths: assignment.paths.map((p) => p.path) },
+      { metadata: assignment.users.map((values) => metadataOf(assignment.paths, values)), paths: assignment.paths.map((p) => p.path), ids: userIds },
     );
   } catch (e) {
     // Users could not sign in (a rate limit, say): the claims are still worth showing.

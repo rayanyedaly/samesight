@@ -216,9 +216,9 @@ describe("Auth's rate limit", () => {
       bodies.push(JSON.parse(String(init.body)));
       return new Response(JSON.stringify({ id: `id${bodies.length}` }), { status: 200 });
     });
-    await createUsers(stack, 2, "r", [{ app_metadata: { role: "admin" } }]);
+    await createUsers(stack, 2, "r", [{ app_metadata: { role: "admin" } }], ["5a3e5a3e-0000-4000-8000-000000000001"]);
     expect(bodies).toEqual([
-      expect.objectContaining({ app_metadata: { role: "admin" }, email_confirm: true }),
+      expect.objectContaining({ id: "5a3e5a3e-0000-4000-8000-000000000001", app_metadata: { role: "admin" }, email_confirm: true }),
       expect.not.objectContaining({ app_metadata: expect.anything() }),
     ]);
   });
@@ -265,7 +265,7 @@ describe("claims compared with columns", () => {
     expect(a.paths.map((p) => [p.key, p.pool, p.columns])).toEqual([["app_metadata.stage", ["draft", "published"], ["documents.status"]]]);
     expect(a.claimValues).toEqual(new Map([["documents", new Map([["status", ["draft", "published"]]])]]));
     expect(Object.fromEntries(a.notSet)).toEqual({
-      "app_metadata.delegate": "it is compared only with column owner_id, and no generated row can hold its values: documents.owner_id (a key to auth.users: not given run user ids yet)",
+      "app_metadata.delegate": "it is compared only with column owner_id, and no generated row can hold its values: documents.owner_id (a key to auth.users, which takes only run users' ids)",
       "app_metadata.team_id": "it is compared only with column team, and no generated row can hold its values: documents.team (text, which the rules do not cast the claim to)",
     });
   });
@@ -385,5 +385,22 @@ describe("claims compared with columns", () => {
     // The values went into orgs.id through documents.org_id, so the line is ok, with the note.
     const [line] = claimFindings(sub, undefined, undefined, a);
     expect(line).toMatchObject({ status: "ok", detail: expect.stringMatching(/generated rows take them in orgs\.id; not in id \(the primary key of orgs, documents;/) });
+  });
+
+  it("gives a claim compared with a user column the ids of two run users, which rows already point at", () => {
+    const ids = ["5a3e5a3e-0000-4000-8000-000000000001", "5a3e5a3e-0000-4000-8000-000000000002", "5a3e5a3e-0000-4000-8000-000000000003", "5a3e5a3e-0000-4000-8000-000000000004"];
+    const plan = planClaims([on("documents", `(owner_id = (${read("delegate")})::uuid)`)]);
+    const a = assignClaims(plan, fresh, model, ids);
+    expect(a.paths).toEqual([{ path: ["app_metadata", "delegate"], key: "app_metadata.delegate", pool: ids.slice(0, 2), columns: ["documents.owner_id"], skipped: [], unkeyed: [] }]);
+    expect(a.claimValues).toEqual(new Map());
+    expect(a.keyPools).toEqual(new Map());
+    // Labels and the held line name the user, not the id.
+    expect(claimLabel("u2", { app_metadata: { delegate: ids[1] } }, [["app_metadata", "delegate"]], new Map([[ids[1] as string, "u1"]]))).toBe("u2 (app_metadata.delegate=u1)");
+    const tokens = new Map([
+      ["u0", { sub: ids[0], app_metadata: { delegate: ids[0] } }],
+      ["u1", { sub: ids[1], app_metadata: { delegate: ids[1] } }],
+      ["u2", { sub: ids[2], app_metadata: {} }],
+    ]);
+    expect(claimFindings(plan, undefined, tokens, a)[0]?.detail).toMatch(/; held: u0's id u0, u1's id u1, none u2; generated rows take them in documents\.owner_id$/);
   });
 });

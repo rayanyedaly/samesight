@@ -107,6 +107,13 @@ export interface UserClaims {
   /** Per user, by index; the number of users. */
   metadata: Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>[];
   paths: string[][];
+  /** Ids to create the users with, by index (claims may hold them); fresh run ids otherwise. */
+  ids?: string[];
+}
+
+/** Ids for run users: the run's prefix, so a row pointing at one is the run's too. */
+export function runUserIds(count: number): string[] {
+  return Array.from({ length: count }, () => prefixedUuid(PREFIX));
 }
 
 /**
@@ -123,10 +130,12 @@ export async function setUpUsers(client: pg.Client, stack: Stack, scope: { table
     const refused = auditRefusals(model, scope.synced);
     if (refused.length) throw new Error(`audit mode cannot run on these tables: ${refused.join("; ")}`);
     await cleanup(client, stack, model);
-    const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36), claims?.metadata);
+    const ids = claims?.ids?.slice(0, count) ?? runUserIds(count);
+    const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36), claims?.metadata, ids);
     const sessions = new Map<string, Session>();
     for (const u of users) sessions.set(u.id, await signIn(stack, u.email, password));
-    const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: claimLabel(`u${i}`, sessions.get(u.id)?.claims ?? {}, claims?.paths ?? []) }));
+    const names = new Map(users.map((u, i) => [u.id, `u${i}`]));
+    const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: claimLabel(`u${i}`, sessions.get(u.id)?.claims ?? {}, claims?.paths ?? [], names) }));
     return {
       client,
       stack,
@@ -142,12 +151,15 @@ export async function setUpUsers(client: pg.Client, stack: Stack, scope: { table
   });
 }
 
-/** u2 (app_metadata.role=editor), from what the token carries at each path; bare when it carries none. */
-export function claimLabel(name: string, claims: Record<string, unknown>, paths: string[][]): string {
+/**
+ * u2 (app_metadata.role=editor), from what the token carries at each path; bare when it
+ * carries none. A value that is a run user's id shows as that user (manager_id=u1).
+ */
+export function claimLabel(name: string, claims: Record<string, unknown>, paths: string[][], users: ReadonlyMap<string, string> = new Map()): string {
   const held = paths.flatMap((path) => {
     let v: unknown = claims;
     for (const k of path) v = v !== null && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined;
-    return v === undefined || v === null ? [] : [`${claimKey(path)}=${show(v)}`];
+    return v === undefined || v === null ? [] : [`${claimKey(path)}=${typeof v === "string" && users.has(v) ? users.get(v) : show(v)}`];
   });
   return held.length ? `${name} (${held.join(", ")})` : name;
 }
@@ -195,7 +207,7 @@ async function prepareRun(client: pg.Client, stack: Stack, ir: IR): Promise<Setu
   plan.push({ tenant: 0, role: ir.claims.roles[1] ?? ir.claims.roles[0] ?? null }, { tenant: null, role: null });
 
   const runId = PREFIX.slice(0, 4) + Date.now().toString(36);
-  const { users, password } = await createUsers(stack, plan.length, runId);
+  const { users, password } = await createUsers(stack, plan.length, runId, [], runUserIds(plan.length));
   const members: Member[] = users.map((u, i) => {
     const p = plan[i] ?? { tenant: null, role: null };
     const tenant = p.tenant === null ? null : (tenants[p.tenant] ?? null);
