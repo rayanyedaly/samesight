@@ -16,9 +16,11 @@ if cmp -s upstream/sync-config.yaml "$planted"; then
 fi
 
 log=$(mktemp)
-json=$(mktemp)
+# ajv-cli reads a file by its extension: the JSON report needs a .json name.
+jsondir=$(mktemp -d)
+json="$jsondir/report.json"
 report=$(mktemp)
-trap 'rm -f "$log" "$json" "$report"' EXIT
+trap 'rm -rf "$log" "$jsondir" "$report"' EXIT
 # One dataset shows the leak; the time limit bounds how long it is shrunk. With --json the
 # text goes to stderr, which streams as it runs (tee), so a run killed by a timeout still
 # leaves its log; stdout holds the JSON report, and --report writes the Markdown one.

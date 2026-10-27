@@ -17,6 +17,11 @@ streams:
   claimed:
     auto_subscribe: true
     query: SELECT * FROM lists WHERE org_id = auth.jwt() ->> 'org'
+  split:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM lists WHERE owner_id = auth.user_id()
+      - SELECT * FROM lists WHERE shared
   asked:
     query: SELECT * FROM lists
 `);
@@ -38,7 +43,7 @@ function database() {
 
 describe("candidates", () => {
   it("takes the queries of auto-subscribed streams that send the table", () => {
-    expect(candidates(streams, "lists").map((c) => `${c.stream.name} ${c.label}`)).toEqual(["owned query", "everyone queries[0]", "claimed query"]);
+    expect(candidates(streams, "lists").map((c) => `${c.stream.name} ${c.label}`)).toEqual(["owned query", "everyone queries[0]", "claimed query", "split queries[0]", "split queries[1]"]);
   });
 });
 
@@ -51,19 +56,23 @@ describe("sendingQueries", () => {
     expect(run).toEqual([]);
   });
 
-  it("runs each query for the user when the device's streams hold several, and keeps those that return the row", async () => {
+  it("names each named stream's one query, and runs a stream's several for the user, keeping those that return the row", async () => {
     const { client, run } = database();
-    const r = leak([{ stream: "owned" }, { stream: "everyone" }]);
+    const r = leak([{ stream: "owned" }, { stream: "split" }]);
     await sendingQueries(client, streams, [r], () => ({ sub: "id-1" }));
-    expect(r.sentBy).toEqual([{ stream: "everyone", query: "queries[0]", sql: "SELECT * FROM lists" }]);
-    // The claimed stream reads auth.jwt(), which no query here evaluates: it is not run.
+    // The device received it from both: owned's one query sent it; of split's, the one without the owner filter.
+    expect(r.sentBy).toEqual([
+      { stream: "owned", query: "query", sql: "SELECT * FROM lists WHERE owner_id = auth.user_id()" },
+      { stream: "split", query: "queries[1]", sql: "SELECT * FROM lists WHERE shared" },
+    ]);
     expect(run.map((x) => x.includes("owner_id"))).toEqual([true, false]);
   });
 
-  it("keeps the device's streams when no query can be run for the user", async () => {
-    const { client } = database();
-    const r = leak([{ stream: "owned" }, { stream: "claimed" }]);
+  it("keeps a named stream by name when none of its queries can be run for the user", async () => {
+    const { client, run } = database();
+    const r = leak([{ stream: "everyone" }, { stream: "split" }]);
     await sendingQueries(client, streams, [r], () => undefined);
-    expect(r.sentBy).toEqual([{ stream: "owned" }, { stream: "claimed" }]);
+    expect(r.sentBy).toEqual([{ stream: "everyone", query: "queries[0]", sql: "SELECT * FROM lists" }, { stream: "split" }]);
+    expect(run).toEqual([]);
   });
 });

@@ -12,6 +12,7 @@ import { claimReads, ident, outputTable, type Stream, type Token, tokenize } fro
 import { rolledBack, rows } from "../db.ts";
 import { toPostgres } from "../mutate/explain.ts";
 import type { RowReport } from "../report.ts";
+import { candidates } from "./attribute.ts";
 
 /** At most this many rows get a suggestion: a counterexample is small. */
 const MAX_ROWS = 10;
@@ -77,6 +78,9 @@ export async function likelyFixes(client: pg.Client, sync: { kind: string; strea
     const [policy] = permissive;
     if (!sent?.sql || !sent.query || others.length || permissive.length !== 1 || policy?.verdict !== "refuses") continue;
     if (r.policies?.some((p) => !p.permissive && p.verdict === "refuses")) continue;
+    // An identical query in another stream shares its bucket and sends the row too: fixing one would leave the other.
+    const same = (sql: string) => sql.replace(/\s+/g, " ").trim().toLowerCase();
+    if (candidates(sync.streams, r.table).filter((c) => same(c.sql) === same(sent.sql as string)).length > 1) continue;
     const stream = sync.streams.find((s) => s.name === sent.stream);
     const claims = claimsOf(r.user.id);
     if (!stream || !claims) continue;

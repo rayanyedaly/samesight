@@ -772,12 +772,14 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   // reads (its rows all landed in the tenant nobody in the run belongs to). More datasets
   // are tried, within the time limit, until every synced table was compared.
   const started = Date.now();
-  let x = await explore(worldArbitrary(s.tables), evaluate, options);
+  // A seed of the run's own when none is given: fast-check's may be negative, which --seed does not take, so the replay line could not run.
+  const seed = options.seed ?? Math.floor(Math.random() * 2 ** 31);
+  let x = await explore(worldArbitrary(s.tables), evaluate, { ...options, seed });
   let datasets = x.datasets;
   for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {
     const left = options.timeLimitMs - (Date.now() - started);
     if (left <= 0) break;
-    x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, ...(options.seed !== undefined ? { seed: options.seed + pass } : {}) });
+    x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, seed: seed + pass });
     datasets += x.datasets;
   }
   x = { ...x, datasets };

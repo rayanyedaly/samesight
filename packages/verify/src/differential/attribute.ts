@@ -32,46 +32,47 @@ export function candidates(streams: Stream[], table: string): { stream: Stream; 
 }
 
 /**
- * Puts each sent row down to the stream queries that send it to its user: the one query of
- * the streams the device named when there is one, else those that return it when run for
- * the user. A row no query can be run for keeps the streams the device named. Never throws.
+ * Puts each sent row down to the stream queries that send it to its user: of the streams
+ * the device named, a stream's only query for the table, else the queries that return the
+ * row when run for the user. A named stream none of whose queries could be run or returned
+ * the row stays in, by name alone. Never throws.
  */
 export async function sendingQueries(client: pg.Client, streams: Stream[], reports: RowReport[], claimsOf: (userId: string) => Record<string, unknown> | undefined): Promise<void> {
   for (const r of reports.filter((x) => x.sentBy.length).slice(0, MAX_ROWS)) {
-    const all = candidates(streams, r.table);
-    const named = all.filter((c) => r.sentBy.some((x) => x.stream === c.stream.name));
-    if (named.length === 1) {
-      const [c] = named as [(typeof named)[number]];
-      r.sentBy = [{ stream: c.stream.name, query: c.label, sql: c.sql }];
-      continue;
-    }
-    const claims = claimsOf(r.user.id);
-    if (!claims) continue;
+    const named = candidates(streams, r.table).filter((c) => r.sentBy.some((x) => x.stream === c.stream.name));
     const senders: RowReport["sentBy"] = [];
-    try {
-      await rolledBack(client, async () => {
-        await client.query("set transaction read only");
-        for (const c of all) {
-          let sql: string;
-          try {
-            sql = toPostgres(c.sql, Object.fromEntries(c.stream.ctes), claims);
-          } catch {
-            continue;
+    const queries = new Map<string, number>();
+    for (const c of named) queries.set(c.stream.name, (queries.get(c.stream.name) ?? 0) + 1);
+    // A stream with one query for the table sent it with that query.
+    for (const c of named) if (queries.get(c.stream.name) === 1) senders.push({ stream: c.stream.name, query: c.label, sql: c.sql });
+    const several = named.filter((c) => (queries.get(c.stream.name) ?? 0) > 1);
+    const claims = claimsOf(r.user.id);
+    if (several.length && claims) {
+      try {
+        await rolledBack(client, async () => {
+          await client.query("set transaction read only");
+          for (const c of several) {
+            let sql: string;
+            try {
+              sql = toPostgres(c.sql, Object.fromEntries(c.stream.ctes), claims);
+            } catch {
+              continue;
+            }
+            // Each in a savepoint: one that errors (a cast the data refuses) leaves the others.
+            await client.query("savepoint q");
+            try {
+              const found = await rows(client, `select 1 from (${sql}) q where q.id::text = $1 limit 1`, [r.id]);
+              if (found.length) senders.push({ stream: c.stream.name, query: c.label, sql: c.sql });
+              await client.query("release savepoint q");
+            } catch {
+              await client.query("rollback to savepoint q");
+            }
           }
-          // Each in a savepoint: one that errors (a cast the data refuses) leaves the others.
-          await client.query("savepoint q");
-          try {
-            const found = await rows(client, `select 1 from (${sql}) q where q.id::text = $1 limit 1`, [r.id]);
-            if (found.length) senders.push({ stream: c.stream.name, query: c.label, sql: c.sql });
-            await client.query("release savepoint q");
-          } catch {
-            await client.query("rollback to savepoint q");
-          }
-        }
-      });
-    } catch {
-      continue;
+        });
+      } catch {
+        // The named streams stay, by name.
+      }
     }
-    if (senders.length) r.sentBy = senders;
+    r.sentBy = [...senders, ...r.sentBy.filter((x) => !senders.some((y) => y.stream === x.stream)).map((x) => ({ stream: x.stream }))];
   }
 }
