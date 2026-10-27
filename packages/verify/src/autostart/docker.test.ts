@@ -67,3 +67,10 @@ describe("Docker", () => {
     expect(calls[0]).toEqual(["ps", "--all", "--no-trunc", "--filter", "label=dev.samesight.audit.run=a1", "--format", "{{.Names}}"]);
   });
 });
+
+describe("Docker.logs", () => {
+  it("returns what the container wrote to stdout and stderr", async () => {
+    const exec: Exec = async () => ({ stdout: "ready\n", stderr: "FATAL: could not connect\n" });
+    expect(await new Docker(exec).logs("x", 30)).toBe("ready\nFATAL: could not connect");
+  });
+});

@@ -64,7 +64,7 @@ export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = pr
   if (problems.length) {
     throw new Error(
       `samesight verify refuses to run:\n  - ${problems.join("\n  - ")}\n` +
-        "It creates users, writes rows and restarts PowerSync, so it only runs against a local stack.",
+        "It creates users, writes rows, restarts PowerSync and (audit) starts containers and a replication role, so it only runs against a local stack.",
     );
   }
 }

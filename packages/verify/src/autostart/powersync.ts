@@ -46,10 +46,10 @@ export const isReady = (url: string) =>
     () => false,
   );
 
-/** Starts the service with this config and waits for its readiness probe. */
+/** Starts the service with this config and waits for its readiness probe, or until `aborted`. */
 export async function startPowerSync(
   docker: Docker,
-  o: { run: string; project: string; network: string; config: string; labels?: string[]; timeoutMs?: number },
+  o: { run: string; project: string; network: string; config: string; labels?: string[]; timeoutMs?: number; aborted?: () => boolean },
 ): Promise<PowerSync> {
   const container = containerName(o.run, "powersync");
   await docker.run(
@@ -81,11 +81,12 @@ export async function startPowerSync(
   const timeoutMs = o.timeoutMs ?? 120_000;
   const deadline = Date.now() + timeoutMs;
   const failure = async (why: string) => {
-    const logs = await docker.run(["logs", "--tail", "30", container]).catch(() => "");
+    const logs = await docker.logs(container, 30).catch(() => "");
     return new Error(`the PowerSync service ${why}${logs ? `; its last log lines:\n${logs}` : ""}`);
   };
   for (;;) {
     if (await isReady(url)) return { container, url };
+    if (o.aborted?.()) throw new Error("stopped while PowerSync started");
     const state = await docker.inspect<{ State: { Running: boolean } }>("container", container);
     if (!state?.State.Running) throw await failure("stopped while starting");
     if (Date.now() > deadline) throw await failure(`was not ready within ${timeoutMs / 1000}s`);

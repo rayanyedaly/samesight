@@ -73,8 +73,8 @@ Audit options (a project with hand-written RLS and sync config, no policy file):
   --powersync <url>     audit a PowerSync service you run yourself; without it, audit starts one
                         for this run (needs Docker) and removes it, and all it made, at the end
   --keep-powersync      leave the service audit started up, for the next audit of the project to
-                        reuse (the next audit without the flag removes it)
-  --compose <file>      with --powersync: the compose file that runs it, to check its version floor
+                        reuse (the next audit that starts PowerSync without the flag removes it)
+  --compose <file>      with --powersync or --static: the compose file that runs your PowerSync, to check its version floor
   --publication <name>  with --powersync or --static: the publication to check (default: powersync)
   --static, --runs, --seed, --time-limit   as above
 
@@ -265,7 +265,9 @@ async function auditMain(argv: string[]): Promise<number> {
   const ownService = values.powersync !== undefined;
   // The service audit starts replicates "powersync"; these only mean something with one of the user's own.
   if (values["keep-powersync"] && (ownService || values.static)) throw new Error("--keep-powersync keeps the service audit starts; it cannot be combined with --powersync or --static");
-  if (values.compose !== undefined && !ownService) throw new Error("--compose checks the version of a PowerSync service you run yourself; pass it with --powersync");
+  if (values.compose !== undefined && !ownService && !values.static) {
+    throw new Error("--compose checks the version of a PowerSync service you run yourself; pass it with --powersync or --static");
+  }
   if (values.publication !== undefined && values.publication !== "powersync" && !ownService && !values.static) {
     throw new Error(`the PowerSync service audit starts replicates the "powersync" publication; --publication ${values.publication} needs --powersync or --static`);
   }
@@ -286,7 +288,7 @@ async function auditMain(argv: string[]): Promise<number> {
   const startedAt = Date.now();
   const log = (line: string) => process.stdout.write(`  ${((Date.now() - startedAt) / 1000).toFixed(0)}s  ${line}\n`);
   const syncText = readFileSync(syncPath, "utf8");
-  if (ownService && values.compose !== undefined) {
+  if (values.compose !== undefined) {
     const compose = existsSync(values.compose) ? readFileSync(values.compose, "utf8") : null;
     section(
       "PowerSync",

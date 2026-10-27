@@ -86,6 +86,10 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
   const docker = o.docker ?? new Docker();
   await docker.check();
   const supabase = await findSupabase(docker, o.projectDir, o.dbPort);
+  // The database PowerSync will replicate from must be the one the audit connects to, not one on another Docker host.
+  const { rows: here } = await o.client.query<{ id: string }>("select system_identifier::text as id from pg_control_system()");
+  const there = await docker.run(["exec", supabase.db, "psql", "-tA", "-U", "postgres", "-c", "select system_identifier from pg_control_system()"]);
+  if (!here[0] || here[0].id !== there) throw new Error(`${supabase.db} is not the database the audit connects to; is Docker (DOCKER_HOST, docker context) another machine's?`);
   const auth = chooseAuth(await fetchJwks(o.api), supabase.kong, o.jwtSecret);
   const fingerprint = createHash("sha256")
     .update(JSON.stringify({ image: POWERSYNC_IMAGE, syncConfig: o.syncConfig, tables: [...o.tables].sort(), auth }))
@@ -96,11 +100,15 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
   if (!lock[0]?.ok) throw new Error("another samesight-verify audit is running PowerSync on this database; wait for it to end");
   const unlock = () => o.client.query("select pg_advisory_unlock($1)", [LOCK]).then(() => {});
 
+  // The run's secrets, kept out of the errors and log lines it prints.
+  const secrets = o.jwtSecret ? [o.jwtSecret] : [];
+  const redact = (text: string) => secrets.reduce((t, s) => t.replaceAll(s, "***"), text);
   const teardown = new Teardown(o.log);
-  teardown.add("the audit's lock on the database", unlock);
+  // Closing the connection releases it too, so this step never fails.
+  teardown.add("the audit's lock on the database", () => unlock().catch(() => {}));
   const stopListening = onSignals(teardown, o.log, o.proc);
   const logsOf = async (container: string, logs?: (text: string) => void) => {
-    if (logs) logs(await docker.run(["logs", "--tail", "50", container]).catch((e: Error) => `(no logs: ${e.message})`));
+    if (logs) logs(redact(await docker.logs(container, 50).catch((e: Error) => `(no logs: ${e.message})`)));
   };
   /** Ends the run: tears down, or with `keep` only lets go of the lock. */
   const stopper =
@@ -114,12 +122,12 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
       }
       stopListening();
       await unlock().catch(() => {});
-      o.log(`kept the PowerSync service at ${url}; the next audit of this project reuses it, or removes it if the sync config changed`);
+      o.log(`kept the PowerSync service at ${url}; the next audit of this project that starts PowerSync reuses it if nothing changed, and removes it unless given --keep-powersync`);
       return [];
     };
 
   try {
-    const kept = await keptRun(docker, o.client, supabase.project, fingerprint);
+    const kept = await keptRun(docker, o.client, supabase.project, fingerprint, o.tables);
     if (kept) {
       o.log(`reusing the PowerSync service an earlier run kept (${kept.run}) at ${kept.url}`);
       const role = `${PREFIX}${kept.run}`;
@@ -131,7 +139,9 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
       return { url: kept.url, version: POWERSYNC_VERSION, slotPrefix: `${role}_`, reused: true, stop };
     }
 
-    const leftovers = await sweep(docker, o.client, supabase.project);
+    // Each step that makes or removes something runs through teardown.step, so Ctrl+C
+    // mid-start waits for it, and nothing is made after the teardown has run.
+    const leftovers = await teardown.step(() => sweep(docker, o.client, supabase.project));
     if (leftovers.length) o.log(`removed what an earlier run left: ${leftovers.join(", ")}`);
     // Pulled before anything is created, so a failed pull leaves nothing to remove.
     await ensureImage(docker, o.log);
@@ -143,8 +153,10 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
     const containers = [containerName(run, "storage"), containerName(run, "powersync")];
     teardown.add(`containers ${containers.join(", ")}`, () => removeContainers(docker, containers));
     o.log(`starting PowerSync ${POWERSYNC_VERSION} for this run (${run}) on ${supabase.network}`);
-    const replication = await setUpReplication(o.client, run, o.tables);
-    const storage = await startStorage(docker, run, supabase.project, supabase.network);
+    const replication = await teardown.step(() => setUpReplication(o.client, run, o.tables));
+    secrets.push(replication.password);
+    const storage = await teardown.step(() => startStorage(docker, run, supabase.project, supabase.network, undefined, () => teardown.started));
+    secrets.push(decodeURIComponent(new URL(storage.uri).password));
     const config = serviceConfig({
       dataSource: `postgresql://${replication.role}:${replication.password}@${supabase.db}:5432/postgres`,
       storage: storage.uri,
@@ -152,13 +164,16 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
       syncConfig: o.syncConfig,
       auth,
     });
-    const powersync = await startPowerSync(docker, {
-      run,
-      project: supabase.project,
-      network: supabase.network,
-      config,
-      ...(o.keep ? { labels: [`${KEEP_LABEL}=${fingerprint}`] } : {}),
-    });
+    const powersync = await teardown.step(() =>
+      startPowerSync(docker, {
+        run,
+        project: supabase.project,
+        network: supabase.network,
+        config,
+        ...(o.keep ? { labels: [`${KEEP_LABEL}=${fingerprint}`] } : {}),
+        aborted: () => teardown.started,
+      }),
+    );
     o.log(`PowerSync is ready at ${powersync.url} (tokens checked ${"jwksUri" in auth ? "against the project's JWKS" : "with its shared secret"})`);
     // Kept from here on: Ctrl+C no longer removes it.
     if (o.keep) stopListening();
@@ -166,16 +181,18 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
   } catch (e) {
     await teardown.run();
     stopListening();
+    if (e instanceof Error) e.message = redact(e.message);
     throw e;
   }
 }
 
 /**
  * A kept service of this project serving the same fingerprint, running and ready, whose
- * role and replication slot are still in the database (a reset database has neither);
- * null otherwise, and the sweep removes it.
+ * role and replication slot are still in the database (a reset database has neither) and
+ * whose role can still read the tables (a recreated table has lost its grant); null
+ * otherwise, and the sweep removes it.
  */
-async function keptRun(docker: Docker, client: Client, project: string, fingerprint: string): Promise<{ run: string; url: string } | null> {
+async function keptRun(docker: Docker, client: Client, project: string, fingerprint: string, tables: string[]): Promise<{ run: string; url: string } | null> {
   const [name] = await docker.containers([`label=${PROJECT_LABEL}=${project}`, `label=${KEEP_LABEL}=${fingerprint}`, "status=running"]);
   if (!name) return null;
   const info = await docker.inspect<{ Config: { Labels: Record<string, string> | null } }>("container", name);
@@ -185,8 +202,9 @@ async function keptRun(docker: Docker, client: Client, project: string, fingerpr
   if (!(await docker.containers([`name=^${containerName(run, "storage")}$`, "status=running"])).length) return null;
   const { rows } = await client.query<{ ok: boolean }>(
     `select exists (select from pg_roles where rolname = $1)
-        and exists (select from pg_replication_slots where active and starts_with(slot_name, $2)) as ok`,
-    [`${PREFIX}${run}`, `${PREFIX}${run}_`],
+        and exists (select from pg_replication_slots where active and starts_with(slot_name, $2))
+        and coalesce((select bool_and(has_table_privilege($1, format('public.%I', t), 'select')) from unnest($3::text[]) t), true) as ok`,
+    [`${PREFIX}${run}`, `${PREFIX}${run}_`, tables],
   );
   if (!rows[0]?.ok) return null;
   const url = await serviceUrl(docker, name).catch(() => null);

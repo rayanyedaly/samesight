@@ -67,6 +67,9 @@ export async function tearDownReplication(client: Client, r: Pick<Replication, "
   // Waits (up to 5s each) for the replication to end, so its slot is inactive when dropped.
   await client.query("select pg_terminate_backend(active_pid, 5000) from pg_replication_slots where active and starts_with(slot_name, $1)", [r.slotPrefix]);
   await client.query("select pg_drop_replication_slot(slot_name) from pg_replication_slots where not active and starts_with(slot_name, $1)", [r.slotPrefix]);
+  // A replication slow to end keeps its slot, and the role with it, for the next sweep; said, not hidden.
+  const { rows: held } = await client.query<{ slot: string }>("select slot_name as slot from pg_replication_slots where starts_with(slot_name, $1)", [r.slotPrefix]);
+  if (held.length) throw new Error(`replication slot ${held.map((h) => h.slot).join(", ")} is still in use`);
   const { rows: roles } = await client.query<{ exists: boolean }>("select exists (select from pg_roles where rolname = $1) as exists", [r.role]);
   if (roles[0]?.exists) {
     const id = client.escapeIdentifier(r.role);

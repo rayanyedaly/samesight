@@ -54,7 +54,8 @@ function startChild(keep = false): Promise<{ child: ChildProcess; url: string }>
         resolve({ child, url: m[1] });
       }
     });
-    child.on("exit", (code) => {
+    // On close, not exit: by then all of its stderr has arrived.
+    child.on("close", (code) => {
       clearTimeout(timer);
       reject(new Error(`the child exited (${code}) before it was ready:\n${err}`));
     });
@@ -86,6 +87,17 @@ describe("auto-start on the demo", () => {
       expect(await exit, signal).toBe(code);
       expect(await leftovers(), signal).toEqual([]);
     }
+  }, 240_000);
+
+  it("removes everything when its terminal closes (SIGHUP, with its output gone)", async () => {
+    const { child } = await startChild();
+    const exit = exited(child);
+    // A closed terminal, or a reader that went with it (| tee): every write now fails.
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.kill("SIGHUP");
+    expect(await exit).toBe(129);
+    expect(await leftovers()).toEqual([]);
   }, 240_000);
 
   it("refuses a second run while one is going, leaving the first untouched", async () => {
