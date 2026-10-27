@@ -40,4 +40,14 @@ describe("tokenize", () => {
     expect(() => tokenize("x=/* c */1", { dialect: "postgres" })).toThrow(/has "\/\*"/);
     expect(texts("(x = (-1))", "postgres")).toEqual(["(", "x", "=", "(", "-", "1", ")", ")"]);
   });
+
+  it("reads an array slice's colon inside brackets, a cast beside it, and no colon outside", () => {
+    expect(texts("(tags)[1:2] = x::text[]", "postgres")).toEqual(["(", "tags", ")", "[", "1", ":", "2", "]", "=", "x", "::", "text", "[", "]"]);
+    expect(texts("a[:2] || a[1:] || a[i::int:j]", "postgres")).toEqual(["a", "[", ":", "2", "]", "||", "a", "[", "1", ":", "]", "||", "a", "[", "i", "::", "int", ":", "j", "]"]);
+    expect(() => tokenize("v := 1", { dialect: "postgres" })).toThrow(/has ":="/);
+  });
+
+  it("reads every numeric constant Postgres does", () => {
+    expect(texts("x = 1e2 or x = 1.5E-3 or x = .5 or x = 1.", "postgres").filter((t) => /^[.0-9]/.test(t))).toEqual(["1e2", "1.5E-3", ".5", "1."]);
+  });
 });
