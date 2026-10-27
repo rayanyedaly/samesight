@@ -1,11 +1,12 @@
 /**
  * The one way an auto-started run is taken down, whatever ends it: the audit finishing,
- * an error, Ctrl+C, SIGTERM or the terminal closing (SIGHUP). Steps are added before the thing they remove is created,
- * so a run that fails half way removes exactly what it made; they run in reverse order,
- * once, and one step failing does not stop the others.
+ * an error, Ctrl+C, SIGTERM, the terminal closing (SIGHUP) or the output closing (EPIPE).
+ * Steps are added before the thing they remove is created, so a run that fails half way
+ * removes exactly what it made; they run in reverse order, once, and one step failing
+ * does not stop the others.
  *
- * A run killed outright (SIGKILL, a crash of Docker) gets no teardown: the next run's
- * sweep removes what it left.
+ * A run killed outright (SIGKILL, a crash of Docker) gets no teardown: the sweep of the
+ * next audit that starts PowerSync removes what it left.
  */
 
 export class Teardown {
@@ -72,7 +73,7 @@ export interface Signals {
 /**
  * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP, then exits as a killed process would
  * (130, 143, 129); and when the output has gone (a closed terminal, or a reader that left:
- * | head, | tee), whose writes now fail, exits 141 as on SIGPIPE. A second Ctrl+C during
+ * | head, | tee), whose writes now fail, exits 141 as on SIGPIPE (129 when SIGHUP comes first). A second Ctrl+C during
  * it exits at once. Returns a function that stops listening.
  */
 export function onSignals(teardown: Teardown, log: (line: string) => void, proc: Signals = process): () => void {
@@ -81,7 +82,7 @@ export function onSignals(teardown: Teardown, log: (line: string) => void, proc:
     if (ending) return;
     ending = true;
     try {
-      log(`${why}: removing what this run started (Ctrl+C again to leave it for the next run to remove)`);
+      log(`${why}: removing what this run started (Ctrl+C again to leave it for the next audit that starts PowerSync)`);
     } catch {}
     proc.once("SIGINT", () => proc.exit(code));
     void teardown.run().then(() => proc.exit(code));

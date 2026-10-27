@@ -108,12 +108,12 @@ Without `--powersync`, once the sync config and catalog checks pass (so the proj
 2. starts a throwaway Postgres container for PowerSync's storage, on a tmpfs, so it leaves no volume;
 3. starts the PowerSync service ([`journeyapps/powersync-service`](https://hub.docker.com/r/journeyapps/powersync-service) 1.27.2, pinned by digest) on the Supabase network, its port published on 127.0.0.1 only. Tokens are checked against the project's JWKS when Auth has a signing key, or with its shared HS256 secret otherwise. Its replication slots are named `samesight_audit_<run>_...`, so nothing of a PowerSync you run yourself is touched. The project's publication is only read, never changed.
 
-When the run ends, by passing, failing, an error, Ctrl+C, SIGTERM or the terminal closing, it removes both containers, the replication slots and the role; anything it cannot remove it names, and the next audit that starts PowerSync removes it. `nohup` does not keep a run going when its terminal closes (the run ends and cleans up); use `setsid`, `tmux` or `screen` for that. If the run broke down with an error, it first prints the service's last log lines. A run killed outright (SIGKILL, a crash, a reboot) cannot clean up: its containers, role and replication slot (which holds the database's write-ahead log) stay until the next audit of the project that starts PowerSync removes them before it starts. To remove them by hand (a service kept with `--keep-powersync` too), while no audit of the project is running, with the project's `project_id` from `supabase/config.toml`:
+When the run ends, by passing, failing, an error, Ctrl+C, SIGTERM, the terminal closing or, while its PowerSync is up, its output closing (`| head`, quitting `less`), it removes both containers, the replication slots and the role; anything it cannot remove it names (unless its output has gone), and the next audit that starts PowerSync removes it. A run stopped by a signal or a closed output exits 130 (Ctrl+C), 143 (SIGTERM), 129 (SIGHUP) or 141 (output closed) once it has cleaned up. `nohup` does not keep a run going when its terminal closes (the run ends and cleans up); use `setsid`, `tmux` or `screen` for that. If the run broke down with an error, it prints the service's last log lines. A run killed outright (SIGKILL, a crash, a reboot) cannot clean up: its containers, role and replication slot (which holds the database's write-ahead log) stay until the next audit of the project that starts PowerSync removes them before it starts. To remove them by hand (a service kept with `--keep-powersync` too), while no audit of the project is running, with the project's `project_id` from `supabase/config.toml`:
 
 ```bash
 project=my-project
 docker ps --all --quiet --filter "label=dev.samesight.audit.project=$project" | xargs -r docker rm --force --volumes
-docker exec -i "supabase_db_$project" psql -U postgres <<'SQL'
+docker exec -i "supabase_db_$project" psql -v ON_ERROR_STOP=1 -U postgres <<'SQL'
 select pg_terminate_backend(active_pid, 5000) from pg_replication_slots where active and starts_with(slot_name, 'samesight_audit_');
 select pg_drop_replication_slot(slot_name) from pg_replication_slots where not active and starts_with(slot_name, 'samesight_audit_');
 do $$ declare r text; begin
@@ -126,11 +126,11 @@ end $$;
 SQL
 ```
 
-Passwords and the service config travel to the containers through Docker's environment, never on a command line; like any container's environment, they are visible to `docker inspect` while the containers exist. The errors and log lines audit prints have the run's passwords and the JWT secret masked.
+Passwords and the service config travel to the containers through Docker's environment, never on a command line; like any container's environment, they are visible to `docker inspect` while the containers exist. The errors from starting PowerSync, the service's log lines and auto-start's own log lines have the run's passwords and the JWT secret masked.
 
 #### Keeping the service
 
-With `--keep-powersync`, the run leaves the service up: both containers, the role and its replication slot. The next audit of the project reuses it when the sync config, tables and token check are the same and its role and slot are still in the database, which saves the start-up; otherwise it removes it and starts afresh. The next audit that starts PowerSync without the flag removes it when it ends, so run one when you are done (an audit with `--static` or `--powersync`, or one stopped by the checks before the differential, leaves it): while the service is kept, its replication slot holds the database's write-ahead log.
+With `--keep-powersync`, the run leaves the service up: both containers, the role and its replication slot. The next audit of the project reuses it when the sync config, tables and token check are the same and its role and slot are still in the database, with the role still able to read those tables, which saves the start-up; otherwise it removes it and starts afresh. The next audit that starts PowerSync without the flag removes it when it ends, so run one when you are done (an audit with `--static` or `--powersync`, or one stopped by the checks before the differential, leaves it): while the service is kept, its replication slot holds the database's write-ahead log.
 
 The PowerSync service is source-available under the [FSL-1.1-ALv2](https://github.com/powersync-ja/powersync-service/blob/main/LICENSE) license. Audit pulls the official image from Docker Hub the first time (it says so), with `postgres:18.6` for its storage, and runs them on your machine; Samesight never bundles or redistributes them.
 

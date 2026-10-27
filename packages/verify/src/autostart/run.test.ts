@@ -302,8 +302,8 @@ describe("autoStart", () => {
     const d = docker({
       kept: "0a0b0c0d",
       keptFingerprint: await fingerprint(),
-      keptConfig: "uri: postgresql://samesight_audit_0a0b0c0d:role-pw-123@db:5432/postgres\nstorage: postgresql://powersync_storage:storage-pw-456@s:5432/x",
-      logs: "auth failed for role-pw-123, then storage-pw-456",
+      keptConfig: "uri: postgresql://samesight_audit_0a0b0c0d:role-password-0123456789@db:5432/postgres\nstorage: postgresql://powersync_storage:storage-password-0123456789@s:5432/x",
+      logs: "auth failed for role-password-0123456789, then storage-password-0123456789",
     });
     const started = await autoStart(options(d.docker, db({ keptAlive: true }), proc()));
     const logs: string[] = [];
