@@ -13,6 +13,7 @@ export {
   type Compared,
   AUTH_STATE_KEYS,
   authStateKey,
+  BODY_JOIN,
   callsIn,
   claimReads,
   codeOnly,

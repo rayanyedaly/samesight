@@ -7,7 +7,7 @@
  */
 
 import type pg from "pg";
-import { callsIn, codeOnly } from "samesight/compiler";
+import { BODY_JOIN, callsIn, codeOnly } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 
@@ -236,7 +236,7 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
   const definer = (call: string) => definers.some((d) => (call.includes(".") ? d.name === call : d.bare === call));
   const asHook = new Set([...(depends?.tables ?? []), ...scans.filter((x) => !x.via.some(definer)).flatMap((x) => x.reads)]);
   findings.push(...(await hookAccess(client, role, tables.filter((t) => asHook.has(`public.${t}`)), shown)));
-  const plan: HookPlan = { uri, fn: { schema: parsed.schema, name: parsed.fn, body: fn.body, read: scans.map((x) => x.body).join("\n;\n") }, role, tables, findings };
+  const plan: HookPlan = { uri, fn: { schema: parsed.schema, name: parsed.fn, body: fn.body, read: scans.map((x) => x.body).join(BODY_JOIN) }, role, tables, findings };
   if (!tables.length) plan.cannot = views.length ? `it reads no public table, only ${views.join(", ")}` : "its body reads no public table";
   return plan;
 }
