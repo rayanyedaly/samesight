@@ -38,7 +38,16 @@ describe("formatRow", () => {
   };
 
   it("says what happened, then which streams sent it, each on its own line", () => {
-    expect(formatRow(leak)).toEqual(["leak: u1 (app_metadata.role=editor) received lists 5a3e (owner_id u0); RLS returns no such row for this user", "  sent by    stream user_data; stream shared, queries[1]"]);
+    expect(formatRow(leak)).toEqual([
+      "leak: u1 (app_metadata.role=editor) received lists 5a3e (owner_id u0); RLS returns no such row for this user",
+      "  sent by    stream user_data",
+      "             stream shared, queries[1]",
+    ]);
+    // A query put down to its SQL shows it under the stream, on one line.
+    expect(formatRow({ ...leak, sentBy: [{ stream: "user_data", query: "queries[0]", sql: "SELECT *\n  FROM lists" }] }).slice(1)).toEqual([
+      "  sent by    stream user_data, queries[0]",
+      "             SELECT * FROM lists",
+    ]);
     expect(formatRow({ ...leak, kind: "hidden", columns: ["notes"], user: { ...leak.user, role: "viewer" } })[0]).toBe("hidden: u1 (app_metadata.role=editor) received lists 5a3e (owner_id u0) with notes, which the policy hides from viewer");
     // A gap was sent by nothing.
     expect(formatRow({ ...leak, kind: "gap", sentBy: [] })).toEqual(["gap: RLS lets u1 (app_metadata.role=editor) read lists 5a3e (owner_id u0), but no stream sent it"]);

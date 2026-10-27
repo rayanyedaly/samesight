@@ -225,6 +225,7 @@ async function main(argv: string[]): Promise<number> {
       try {
         log("generating datasets for the differential");
         const result = await differential(s, {
+          streams: parseStreams(syncYaml),
           runs,
           timeLimitMs,
           ...(seed !== undefined ? { seed } : {}),

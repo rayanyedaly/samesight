@@ -34,7 +34,7 @@ For every role in two tenants, plus a second user of one role and a user with no
 - every row RLS returns must have reached the device;
 - a run where no user received any row of a synced table fails, because it tested nothing. Before failing, it generates up to three more datasets aimed at the tables still untested.
 
-A failure is shrunk to the smallest dataset that still shows it and described as a bug report per row: what happened (`leak`, `hidden`, `gap`, `unsent` or `differs`), which user, which table and row (with the tenant and the users and values it holds), and which streams sent it. `--seed` replays a run exactly.
+A failure is shrunk to the smallest dataset that still shows it and described as a bug report per row: what happened (`leak`, `hidden`, `gap`, `unsent` or `differs`), which user, which table and row (with the tenant and the users and values it holds), and which stream sent it. When a stream has several queries for the row's table, each is run in Postgres as that user (read only, rolled back) to find the ones that return the row, and the block shows their label and SQL. `--seed` replays a run exactly.
 
 The run's users and rows (uuid keys starting `5a3e5a3e`) are removed when it ends. Ctrl+C, SIGTERM, SIGHUP (Ctrl+Break on Windows) or its output closing removes them too, then exits 130, 143, 129 (149) or 141; Ctrl+C again a second or more later, or a clean-up still running two minutes after the signal, exits at once and leaves them for the next verify run, which removes them first.
 

@@ -7,7 +7,7 @@
 
 import fc from "fast-check";
 import type pg from "pg";
-import { type IR, ident } from "samesight/compiler";
+import { type IR, ident, type Stream } from "samesight/compiler";
 import { leftForNext, type Mode } from "../autostart/teardown.ts";
 import { connectLocal, rows } from "../db.ts";
 import { type Finding, formatRow, type RowReport, rowSentence } from "../report.ts";
@@ -15,6 +15,7 @@ import type { Stack } from "../stack.ts";
 import { show } from "../audit/assign.ts";
 import { claimKey } from "../audit/claims.ts";
 import { type Coverage, measure, pending } from "../audit/coverage.ts";
+import { sendingQueries } from "./attribute.ts";
 import { compare, type Problem } from "./compare.ts";
 import { syncOnce } from "./device.ts";
 import { insertOrder, policyTables, readModel, type ScopeTable, type TableModel } from "./model.ts";
@@ -705,6 +706,8 @@ export interface DifferentialOptions {
   timeLimitMs: number;
   /** Audit only: counts which rules each passing dataset exercised, until the first failure. */
   coverage?: Coverage;
+  /** The sync config's streams, to name the query that sent a row of the counterexample. */
+  streams?: Stream[];
 }
 
 export async function differential(s: Run, options: DifferentialOptions): Promise<DifferentialResult> {
@@ -778,7 +781,12 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const crashed: Finding[] = x.crash === undefined ? [] : [{ status: "fail", check, detail: `then ${RUN_FAILED}${String(x.crash)}`, incomplete: true }];
   if (x.lastFailing) {
     const world = x.lastFailing;
-    const counterexample = reportRows(s, failing(await withWorld(s, world, () => compareAll(s))));
+    // Put down to their queries while the rows are still in the database.
+    const counterexample = await withWorld(s, world, async () => {
+      const rows = reportRows(s, failing(await compareAll(s)));
+      if (options.streams) await sendingQueries(s.client, options.streams, rows, (id) => s.sessions.get(id)?.claims);
+      return rows;
+    });
     if (!counterexample.length) return fail(`a dataset failed (seed ${x.seed}) but passed when run again: devices may not have caught up${x.crash === undefined ? "" : ` (then ${RUN_FAILED}${String(x.crash)})`}`, x.datasets, true);
     return {
       runs: x.datasets,
