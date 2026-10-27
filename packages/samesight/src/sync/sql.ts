@@ -14,8 +14,20 @@ export interface Token {
 
 /** Longest first, so "->>" wins over "->". */
 const SYMBOLS = ["->>", "<>", "!=", "<=", ">=", "->", "||", "::", "(", ")", ",", ".", "=", "<", ">", "*", "+", "-"];
+/** Characters Postgres builds operators from (~~ for LIKE, @>, ?, #>>, ...). */
+const OPERATOR = /^[+\-*/<>=~!@#%^&|?]+/;
 
-export function tokenize(sql: string): Token[] {
+export interface TokenizeOptions {
+  /**
+   * "postgres" also reads what Postgres prints for policies and function bodies: [ and ]
+   * (ARRAY['a'::text]), any operator, and ; ending a statement. The default reads stream
+   * SQL only and refuses those.
+   */
+  dialect?: "sync" | "postgres";
+}
+
+export function tokenize(sql: string, options: TokenizeOptions = {}): Token[] {
+  const postgres = options.dialect === "postgres";
   const out: Token[] = [];
   let i = 0;
   while (i < sql.length) {
@@ -48,6 +60,13 @@ export function tokenize(sql: string): Token[] {
       const m = /^[0-9]+(\.[0-9]+)?/.exec(sql.slice(i)) as RegExpExecArray;
       out.push({ kind: "number", text: m[0] });
       i += m[0].length;
+    } else if (postgres && "[];".includes(ch)) {
+      out.push({ kind: "symbol", text: ch });
+      i++;
+    } else if (postgres && OPERATOR.test(sql.slice(i)) && !sql.startsWith("/*", i)) {
+      const op = (OPERATOR.exec(sql.slice(i)) as RegExpExecArray)[0];
+      out.push({ kind: "symbol", text: op });
+      i += op.length;
     } else {
       // Only the operators stream SQL uses; anything else (block comments, $ quoting, ;) is refused.
       const op = SYMBOLS.find((s) => sql.startsWith(s, i));
