@@ -71,7 +71,7 @@ describe("claimFindings", () => {
   it("says what each claim means for the run, and warns on every read it cannot give or follow", () => {
     const lines = details(claimFindings(plan, undefined));
     expect(lines).toEqual([
-      expect.stringMatching(/^warn aal: read by policy "mfa" on docs \(USING\), compared with 'aal2'; every run user is a password user at aal1/),
+      expect.stringMatching(/^warn aal: read by policy "mfa" on docs \(USING\), compared with 'aal2'; every run user's token carries the same aal \(aal1: a password sign-in, no second factor\)/),
       expect.stringMatching(/^warn app_metadata\.org_id: read by policy "org" on docs \(USING\), compared with column org_id; run users do not carry app_metadata\.org_id, so every user reads it as null$/),
       expect.stringMatching(/^warn app_metadata\.role: read by 3 rules \(.*\), compared with 'admin', 'editor'; run users do not carry/),
       expect.stringMatching(/^warn app_role: .*no Supabase token carries it unless an access token hook adds it, and supabase\/config\.toml enables none$/),
@@ -104,7 +104,7 @@ describe("claimFindings", () => {
     const meta = details(claimFindings(plan, undefined, new Map([["u0", { app_metadata: { role: "member" } }], ["u1", {}]]))).find((l) => l.includes("app_metadata.role"));
     expect(meta).toMatch(/; the run users' tokens carry it, though audit did not set it \(u0: "member", u1: null\)$/);
     const email = details(claimFindings(planClaims([policy("e", "(auth.email() = owner_email)")]), undefined));
-    expect(email).toEqual([expect.stringMatching(/^warn email: .*compared with column owner_email; each run user has its own email, which audit does not put in generated rows/)]);
+    expect(email).toEqual([expect.stringMatching(/^warn email: .*compared with column owner_email; each run user has its own email \(an address at verify\.samesight\.test\), which audit does not choose or put in generated rows/)]);
   });
 
   it("warns about a hook that runs off this machine", () => {

@@ -12,6 +12,7 @@ import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classi
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import { type Assignment, type SetPath, show as plain } from "./assign.ts";
+import { signInDetail, signInKeyOf } from "./signin.ts";
 
 /** One rule's SQL: a policy's USING or WITH CHECK, or a stream or bucket query. */
 export interface RuleSql {
@@ -253,7 +254,7 @@ export function claimFindings(
         } else add("warn", `${read}; every run user carries the same ${u.key}, so a rule that tells users apart by it is tested for that value only`);
         break;
       case "auth-state":
-        add("warn", `${read}; ${AUTH_STATE[u.key] ?? `every run user is a password user at aal1 with no other sign-in state, so rules reading ${u.key} are tested for that state only`}`);
+        add("warn", `${read}; ${signInDetail(signInKeyOf(u.key))}`);
         break;
       case "app_metadata":
       case "user_metadata": {
@@ -326,13 +327,6 @@ function mismatches(assignment: Assignment, tokens: Map<string, Record<string, u
     });
   });
 }
-
-/** Auth-state claims that differ per user, or that no run user has. */
-const AUTH_STATE: Record<string, string> = {
-  email: "each run user has its own email, which audit does not put in generated rows, so rules matching it are tested on rows that do not match it",
-  session_id: "each sign-in has its own session_id, which audit does not put in generated rows, so rules matching it are tested on rows that do not match it",
-  phone: "run users have no phone: every token carries an empty one",
-};
 
 /** " (u0: "admin", u1: null)" when some token carries a value at the path, else undefined. */
 function heldBy(tokens: Map<string, Record<string, unknown>>, path: string[]): string | undefined {

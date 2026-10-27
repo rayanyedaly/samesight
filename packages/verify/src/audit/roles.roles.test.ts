@@ -20,6 +20,7 @@ import { checkAuditCatalog } from "./catalog.ts";
 import { type Assignment, assignClaims as assign } from "./assign.ts";
 import { claimFindings, type ClaimsPlan, planClaims, policyFunctions, policyRules, syncRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
+import { SIGN_IN } from "./signin.ts";
 
 const APP = fileURLToPath(new URL("../../../../examples/audit-roles/", import.meta.url));
 const SYNCED = ["documents", "orgs"];
@@ -149,4 +150,20 @@ describe("coverage on the roles app", () => {
     expect(cov.units).toHaveLength(7);
     expect(cov.triggers).toEqual([]);
   }, 300_000);
+});
+
+describe("what Supabase Auth puts in run users' tokens about the sign-in", () => {
+  it("matches the sign-in facts Claims and Coverage word from", () => {
+    const tokens = s.fixed.users.map((u) => s.sessions.get(u.id)?.claims ?? {});
+    const at = (claims: Record<string, unknown>, key: string) => key.split(".").reduce<unknown>((x, k) => (x !== null && typeof x === "object" ? (x as Record<string, unknown>)[k] : undefined), claims);
+    for (const [key, f] of Object.entries(SIGN_IN)) {
+      const values = tokens.map((c) => at(c, key));
+      if (f.kind === "absent") expect(values.every((v) => v === undefined), key).toBe(true);
+      else expect(values.every((v) => v !== undefined), key).toBe(true);
+      // Equal for alike claims; for set ones (times), only present and of one type: two sign-ins can straddle a second.
+      if (f.kind === "alike") expect(new Set(values.map((v) => JSON.stringify(v))).size, key).toBe(1);
+      if (f.kind === "set") expect(new Set(values.map((v) => typeof v)).size, key).toBe(1);
+      if (f.kind === "own") expect(new Set(values.map((v) => JSON.stringify(v))).size, key).toBe(tokens.length);
+    }
+  });
 });
