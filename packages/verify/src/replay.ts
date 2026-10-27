@@ -12,6 +12,18 @@ const VALUED = new Set(["--seed", "--report"]);
  * The command that replays a run: its own arguments (those after `audit` in audit mode) less
  * `--seed`, `--json` and `--report`, then `--seed <seed>`, each quoted for a shell.
  */
+/**
+ * The largest --seed: fast-check folds a seed into 32 bits, so anything above 2^31 - 1 comes
+ * back negative, and the run adds up to 3 for its extra passes.
+ */
+export const MAX_SEED = 2 ** 31 - 4;
+
+/** A --seed value as the CLI takes it: a whole number from 0 to MAX_SEED, else undefined. */
+export function readSeed(v: string): number | undefined {
+  const n = v.trim() === "" ? Number.NaN : Number(v);
+  return Number.isInteger(n) && n >= 0 && n <= MAX_SEED ? n : undefined;
+}
+
 export function replayCommand(mode: "policy" | "audit", argv: string[], seed: number): string {
   const kept: string[] = [];
   for (let i = 0; i < argv.length; i++) {

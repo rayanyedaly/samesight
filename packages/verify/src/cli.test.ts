@@ -49,6 +49,10 @@ describe("samesight-verify audit flags", () => {
       [["audit", "--runs", "many", "--json"], "audit", /--runs must be a whole number/],
       [["--json", "--bogus"], "policy", /Unknown option '--bogus'/],
       [["audit", "--json", "--seed", "3", "--sync-config", "nowhere.yaml"], "audit", /no sync config at .*nowhere\.yaml/],
+      // --json=x is refused, and still means a document on stdout.
+      [["audit", "--json=x"], "audit", /--json/],
+      // Above 2^31 - 4, fast-check would fold the seed negative and the replay line could not run.
+      [["audit", "--json", "--seed", "2147483645"], "audit", /--seed must be a whole number from 0 to 2147483644/],
     ] as const) {
       const { code, stdout, stderr } = await cli([...args]);
       expect(code, args.join(" ")).toBe(2);
@@ -72,6 +76,9 @@ describe("samesight-verify audit flags", () => {
       expect(readFileSync(join(dir, "sync.md"), "utf8")).toMatch(/no sync config at .*nowhere\.yaml/);
       expect((await cli(["--help", "--report", join(dir, "help.md")])).code).toBe(0);
       expect(existsSync(join(dir, "help.md"))).toBe(false);
+      // A flag after --report is not its file: parseArgs refuses the line, and no ./--json is written.
+      expect((await cli(["audit", "--runs", "many", "--report", "--json"])).code).toBe(2);
+      expect(existsSync("--json")).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

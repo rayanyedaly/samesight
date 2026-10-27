@@ -5,6 +5,7 @@
  */
 
 import { parseArgs } from "node:util";
+import { readSeed } from "./replay.ts";
 import type { Finding, RowReport } from "./report.ts";
 
 export interface Section {
@@ -37,9 +38,8 @@ export function runOf(argv: string[]): { mode: ReportDocument["mode"]; seed?: nu
   const mode = argv[0] === "audit" ? "audit" : "policy";
   // Read loosely: the document is written for a run whose flags failed too.
   const { values } = parseArgs({ args: argv, options: { seed: { type: "string" } }, strict: false, allowPositionals: true });
-  // As the CLI reads it: any whole number Number() takes (1e3, 0x10), 0 or more.
-  const seed = typeof values.seed === "string" && values.seed.trim() !== "" ? Number(values.seed) : undefined;
-  return seed !== undefined && Number.isSafeInteger(seed) && seed >= 0 ? { mode, seed } : { mode };
+  const seed = typeof values.seed === "string" ? readSeed(values.seed) : undefined;
+  return seed !== undefined ? { mode, seed } : { mode };
 }
 
 export function reportDocument(o: {

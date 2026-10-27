@@ -72,7 +72,12 @@ streams:
     query: select *  from lists
 `);
     const run: string[] = [];
-    const client = { query: async (text: string) => (run.push(text), { rows: [] }) } as unknown as pg.Client;
+    const client = {
+      query: async (text: string) => {
+        run.push(text);
+        return { rows: [] };
+      },
+    } as unknown as pg.Client;
     const leak: RowReport = {
       kind: "leak",
       summary: "",
