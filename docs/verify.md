@@ -70,6 +70,8 @@ Pass `--restart` if PowerSync is not restarted with `docker compose restart powe
 
 The exit code is 0 when nothing failed, 1 when a check found something, and 2 when the run could not do its job: a flag it cannot read, a file it cannot find, a database or service it cannot reach, or a differential whose service broke down before it finished (a run that both found something and broke down exits 1). It is 141 when its output closed before the end (`| head`); a run whose output has gone still runs to its end (an audit whose own PowerSync is up stops there instead, and cleans up), then exits 141. Warnings do not fail a run. The summary line says `PASSED`, `FAILED: n failing`, or `INCOMPLETE: n could not run`.
 
+**Colour.** In a terminal, `FAIL`, `warn` and `ok` are red, yellow and green with a symbol before each, and the labels of a row block are dim. Output is plain when piped or redirected, when `CI` is set, under `TERM=dumb`, and under `NO_COLOR` (any non-empty value), which wins over everything. `FORCE_COLOR` (non-empty, not `0` or `false`) turns colour on even when piped or in CI; `FORCE_COLOR=0` turns it off. Scripts that grep the output should set `NO_COLOR=1`.
+
 ## Audit mode
 
 `samesight-verify audit` runs the same differential on a project that has no Samesight policy: its own RLS (whatever `pg_policies` says) against its own sync config. It is the quickest way to find out whether an existing Supabase and PowerSync app leaks, and it needs only the project's local Supabase stack and Docker:

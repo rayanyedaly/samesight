@@ -4,6 +4,8 @@
 # every list; RLS still returns each user only their own. The audit starts PowerSync on
 # the planted copy and must fail with that leak.
 set -euo pipefail
+# Plain output to grep, whatever FORCE_COLOR the runner sets.
+export NO_COLOR=1
 cd "$(dirname "$0")/.."
 
 planted=upstream/sync-config.planted.yaml

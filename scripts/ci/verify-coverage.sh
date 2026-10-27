@@ -4,6 +4,8 @@
 #
 #   scripts/ci/verify-coverage.sh <example dir> <summary pattern (grep -E)> [audit arguments...]
 set -euo pipefail
+# Plain output to grep, whatever FORCE_COLOR the runner sets.
+export NO_COLOR=1
 
 dir="${1:?usage: verify-coverage.sh <example dir> <summary pattern> [audit arguments...]}"
 pattern="${2:?usage: verify-coverage.sh <example dir> <summary pattern> [audit arguments...]}"

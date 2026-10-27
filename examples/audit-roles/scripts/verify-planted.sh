@@ -7,6 +7,8 @@
 #     documents, which RLS gives leads only. Users with no membership rows pass it: the
 #     team and team role come from the access token hook.
 set -euo pipefail
+# Plain output to grep, whatever FORCE_COLOR the runner sets.
+export NO_COLOR=1
 cd "$(dirname "$0")/.."
 
 which="${1:-editor}"
