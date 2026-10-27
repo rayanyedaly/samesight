@@ -11,6 +11,8 @@ export {
   type ClaimReads,
   type ClaimValue,
   type Compared,
+  AUTH_STATE_KEYS,
+  authStateKey,
   callsIn,
   claimReads,
   classify,

@@ -779,6 +779,16 @@ const AUTH_STATE = new Set(["aal", "amr", "is_anonymous", "session_id", "email",
 const AUTH_APP = new Set(["provider", "providers"]);
 const AUTH_USER = new Set(["email", "email_verified", "phone_verified", "sub"]);
 
+/** Every claim key classify calls auth-state: what Supabase Auth sets about a sign-in. */
+export const AUTH_STATE_KEYS: readonly string[] = [...AUTH_STATE, ...[...AUTH_APP].map((k) => `app_metadata.${k}`), ...[...AUTH_USER].map((k) => `user_metadata.${k}`)];
+
+/** The auth-state key a path reads: its top key, or metadata.key; undefined when it is no auth-state read. */
+export function authStateKey(path: readonly string[]): string | undefined {
+  if (classify(path) !== "auth-state") return undefined;
+  const [top, key] = path;
+  return top === "app_metadata" || top === "user_metadata" ? `${top}.${key}` : top;
+}
+
 /**
  * Who puts a claim in the token, and so whether audit can give it to its users:
  * Auth itself (identity, shared, auth-state), audit through the admin API (app_metadata,
