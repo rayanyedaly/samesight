@@ -251,6 +251,20 @@ export interface HookPlan {
 
 const warn = (detail: string): Finding => ({ status: "warn", check: "access token hook", detail });
 
+/**
+ * The warning for API roles that can execute the hook, with the SQL Supabase's guide runs:
+ * usage on the hook's schema and execute for supabase_auth_admin, then the revoke. Names
+ * with capitals or other characters are quoted.
+ */
+export function executeAdvice(callers: string[], shown: string, schema: string, fn: string): string {
+  const fnSql = `${ident(schema)}.${ident(fn)}(jsonb)`;
+  return (
+    `${callers.join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds. ` +
+    `As Supabase's guide does: grant usage on schema ${ident(schema)} to supabase_auth_admin; grant execute on function ${fnSql} to supabase_auth_admin; revoke execute on function ${fnSql} from public, anon, authenticated ` +
+    "(and from any role they are members of that holds it)"
+  );
+}
+
 /** What audit makes of the hook: its function, the tables it reads, and what to warn about. */
 export async function planHook(client: pg.Client, uri: string, functions: ReadonlyMap<string, string>): Promise<HookPlan> {
   const shown = showUri(uri);
@@ -266,8 +280,6 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
     [parsed.schema, parsed.fn],
   );
   const qualified = `${parsed.schema}.${parsed.fn}(jsonb)`;
-  // As SQL: a name with capitals or other characters quoted.
-  const fnSql = `${ident(parsed.schema)}.${ident(parsed.fn)}(jsonb)`;
   if (!fn || fn.body === null) {
     const cannot = `it names no function ${qualified} in the database`;
     return { uri, tables: [], cannot, findings: [warn(`the access token hook ${shown} names no function ${qualified} in the database; its claims are not steered`)] };
@@ -289,13 +301,7 @@ export async function planHook(client: pg.Client, uri: string, functions: Readon
     "select r.rolname as name from pg_roles r where r.rolname in ('anon', 'authenticated') and has_function_privilege(r.oid, $1::oid, 'execute') order by 1",
     [fn.oid],
   );
-  if (callers.length) {
-    findings.push(
-      warn(
-        `${callers.map((r) => r.name).join(", ")} can execute the access token hook ${shown} (new functions are executable by them by default): when its schema is exposed through the API, they may run it for any user id and read the claims it adds; as Supabase's guide does, grant execute on function ${fnSql} to supabase_auth_admin, then revoke execute on function ${fnSql} from public, anon, authenticated`,
-      ),
-    );
-  }
+  if (callers.length) findings.push(warn(executeAdvice(callers.map((r) => r.name), shown, parsed.schema, parsed.fn)));
 
   const [depends] = await rows<{ tables: string[] }>(
     client,
