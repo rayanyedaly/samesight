@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import type { Stack } from "../stack.ts";
 import { LEFT_FOR_NEXT, leftForNext } from "../autostart/teardown.ts";
-import { holdingLock, setUp, stoppable } from "./run.ts";
+import type { TableModel } from "./model.ts";
+import { cleanup, holdingLock, setUp, stoppable } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
 const fresh = { sql: [] as string[], lock: true, ended: false };
@@ -137,5 +138,36 @@ describe("policy mode's setUp", () => {
     await expect(setUp(client, { ...stack, api: "http://127.0.0.1:54321" }, ir as never)).rejects.toThrow(/\/token/);
     expect(bodies.length).toBeGreaterThan(0);
     expect(bodies.filter((b) => "id" in b)).toEqual([]);
+  });
+});
+
+describe("cleanup with tables beyond the run's", () => {
+  it("cleans them one at a time, children first, with their foreign keys on, and retries one that refused after the run's rows", async () => {
+    const sql: string[] = [];
+    let refuse = 1;
+    const client = {
+      query: async (text: string) => {
+        sql.push(text);
+        if (text.startsWith("delete from public.teams") && refuse-- > 0) throw new Error("still referenced");
+        return { rows: [] };
+      },
+    } as unknown as pg.Client;
+    const table = (name: string, parent?: string): TableModel => ({
+      name,
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [{ name: "id", type: "uuid", nullable: false, hasDefault: false, computed: false, hints: [] }],
+      foreignKeys: parent ? [{ columns: ["team_id"], schema: "public", table: parent, references: ["id"] }] : [],
+    });
+    await cleanup(client, stack, [table("documents")], [table("teams"), table("team_settings", "teams")]);
+    expect(sql.filter((x) => x.startsWith("delete") || x.includes("replica") || x === "rollback")).toEqual([
+      "delete from public.team_settings where id::text like $1",
+      "delete from public.teams where id::text like $1",
+      "rollback",
+      // The run's own rows, past the project's triggers.
+      "set local session_replication_role = replica",
+      "delete from public.documents where id::text like $1",
+      "delete from public.teams where id::text like $1",
+    ]);
   });
 });

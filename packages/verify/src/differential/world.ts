@@ -252,11 +252,20 @@ export function cleanable(t: TableModel): boolean {
  * required owner columns only: a row there whose only link to a run user is an optional
  * column (invited_by) is someone else's, and is kept, though it may then block deleting that
  * user. So are the tables in `ownedOnly`, which are not the run's own (cleanup reaches them).
+ * A row with several required owners goes when any is a run user: a message a real user sent
+ * one, say, which would otherwise block deleting that user. With `replica` false, the
+ * project's foreign keys, cascades and triggers apply.
  */
-export async function deleteRows(client: pg.Client, tables: TableModel[], prefix: string, users: string[] = [], options: { ownedOnly?: ReadonlySet<string> } = {}): Promise<void> {
+export async function deleteRows(
+  client: pg.Client,
+  tables: TableModel[],
+  prefix: string,
+  users: string[] = [],
+  options: { ownedOnly?: ReadonlySet<string>; replica?: boolean } = {},
+): Promise<void> {
   await client.query("begin");
   try {
-    await client.query("set local session_replication_role = replica");
+    if (options.replica !== false) await client.query("set local session_replication_role = replica");
     for (const t of [...tables].reverse()) {
       if (t.tenant !== undefined) {
         await client.query(`delete from public.${ident(t.name)} where ${ident(t.tenant)}::text like $1`, [`${prefix}%`]);

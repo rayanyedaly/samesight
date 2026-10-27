@@ -156,13 +156,14 @@ export function scanDeep(body: string, functions: ReadonlyMap<string, string>, l
 
 /** The calls the deepest bodies scanned make to functions with bodies of their own: scanDeep does not follow them. */
 export function unfollowed(scans: DeepScan[], functions: ReadonlyMap<string, string>, levels = 2): string[] {
-  const followed = new Set(scans.flatMap((s) => s.via));
+  // By body, not name: team_of and public.team_of may run one body, already scanned.
+  const scanned = new Set(scans.map((s) => s.body));
   const deepest = scans.filter((s) => s.via.length === levels).flatMap((s) => s.calls);
-  return [...new Set(deepest.filter((c) => !followed.has(c) && bodiesOf(c, functions).length > 0))];
+  return [...new Set(deepest.filter((c) => bodiesOf(c, functions).some((b) => !scanned.has(b))))];
 }
 
-/** A select of every column: select *, select t.*. */
-export const SELECTS_ALL = /(?<![A-Za-z0-9_$])select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i;
+/** A select of every column: select *, select t.*; not exists (select * ...), which reads none. */
+export const SELECTS_ALL = /(?<![A-Za-z0-9_$])(?<!exists\s*\(\s*)select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i;
 
 export interface HookPlan {
   uri: string;

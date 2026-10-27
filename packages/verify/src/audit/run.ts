@@ -85,7 +85,8 @@ export async function auditTables(client: pg.Client, start: string[]): Promise<s
 /**
  * Tables beyond the run's `tables` an earlier run may have left rows in (the access token
  * hook's, from a run made while it was enabled): the public tables with a column pointing at
- * auth.users, and the tables those point at.
+ * auth.users, and the tables those reach as auditTables follows them (foreign keys, and the
+ * tables their policies read). Every run's cleanup looks there for the run's prefix and users.
  */
 export async function cleanupScope(client: pg.Client, tables: string[]): Promise<string[]> {
   const owning = await rows<{ name: string }>(

@@ -192,6 +192,20 @@ describe("assignClaims with the hook's dims", () => {
     expect(assignClaims(named, () => "fresh", model, [], dims).claimValues.get("teams")?.get("name")).toEqual(["red", "lead", "member", "samesight-other"]);
   });
 
+  it("leaves a parent alone when one value alone fits it, and gives a generated table that one value", () => {
+    const short = (t: TableModel): TableModel => ({ ...t, columns: [...t.columns.filter((c) => c.name !== "code"), col("code", "character varying(3)")] });
+    const docs: TableModel = { name: "documents", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid")], foreignKeys: [] };
+    const coded = planClaims([
+      { where: "policy on teams", sql: "(code = (auth.jwt() ->> 'team_code'::text))", dialect: "postgres", table: "teams" },
+      { where: "policy on documents", sql: "(code = (auth.jwt() ->> 'team_code'::text))", dialect: "postgres", table: "documents" },
+      { where: "policy on documents", sql: "((auth.jwt() ->> 'team_code'::text) = 'red'::text)", dialect: "postgres", table: "documents" },
+    ]);
+    const a = assignClaims(coded, () => "fresh", [memberships, short(teams), audits, short(docs)], [], dims);
+    // Only 'red' fits three characters.
+    expect(a.claimValues.get("teams")?.get("code")).toBeUndefined();
+    expect(a.claimValues.get("documents")?.get("code")).toEqual(["red"]);
+  });
+
   it("names a hook row no user holds", () => {
     const wide = [{ table: "memberships", column: "role", options: ["a", "b", "c", "d", "e", "f", "g", "h"] }];
     const a = assignClaims(planClaims([]), () => "fresh", [], [], wide);

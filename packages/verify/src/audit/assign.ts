@@ -390,6 +390,8 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
   // Keys, user columns and the hook's own per-user tables are left alone.
   const hookOptions = dims.flatMap((d) => (d.column !== null && !d.parent ? d.options : [])) as ClaimValue[];
   const perUser = new Set(dims.map((d) => d.table));
+  // The fixed tables per-user rows point at (teams): their few rows take the values in turn.
+  const parents = new Set(dims.flatMap((d) => (d.parent ? [d.parent] : [])));
   for (const u of plan.uses.filter((x) => x.cls === "hook" && x.columns.length > 0 && x.other.length === 0)) {
     const families = new Set(u.casts.map(castFamily));
     const family = families.size === 1 && !families.has("unknown") ? [...families][0] : undefined;
@@ -401,8 +403,8 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
     for (const x of targetsOf(u.columns, u.columnTables, family, model).targets) {
       if (x.key || x.users || perUser.has(x.table)) continue;
       const fits = values.filter((v) => fitsType(v, x.type, u.numeric) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || jsPattern(x.pattern)?.test(String(v)) === true));
-      // A parent table's rows (a team per run user) take them in turn: fewer than two leave them all alike.
-      if (fits.length < 2) continue;
+      // A parent's rows take them in turn: fewer than two values would leave every team alike.
+      if (fits.length < (parents.has(x.table) ? 2 : 1)) continue;
       const columns = claimValues.get(x.table) ?? new Map<string, unknown[]>();
       claimValues.set(x.table, columns);
       columns.set(x.column, [...new Set([...(columns.get(x.column) ?? []), ...fits])]);
