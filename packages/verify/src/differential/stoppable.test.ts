@@ -6,11 +6,12 @@ import type { TableModel } from "./model.ts";
 import { cleanup, holdingLock, setUp, setUpUsers, stoppable, tearDown } from "./run.ts";
 
 /** The connection the step opens, recording what it is asked. */
-const fresh = { sql: [] as string[], lock: true, ended: false };
+const fresh = { sql: [] as string[], lock: true, ended: false, users: [] as string[] };
 const connect = vi.fn(async () => ({
   query: async (text: string) => {
     fresh.sql.push(text);
     if (/pg_try_advisory_lock/.test(text)) return { rows: [{ locked: fresh.lock }] };
+    if (/from auth\.users/.test(text)) return { rows: fresh.users.map((id) => ({ id })) };
     return { rows: [] };
   },
   end: async () => {
@@ -41,6 +42,7 @@ beforeEach(() => {
   fresh.sql = [];
   fresh.lock = true;
   fresh.ended = false;
+  fresh.users = [];
   connect.mockClear();
 });
 
@@ -100,6 +102,24 @@ describe("stoppable", () => {
     await ending;
     expect(connect.mock.calls.length).toBe(0);
     expect(client.sql.at(-1)).toBe("select pg_advisory_unlock($1)");
+  });
+
+  it("says a row the run may not delete blocks its users, and does not promise the next run removes them", async () => {
+    const client = runClient();
+    const lines: string[] = [];
+    const stop = await stoppable(client, { ...stack, api: "http://127.0.0.1:54321" }, [], (l) => lines.push(l));
+    holdingLock.add(client);
+    fresh.users = ["0b0b0b0b-0000-4000-8000-000000000001"];
+    // As Auth answers when a row still references the user.
+    const body = JSON.stringify({ code: "23503", message: 'update or delete on table "users" violates foreign key constraint "messages_recipient_fkey" on table "messages"', detail: 'Key (id)=(0b0b…) is still referenced from table "messages".' });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 500 })));
+    try {
+      await stop.step();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(lines).toEqual([expect.stringMatching(/^could not remove the run's users and rows: could not delete 1 run users: rows in messages still reference them, and are not the run's to delete .*Remove or repoint those rows/)]);
+    expect(lines[0]).not.toContain(LEFT_FOR_NEXT);
   });
 
   it("logs, never throws, when it cannot clean", async () => {
