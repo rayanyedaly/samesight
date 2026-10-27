@@ -90,7 +90,7 @@ function outputOf(sql: string): { table?: string; tables?: string[]; aliases?: R
     const out = outputTable(sql);
     return { table: out.table, tables: out.reads, aliases: out.aliases };
   } catch {
-    // A query audit cannot read (an aliased output table, say): its tables are unknown.
+    // A query audit cannot read (a select * across a join, say): its tables are unknown.
     return {};
   }
 }

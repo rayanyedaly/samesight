@@ -141,6 +141,32 @@ describe("rowsFromOps", () => {
     expect(hidden).toMatchObject({ kind: "hidden", streams: ["m7"], columns: ["internalNotes"] });
   });
 
+  it("reads an aliased row type as its source table, one row with a copy from each name", () => {
+    const typed = (row_type: string, bucket: string, data: Record<string, unknown>) => ({ bucket, row_type, row_id: "a", data: JSON.stringify(data) });
+    const rows = rowsFromOps(
+      [typed("l", '3#mine|0["u"]', { id: "a", name: "x" }), typed("lists", '3#all|0[]', { id: "a", name: "x" }), typed("Other", '3#o|0[]', { id: "a" }), typed("D", '3#d|0[]', { id: "a" })],
+      { l: "lists", lists: "lists", d: "documents" },
+    );
+    expect(rows).toEqual([
+      {
+        table: "lists",
+        id: "a",
+        data: { id: "a", name: "x" },
+        sources: [
+          { stream: "mine", columns: ["id", "name"] },
+          { stream: "all", columns: ["id", "name"] },
+        ],
+        copies: [
+          { stream: "mine", data: { id: "a", name: "x" } },
+          { stream: "all", data: { id: "a", name: "x" } },
+        ],
+      },
+      // Unknown types stay as they came; an alias the device kept in capitals is still found.
+      { table: "Other", id: "a", data: { id: "a" }, sources: [{ stream: "o", columns: ["id"] }], copies: [{ stream: "o", data: { id: "a" } }] },
+      { table: "documents", id: "a", data: { id: "a" }, sources: [{ stream: "d", columns: ["id"] }], copies: [{ stream: "d", data: { id: "a" } }] },
+    ]);
+  });
+
   it("compares each bucket's copy, so a wrong copy cannot hide behind a right one", () => {
     const rows = rowsFromOps([op('3#viewer|1["t"]', "a", { id: "a", title: "SECRET" }), op('3#admin|1["t"]', "a", { id: "a", title: "public" })]);
     const model: TableModel[] = [{ ...table("Inspection"), columns: [column({ name: "id", type: "uuid" }), column({ name: "title" })] }];
