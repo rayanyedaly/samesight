@@ -17,6 +17,7 @@ import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
 import { type AutoStarted, autoStart } from "../autostart/run.ts";
 import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
+import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
 import { auditTables } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
 
@@ -84,6 +85,33 @@ describe("the audit catalog on the demo", () => {
     expect(findings).toContainEqual(expect.objectContaining({ status: "fail", check: "row level security", detail: expect.stringMatching(/off on todos/) }));
     expect(findings).toContainEqual(expect.objectContaining({ status: "fail", check: "publication", detail: expect.stringMatching(/does not publish todos/) }));
     expect(findings).toContainEqual(expect.objectContaining({ status: "warn", check: "anon", detail: expect.stringMatching(/"anyone" on lists/) }));
+  });
+});
+
+describe("claim discovery on the demo's catalog", () => {
+  const discover = async () => planClaims(await policyRules(client), await policyFunctions(client));
+
+  it("finds only the user id as published, compared with owner_id", async () => {
+    const plan = await discover();
+    expect(plan.uses.map((u) => u.key)).toEqual(["sub"]);
+    expect(plan.identityColumns).toEqual(["owner_id"]);
+    expect(claimFindings(plan, undefined)).toEqual([{ status: "ok", check: "claims", detail: "no rule reads a token claim other than the user id" }]);
+  });
+
+  it("reads through a SQL wrapper, reports a plpgsql one, and takes the user id in any spelling", async () => {
+    const plan = await rolledBack(client, async () => {
+      await client.query("create function public.samesight_test_role() returns text language sql stable as $$ select auth.jwt() -> 'app_metadata' ->> 'role' $$");
+      await client.query(
+        "create function public.samesight_test_check() returns boolean language plpgsql stable as $$ begin return auth.jwt() ->> 'tier' = 'gold'; end $$",
+      );
+      await client.query("create policy samesight_role on public.lists for select to authenticated using ((select public.samesight_test_role()) = 'admin')");
+      await client.query("create policy samesight_check on public.lists for select to authenticated using (public.samesight_test_check())");
+      await client.query("create policy samesight_sub on public.todos for select to authenticated using ((auth.jwt() ->> 'sub')::uuid = created_by)");
+      return discover();
+    });
+    expect(plan.uses.find((u) => u.key === "app_metadata.role")).toMatchObject({ values: ["admin"], rules: ['policy "samesight_role" on lists (USING)'] });
+    expect(plan.unreadable).toContainEqual(expect.objectContaining({ where: 'policy "samesight_check" on lists (USING)', reason: expect.stringMatching(/calls samesight_test_check, which reads the token/) }));
+    expect(plan.identityColumns).toEqual(["created_by", "owner_id"]);
   });
 });
 
