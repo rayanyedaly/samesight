@@ -10,7 +10,7 @@ import type pg from "pg";
 import { type IR, ident, type Stream } from "samesight/compiler";
 import { leftForNext, type Mode } from "../autostart/teardown.ts";
 import { connectLocal, rows } from "../db.ts";
-import { type Finding, formatRow, type RowReport, rowSentence } from "../report.ts";
+import { type Finding, formatRows, type RowReport, rowSentence } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { show } from "../audit/assign.ts";
 import { claimKey } from "../audit/claims.ts";
@@ -741,7 +741,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       {
         status: "warn",
         check,
-        detail: `RLS lets users read rows no stream sends them (sync is narrower than RLS: fine if intended, but RLS alone guards the REST API), for example:\n${shown.flatMap(formatRow).map((l) => `    ${l}`).join("\n")}${more}`,
+        detail: `RLS lets users read rows no stream sends them (sync is narrower than RLS: fine if intended, but RLS alone guards the REST API), for example:\n${formatRows(shown)}${more}`,
         rows: shown,
       },
     ];
@@ -802,7 +802,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
         {
           status: "fail",
           check,
-          detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}):\n${counterexample.flatMap(formatRow).map((l) => `    ${l}`).join("\n")}`,
+          detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}):\n${formatRows(counterexample)}`,
           rows: counterexample,
           ...(options.replay ? { replay: options.replay(x.seed) } : {}),
         },

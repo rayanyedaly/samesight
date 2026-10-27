@@ -1,3 +1,5 @@
+import { dim, green, red, yellow } from "./color.ts";
+
 /** One result line, as `samesight doctor` prints them. */
 export interface Finding {
   status: "ok" | "warn" | "fail";
@@ -36,8 +38,8 @@ export interface RowReport {
   fix?: { query: string; add: string; why: string };
 }
 
-/** A row block's label, its value starting where the other labels' do. */
-const label = (name: string) => `  ${name.padEnd(11)}`;
+/** A row block's label, its value starting where the other labels' do; dim in colour. */
+const labelFor = (name: string, color = false) => `  ${color ? dim(name) : name}${" ".repeat(Math.max(0, 11 - name.length))}`;
 
 /** What a row report says happened, with the streams that sent it when `via` is given. */
 export function rowSentence(r: Pick<RowReport, "kind" | "user" | "row" | "columns">, via = ""): string {
@@ -57,7 +59,8 @@ export function rowSentence(r: Pick<RowReport, "kind" | "user" | "row" | "column
 }
 
 /** A row report's lines: what happened, then where it came from, each under a label. */
-export function formatRow(r: RowReport): string[] {
+export function formatRow(r: RowReport, color = false): string[] {
+  const label = (name: string) => labelFor(name, color);
   const blank = " ".repeat(13);
   const sent = r.sentBy.flatMap((x, i) => [
     `${i === 0 ? label("sent by") : blank}stream ${x.stream}${x.query ? `, ${x.query}` : ""}`,
@@ -74,11 +77,37 @@ export function formatRow(r: RowReport): string[] {
   return [`${r.kind}: ${rowSentence(r)}`, ...sent, ...policies, ...note, ...fix];
 }
 
-const MARK = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
+/** Row blocks as a finding's detail holds them, indented under its line. */
+export function formatRows(rows: RowReport[], color = false): string {
+  return rows
+    .flatMap((r) => formatRow(r, color))
+    .map((l) => `    ${l}`)
+    .join("\n");
+}
 
-/** One line per finding (its detail may hold row blocks), then a replay line under the blocks of a finding with one. */
-export function formatFindings(findings: Finding[]): string {
-  return findings.map((f) => `${MARK[f.status]}  ${f.check}: ${f.detail}${f.replay ? `\n    ${label("replay")}${f.replay}` : ""}`).join("\n");
+const MARK = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
+/** In colour, each mark gets a symbol, all of them the same width still. */
+const COLOR_MARK = { ok: `${green("✓ ok")}  `, warn: yellow("! warn"), fail: red("✗ FAIL") } as const;
+
+/** A finding's detail with its row blocks' labels dim, when the blocks are found in it as formatRows writes them. */
+function colorDetail(f: Finding): string {
+  if (!f.rows?.length) return f.detail;
+  const plain = formatRows(f.rows);
+  const at = f.detail.indexOf(plain);
+  return at < 0 ? f.detail : `${f.detail.slice(0, at)}${formatRows(f.rows, true)}${f.detail.slice(at + plain.length)}`;
+}
+
+/**
+ * One line per finding (its detail may hold row blocks), then a replay line under the blocks
+ * of a finding with one. Without colour the text is plain, for scripts to grep.
+ */
+export function formatFindings(findings: Finding[], color = false): string {
+  return findings
+    .map((f) => {
+      const replay = f.replay ? `\n    ${labelFor("replay", color)}${f.replay}` : "";
+      return color ? `${COLOR_MARK[f.status]}  ${f.check}: ${colorDetail(f)}${replay}` : `${MARK[f.status]}  ${f.check}: ${f.detail}${replay}`;
+    })
+    .join("\n");
 }
 
 export function failed(findings: Finding[]): boolean {

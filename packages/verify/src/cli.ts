@@ -35,6 +35,7 @@ import {
   type SchemaInfo,
 } from "samesight/compiler";
 import { audit } from "./audit/run.ts";
+import { green, red, useColor, yellow } from "./color.ts";
 import { type AutoStarted, autoStart } from "./autostart/run.ts";
 import { type Mode, onSignals, Teardown } from "./autostart/teardown.ts";
 import { connectLocal } from "./db.ts";
@@ -54,6 +55,9 @@ import { checkVersionFloor } from "./static/version-floor.ts";
 import { checkWritePath } from "./writepath.ts";
 
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
+/** Colour and symbols in a terminal; plain when piped, in CI, or under NO_COLOR. Decided once, for every section. */
+const COLOR = useColor(process.stdout, process.env);
 
 const USAGE = `Usage: samesight-verify [options]
        samesight-verify audit [audit options]
@@ -138,7 +142,7 @@ async function main(argv: string[]): Promise<number> {
   const section = (title: string, f: Finding[]) => {
     if (stopped()) return;
     findings.push(...f);
-    process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
+    process.stdout.write(`\n${title}\n${formatFindings(f, COLOR)}\n`);
   };
   const started = Date.now();
 
@@ -313,7 +317,7 @@ async function auditMain(argv: string[]): Promise<number> {
   const section = (title: string, f: Finding[]) => {
     if (stopped()) return;
     findings.push(...f);
-    process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
+    process.stdout.write(`\n${title}\n${formatFindings(f, COLOR)}\n`);
   };
   const startedAt = Date.now();
   const log = (line: string) => process.stdout.write(`  ${((Date.now() - startedAt) / 1000).toFixed(0)}s  ${line}\n`);
@@ -419,7 +423,8 @@ function report(findings: Finding[], started: number): number {
   const time = `${((Date.now() - started) / 1000).toFixed(0)}s`;
   const notRun = incomplete ? `${incomplete} could not run` : "";
   const head = fails ? `FAILED: ${fails} failing${notRun ? `, ${notRun}` : ""}` : notRun ? `INCOMPLETE: ${notRun}` : "PASSED";
-  process.stdout.write(`\n${head}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
+  const paint = !COLOR ? (s: string) => s : fails ? red : notRun ? yellow : green;
+  process.stdout.write(`\n${paint(head)}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
   return exitCode(findings);
 }
 

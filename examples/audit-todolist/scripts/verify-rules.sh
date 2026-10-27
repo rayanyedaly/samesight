@@ -4,6 +4,8 @@
 # filter (every user gets a bucket for every list) must fail with a leak. Each audit starts
 # PowerSync on the file it is given.
 set -euo pipefail
+# Plain output to grep, whatever FORCE_COLOR the runner sets.
+export NO_COLOR=1
 cd "$(dirname "$0")/.."
 
 planted=upstream/sync-rules.planted.yaml

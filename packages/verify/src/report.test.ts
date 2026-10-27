@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exitCode, type Finding, failed, formatFindings, formatRow, type RowReport } from "./report.ts";
+import { exitCode, type Finding, failed, formatFindings, formatRow, formatRows, type RowReport } from "./report.ts";
 
 describe("report", () => {
   it("fails only on a fail, never on warnings", () => {
@@ -26,6 +26,65 @@ describe("report", () => {
       "      replay     samesight-verify audit --runs 3 --seed 9",
       "warn  differential: RLS lets users read rows no stream sends them",
     ]);
+  });
+});
+
+describe("formatFindings in colour", () => {
+  const row: RowReport = {
+    kind: "leak",
+    summary: "",
+    user: { label: "u1", id: "u1" },
+    table: "lists",
+    id: "5a3e",
+    row: "lists 5a3e (owner_id u0)",
+    sentBy: [{ stream: "user_data", query: "queries[0]", sql: "SELECT * FROM lists" }],
+    policies: [{ name: "owned lists", permissive: true, verdict: "refuses" }],
+    fix: { query: "queries[0]", add: "WHERE owner_id = auth.user_id()", why: 'queries[0] has no owner_id filter, which policy "owned lists" has' },
+  };
+  const findings: Finding[] = [
+    { status: "ok", check: "streams", detail: "2 streams" },
+    { status: "warn", check: "claims", detail: "a claim is not tested" },
+    { status: "fail", check: "differential", detail: `devices and RLS disagree (seed 1842, shrunk 3 times to 4 rows):\n${formatRows([row])}`, rows: [row], replay: "samesight-verify audit --runs 3 --seed 1842" },
+  ];
+  // Scripts grep this text: without colour it must not change by a byte.
+  const plain = [
+    "ok    streams: 2 streams",
+    "warn  claims: a claim is not tested",
+    "FAIL  differential: devices and RLS disagree (seed 1842, shrunk 3 times to 4 rows):",
+    "    leak: u1 received lists 5a3e (owner_id u0); RLS returns no such row for this user",
+    "      sent by    stream user_data, queries[0]",
+    "                 SELECT * FROM lists",
+    '      refused by policy "owned lists" on lists',
+    '      likely fix queries[0] has no owner_id filter, which policy "owned lists" has; add',
+    "                 WHERE owner_id = auth.user_id()",
+    "      replay     samesight-verify audit --runs 3 --seed 1842",
+  ].join("\n");
+  const strip = (s: string) => s.split("\x1b").map((p, i) => (i === 0 ? p : p.replace(/^\[\d+m/, ""))).join("");
+
+  it("is plain text by default and with colour off", () => {
+    expect(formatFindings(findings)).toBe(plain);
+    expect(formatFindings(findings, false)).toBe(plain);
+    expect(formatRows([row], false)).not.toContain("\x1b");
+  });
+
+  it("marks each status with a colour and a symbol, the same width as plain, and dims the labels", () => {
+    const out = formatFindings(findings, true);
+    expect(out).toContain("\x1b[32m✓ ok\x1b[39m  ");
+    expect(out).toContain("\x1b[33m! warn\x1b[39m");
+    expect(out).toContain("\x1b[31m✗ FAIL\x1b[39m");
+    for (const name of ["sent by", "refused by", "likely fix", "replay"]) expect(out).toContain(`\x1b[2m${name}\x1b[22m`);
+    // With the codes taken out, only the symbols are new.
+    expect(strip(out)).toBe(
+      plain
+        .split("\n")
+        .map((l) => l.replace(/^(ok {2}|warn|FAIL)/, (m) => `${{ "ok  ": "✓ ok  ", warn: "! warn", FAIL: "✗ FAIL" }[m]}`))
+        .join("\n"),
+    );
+  });
+
+  it("leaves a detail as it is when its blocks are not the rows'", () => {
+    const out = formatFindings([{ status: "fail", check: "differential", detail: "a detail of its own", rows: [row] }], true);
+    expect(strip(out)).toBe("✗ FAIL  differential: a detail of its own");
   });
 });
 
