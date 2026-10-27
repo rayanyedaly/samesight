@@ -8,7 +8,8 @@
     "stack:up": "bash scripts/stack-up.sh",
     "stack:down": "bash scripts/stack-down.sh",
     "verify": "samesight-verify audit --sync-config sync-config.yaml",
-    "verify:planted": "bash scripts/verify-planted.sh"
+    "verify:planted": "bash scripts/verify-planted.sh",
+    "verify:planted-team": "bash scripts/verify-planted.sh team"
   },
   "devDependencies": {
     "@samesight/verify": "workspace:*"
