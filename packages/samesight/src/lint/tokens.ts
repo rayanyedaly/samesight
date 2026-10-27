@@ -1,6 +1,6 @@
 /**
- * Helpers over tokenized SQL (sync/sql.ts), shared by lint's access analysis and the
- * claim reader: names, parentheses, top-level splits and fixed values.
+ * Helpers over tokenized SQL (sync/sql.ts) for lint's access analysis and the claim
+ * reader: names, parentheses, top-level splits and fixed values.
  */
 
 import type { Token } from "../sync/sql.ts";

@@ -3,7 +3,8 @@ import { ident } from "../emit/expr.ts";
 /**
  * Just enough of the stream SQL dialect to check gates: a tokenizer, the projection,
  * the table, and the WHERE clause split into its top-level AND terms. Anything it does
- * not recognise is reported as unreadable, never guessed at.
+ * not recognise is reported as unreadable, never guessed at. The tokenizer also reads
+ * Postgres's own printing of policies and function bodies, on request.
  */
 
 export interface Token {
@@ -15,7 +16,20 @@ export interface Token {
 /** Longest first, so "->>" wins over "->". */
 const SYMBOLS = ["->>", "<>", "!=", "<=", ">=", "->", "||", "::", "(", ")", ",", ".", "=", "<", ">", "*", "+", "-"];
 /** Characters Postgres builds operators from (~~ for LIKE, @>, ?, #>>, ...). */
-const OPERATOR = /^[+\-*/<>=~!@#%^&|?]+/;
+const OPERATOR_CHARS = "+-*/<>=~!@#%^&|?";
+
+/**
+ * The operator starting at i, as Postgres's lexer reads it: a run of operator characters
+ * that stops before a comment (-- or /*), and that cannot end in + or - unless it holds
+ * one of ~ ! @ # % ^ & | ? (so x=-1 is = then -1).
+ */
+function operatorAt(sql: string, i: number): string {
+  let j = i;
+  while (j < sql.length && OPERATOR_CHARS.includes(sql[j] as string) && !(j > i && (sql.startsWith("--", j) || sql.startsWith("/*", j)))) j++;
+  let op = sql.slice(i, j);
+  if (op.length > 1 && !/[~!@#%^&|?]/.test(op)) while (op.length > 1 && /[+-]$/.test(op)) op = op.slice(0, -1);
+  return op;
+}
 
 export interface TokenizeOptions {
   /**
@@ -63,8 +77,8 @@ export function tokenize(sql: string, options: TokenizeOptions = {}): Token[] {
     } else if (postgres && "[];".includes(ch)) {
       out.push({ kind: "symbol", text: ch });
       i++;
-    } else if (postgres && OPERATOR.test(sql.slice(i)) && !sql.startsWith("/*", i)) {
-      const op = (OPERATOR.exec(sql.slice(i)) as RegExpExecArray)[0];
+    } else if (postgres && OPERATOR_CHARS.includes(ch) && !sql.startsWith("/*", i)) {
+      const op = operatorAt(sql, i);
       out.push({ kind: "symbol", text: op });
       i += op.length;
     } else {
