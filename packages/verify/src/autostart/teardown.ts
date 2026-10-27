@@ -11,19 +11,25 @@
  */
 
 export class Teardown {
-  private readonly steps: { what: string; fn: () => Promise<void> }[] = [];
+  private readonly steps: { what: string; fn: () => Promise<void>; remedy?: string }[] = [];
   private done: Promise<string[]> | undefined;
   private pending: Promise<unknown> = Promise.resolve();
   private readonly log: (line: string) => void;
   /** What began the teardown, when onSignals did (SIGINT, output closed): the run did not end on its own. */
   stoppedBy: string | undefined;
+  /** Whether a step removes a PowerSync service the run started (autoStart's), which the next audit's sweep removes. */
+  service = false;
+  /** The run's mode: who removes its users and rows when it cannot. */
+  readonly mode: Mode;
 
-  constructor(log: (line: string) => void) {
+  constructor(log: (line: string) => void, mode: Mode = "audit") {
     this.log = log;
+    this.mode = mode;
   }
 
-  add(what: string, fn: () => Promise<void>): void {
-    this.steps.push({ what, fn });
+  /** A step, and what to do about what it removes should it fail (said after its error). */
+  add(what: string, fn: () => Promise<void>, remedy?: string): void {
+    this.steps.push({ what, fn, ...(remedy ? { remedy } : {}) });
   }
 
   /** Whether every step has run. */
@@ -56,7 +62,7 @@ export class Teardown {
           await step.fn();
         } catch (e) {
           failed.push(step.what);
-          this.log(`could not remove ${step.what}: ${(e as Error).message}; the next audit that starts PowerSync removes it`);
+          this.log(`could not remove ${step.what}: ${(e as Error).message}${step.remedy ? `; ${step.remedy}` : ""}`);
         }
       }
       this.finished = true;
@@ -68,9 +74,21 @@ export class Teardown {
 
 type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
-/** What to do about a run's leftovers: run users can hold privileged app_metadata (role=admin) until removed. */
-export const LEFT_FOR_NEXT =
-  "the next audit that reaches the differential removes the run's users and rows (the users may hold privileged app_metadata); to remove the users now, with no audit running, delete the run's rows a key without on delete cascade ties to them, then `delete from auth.users where email like '%@verify.samesight.test'`";
+/** An audit (`audit`), or a run under a Samesight policy (`policy`). */
+export type Mode = "audit" | "policy";
+
+/** What a service step's failure leaves, and who removes it. */
+export const SERVICE_REMEDY = "the next audit that starts PowerSync removes it";
+
+/** What to do about a run's leftovers: run users can hold privileged app_metadata (role=admin) or roles until removed. */
+export function leftForNext(mode: Mode): string {
+  const next = mode === "audit" ? "the next audit that reaches the differential removes the run's users and rows (the users may hold privileged app_metadata)" : "the next verify run removes the run's users and rows (some are members with privileged roles)";
+  const running = mode === "audit" ? "no audit" : "no verify run";
+  return `${next}; to remove the users now, with ${running} running, delete the run's rows a key without on delete cascade ties to them, then \`delete from auth.users where email like '%@verify.samesight.test'\``;
+}
+
+/** An audit's leftovers, as leftForNext says. */
+export const LEFT_FOR_NEXT = leftForNext("audit");
 
 /** What onSignals needs of `process`. */
 export interface Signals {
@@ -107,7 +125,8 @@ export function onSignals(
   const unfinished = () => {
     if (teardown.finished) return;
     try {
-      log(`stopped before the clean-up finished: the next audit that starts PowerSync removes what is left of the service it started, and ${LEFT_FOR_NEXT}`);
+      const service = teardown.service ? "the next audit that starts PowerSync removes what is left of the service it started, and " : "";
+      log(`stopped before the clean-up finished: ${service}${leftForNext(teardown.mode)}`);
     } catch {}
   };
   const end = (why: string, exitCode: number) => {

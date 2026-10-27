@@ -8,7 +8,7 @@
 import fc from "fast-check";
 import type pg from "pg";
 import { type IR, ident } from "samesight/compiler";
-import { LEFT_FOR_NEXT } from "../autostart/teardown.ts";
+import { leftForNext, type Mode } from "../autostart/teardown.ts";
 import { connectLocal, rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
@@ -138,6 +138,7 @@ export async function stoppable(
   tables: ScopeTable[],
   log: (line: string) => void,
   outside: string[] = [],
+  mode: Mode = "audit",
 ): Promise<{ step: () => Promise<void>; tearDown: (s: Run) => Promise<void> }> {
   const [{ pid } = { pid: 0 }] = await rows<{ pid: number }>(client, "select pg_backend_pid() as pid");
   let ending: Promise<void> | undefined;
@@ -152,7 +153,7 @@ export async function stoppable(
       if (ending) return ending.catch(() => {});
       if (!holdingLock.has(client)) return;
       stopping = true;
-      const later = LEFT_FOR_NEXT;
+      const later = leftForNext(mode);
       let fresh: pg.Client | undefined;
       try {
         fresh = await connectLocal(stack.db);
