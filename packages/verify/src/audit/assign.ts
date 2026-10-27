@@ -39,6 +39,8 @@ export interface SetPath {
   unkeyed: string[];
   /** The pool is the ids of the first run users, by index (u0, u1). */
   users?: true;
+  /** Every rule reads the claim as a number: 1, 1.0 and '01' are one value. */
+  numeric?: true;
 }
 
 export type Metadata = Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>;
@@ -151,9 +153,41 @@ const WHOLE: Record<string, [bigint, bigint]> = {
   int8: [-9223372036854775808n, 9223372036854775807n],
 };
 
+/**
+ * A number's canonical text, the same for every spelling of one value (1, 1.0, '01', 1e0),
+ * or undefined when the value is no number. Built from the digits, so a bigint past 2^53
+ * and text like '', '0x10' or 'Infinity' are never taken for one.
+ */
+export function canonicalNumber(v: unknown): string | undefined {
+  const text = typeof v === "number" ? (Number.isFinite(v) ? String(v) : undefined) : typeof v === "string" ? v.trim() : undefined;
+  const m = text === undefined ? null : /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!m || (!m[2] && !m[3])) return undefined;
+  const whole = m[2] ?? "";
+  let digits = whole + (m[3] ?? "");
+  let point = whole.length + Number(m[4] ?? 0);
+  const lead = /^0*/.exec(digits)?.[0].length ?? 0;
+  digits = digits.slice(lead).replace(/0+$/, "");
+  point -= lead;
+  return digits ? `${m[1] === "-" ? "-" : ""}0.${digits}e${point}` : "0";
+}
+
+/** How values of a claim are told apart: by canonical number when the rules read it as one, else exactly. */
+export const valueKeyFor =
+  (numeric: boolean | undefined) =>
+  (v: unknown): string => {
+    const n = numeric ? canonicalNumber(v) : undefined;
+    return n === undefined ? JSON.stringify(v ?? null) : `#${n}`;
+  };
+
 /** Whether the value is a number the type stores exactly: whole and in range, or within numeric(p,s). */
 function fitsNumber(v: ClaimValue, type: string): boolean {
   const text = typeof v === "number" ? (Number.isFinite(v) ? String(v) : undefined) : typeof v === "string" ? v : undefined;
+  // A float takes any spelling of a number it holds exactly (1e2, 0.50).
+  if (text !== undefined && /^(real|float4|double precision|float8)$/.test(type) && canonicalNumber(text) !== undefined) {
+    const n = Number(text);
+    const exact = canonicalNumber(String(/^(real|float4)$/.test(type) ? Math.fround(n) : n)) === canonicalNumber(text);
+    return Number.isFinite(n) && exact;
+  }
   if (text === undefined || !/^-?\d+(\.\d+)?$/.test(text)) return false;
   const range = WHOLE[type];
   if (range) {
@@ -161,9 +195,6 @@ function fitsNumber(v: ClaimValue, type: string): boolean {
     const n = BigInt(text);
     return n >= range[0] && n <= range[1];
   }
-  // A float stores a decimal exactly only when it round-trips: 0.1 in a real column is not 0.1.
-  if (/^(real|float4)$/.test(type)) return Math.fround(Number(text)) === Number(text) && String(Number(text)) === text;
-  if (/^(double precision|float8)$/.test(type)) return String(Number(text)) === text;
   // A negative scale rounds to tens or hundreds: no claim value is kept exactly there.
   if (/^(?:numeric|decimal)\(\d+,\s*-\d+\)$/.test(type)) return false;
   const ps = /^(?:numeric|decimal)\((\d+)(?:,\s*(\d+))?\)$/.exec(type);
@@ -225,7 +256,9 @@ export function otherValue(values: ClaimValue[], casts: string[], fresh: () => s
     const numbers = values.filter((v): v is number => typeof v === "number");
     // The first candidate no literal matches that every cast stores exactly (a smallint's max + 1 does not).
     const candidates = numbers.length ? [Math.floor(Math.max(...numbers)) + 1, Math.ceil(Math.min(...numbers)) - 1, 0, 1] : [1, 0];
-    return candidates.find((c) => !values.includes(c) && casts.every((cast) => castFamily(cast) !== "number" || fitsNumber(c, cast)));
+    // No spelling of a literal ('01' for 1) counts as another value.
+    const taken = new Set(values.map((v) => canonicalNumber(v) ?? ""));
+    return candidates.find((c) => !taken.has(canonicalNumber(c) ?? "") && casts.every((cast) => castFamily(cast) !== "number" || fitsNumber(c, cast)));
   }
   if (family === "boolean") return [true, false].find((b) => !values.includes(b));
   return "samesight-other";
@@ -342,7 +375,16 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
         notSet.set(u.key, `it is compared only with ${u.columns.length === 1 ? "column" : "columns"} ${u.columns.join(", ")}, and no generated row can hold its values: ${[...skipped, ...found.unkeyed].join("; ")}`);
         continue;
       }
-      paths.push({ path: u.path, key: u.key, pool, columns: placed, skipped, unkeyed: found.unkeyed, ...(pool.length && pool.every((v) => typeof v === "string" && userIds.includes(v)) ? { users: true as const } : {}) });
+      paths.push({
+        path: u.path,
+        key: u.key,
+        pool,
+        columns: placed,
+        skipped,
+        unkeyed: found.unkeyed,
+        ...(pool.length && pool.every((v) => typeof v === "string" && userIds.includes(v)) ? { users: true as const } : {}),
+        ...(u.numeric ? { numeric: true as const } : {}),
+      });
     }
   }
 
