@@ -267,7 +267,7 @@ const NOT_CALLS = new Set(["exists", "in", "any", "all", "some", "array", "value
  * escapes, -- and /* *\/ comments, and $tag$...$tag$ strings (SQL in one, run by EXECUTE, is
  * dynamic SQL, which no reader of the body can follow).
  */
-function codeOnly(body: string): string {
+export function codeOnly(body: string): string {
   let out = "";
   let i = 0;
   while (i < body.length) {

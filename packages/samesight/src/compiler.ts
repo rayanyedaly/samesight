@@ -15,6 +15,7 @@ export {
   authStateKey,
   callsIn,
   claimReads,
+  codeOnly,
   classify,
   type Unreadable,
   wrapperRead,

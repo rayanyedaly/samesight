@@ -107,8 +107,27 @@ describe("claimFindings", () => {
     expect(email).toEqual([expect.stringMatching(/^warn email: .*compared with column owner_email; each run user has its own email \(an address at verify\.samesight\.test\), which audit does not choose or put in generated rows/)]);
   });
 
-  it("warns about a hook that runs off this machine", () => {
+  it("says why audit cannot steer a hook claim, and what the tokens carry, with the hook's own warnings first", () => {
+    const hook = { uri: "pg-functions://postgres/public/custom_access_token_hook" };
+    const hookPlan = { uri: hook.uri, tables: [], cannot: "its body reads no public table", findings: [{ status: "warn" as const, check: "access token hook", detail: "the hook warns" }] };
+    const tokens = new Map([
+      ["u0", { app_role: "ADMIN" }],
+      ["u1", { app_role: "ADMIN" }],
+      ["u2", {}],
+    ]);
+    const lines = details(claimFindings(plan, hook, tokens, undefined, hookPlan));
+    expect(lines[0]).toBe("warn the hook warns");
+    expect(lines.find((l) => l.includes("app_role"))).toMatch(
+      /; added by the access token hook pg-functions:\/\/postgres\/public\/custom_access_token_hook, which audit cannot give rows to \(its body reads no public table\); held: ADMIN u0 u1, none u2\. Rules that read it are tested for these values only$/,
+    );
+    expect(details(claimFindings(plan, hook, undefined, undefined, hookPlan)).find((l) => l.includes("app_role"))).toMatch(
+      /which audit cannot give rows to \(its body reads no public table\)\. Rules that read it are tested only for the values run users' tokens carry$/,
+    );
+  });
+
+  it("warns about a hook that runs off this machine, printed without its secrets", () => {
     expect(details(claimFindings(plan, { uri: "https://hooks.example.com/claims" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/claims is not on this machine/);
+    expect(details(claimFindings(plan, { uri: "https://u:pw@hooks.example.com/claims?key=k" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/claims is not/);
     expect(remoteHook("http://127.0.0.1:3000/hook")).toBe(false);
     expect(remoteHook("http://[::1]:3000/hook")).toBe(false);
     expect(remoteHook("https://[2001:db8::1]/hook")).toBe(true);
