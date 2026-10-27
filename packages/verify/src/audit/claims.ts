@@ -1,6 +1,6 @@
 /**
  * The token claims a project's rules read, found in its RLS policies (as Postgres prints
- * them, reading SQL wrapper functions one level) and its sync config, and what audit can
+ * them, reading SQL wrapper functions two levels deep) and its sync config, and what audit can
  * do about each: a user id it already gives (identity), a value every run user shares, a
  * value audit can set (app_metadata, user_metadata), one only an access token hook adds,
  * or a read it cannot follow. Every read audit cannot set or cannot follow is reported,
@@ -108,24 +108,23 @@ export async function policyRules(client: pg.Client): Promise<RuleSql[]> {
   ]);
 }
 
+/** Schemas Supabase itself manages: their functions are its own, not the project's. */
+const SUPABASE_SCHEMAS = ["storage", "realtime", "_realtime", "graphql", "graphql_public", "vault", "pgsodium", "pgsodium_masks", "supabase_functions", "net", "pgbouncer", "cron", "supabase_migrations", "_analytics"];
+
 /**
  * The bodies of the functions public policies call (in any schema but the system ones and
  * auth, whose token readers are read as such), and of every function the project defines
  * itself (outside the system and Supabase schemas and extensions), so a policy
  * whose function reads the token through another one is reported too. Keyed by how a call
  * names them: schema.name (policies are read with an empty search_path), and the bare name
- * for public ones. Functions with arguments are listed, so a call that reads the token is
- * reported even though it is not read through; of overloads, the one with no arguments
- * (the only kind read through) wins the key.
+ * for public ones; each overload also as name/min-max, the argument counts it takes, which
+ * a call is matched to by its own count.
  */
-/** Schemas Supabase itself manages: their functions are its own, not the project's. */
-const SUPABASE_SCHEMAS = ["storage", "realtime", "_realtime", "graphql", "graphql_public", "vault", "pgsodium", "pgsodium_masks", "supabase_functions", "net", "pgbouncer", "cron", "supabase_migrations", "_analytics"];
-
 export async function policyFunctions(client: pg.Client): Promise<Map<string, string>> {
   const fns = await qualified(client, () =>
-    rows<{ schema: string; name: string; args: number; body: string | null }>(
+    rows<{ schema: string; name: string; args: number; defaults: number; variadic: boolean; body: string | null }>(
       client,
-      `select fn.nspname as schema, f.proname as name, f.pronargs as args,
+      `select fn.nspname as schema, f.proname as name, f.pronargs as args, f.pronargdefaults as defaults, f.provariadic <> 0 as variadic,
             case when l.lanname = 'sql' then coalesce(pg_get_function_sqlbody(f.oid), f.prosrc) else f.prosrc end as body
        from pg_proc f join pg_namespace fn on fn.oid = f.pronamespace join pg_language l on l.oid = f.prolang
       where f.prokind = 'f'
@@ -138,14 +137,20 @@ export async function policyFunctions(client: pg.Client): Promise<Map<string, st
              or (not starts_with(fn.nspname, 'pg_')
                  and fn.nspname not in ('extensions', ${SUPABASE_SCHEMAS.map((x) => `'${x}'`).join(", ")})
                  and not exists (select from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = f.oid and e.deptype = 'e')))
-      order by 1, 2, 3 desc`,
+      order by 1, 2, 3`,
     ),
   );
   const out = new Map<string, string>();
+  // Each overload by the argument counts it takes (name/min-max), and the name alone for all
+  // of them: their bodies together, so a call matched by name alone sees any that reads the token.
+  const add = (key: string, body: string) => out.set(key, out.has(key) ? `${out.get(key)}\n;\n${body}` : body);
   for (const f of fns) {
     if (f.body === null) continue;
-    out.set(`${f.schema}.${f.name}`, f.body);
-    if (f.schema === "public") out.set(f.name, f.body);
+    const range = `${f.args - f.defaults}-${f.variadic ? "*" : f.args}`;
+    for (const name of f.schema === "public" ? [`${f.schema}.${f.name}`, f.name] : [`${f.schema}.${f.name}`]) {
+      out.set(`${name}/${range}`, f.body);
+      add(name, f.body);
+    }
   }
   return out;
 }

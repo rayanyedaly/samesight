@@ -126,6 +126,29 @@ describe("claim discovery on the demo's catalog", () => {
   });
 });
 
+describe("overloaded policy functions on the demo's catalog", () => {
+  it("reads the overload a policy's call runs, and keys each by the argument counts it takes", async () => {
+    const plan = await rolledBack(client, async () => {
+      await client.query("create function public.samesight_test_role() returns text language sql stable as $$ select auth.jwt() -> 'app_metadata' ->> 'role' $$");
+      await client.query("create function public.samesight_test_role(l uuid, n int default 1) returns text language sql stable as $$ select 'member' $$");
+      await client.query("create policy samesight_role on public.lists for select to authenticated using (public.samesight_test_role() = 'admin')");
+      await client.query("create policy samesight_role2 on public.lists for select to authenticated using (public.samesight_test_role(id) = 'admin')");
+      const functions = await policyFunctions(client);
+      expect([...functions.keys()].filter((k) => k.includes("samesight_test_role")).sort()).toEqual([
+        "public.samesight_test_role",
+        "public.samesight_test_role/0-0",
+        "public.samesight_test_role/1-2",
+        "samesight_test_role",
+        "samesight_test_role/0-0",
+        "samesight_test_role/1-2",
+      ]);
+      return planClaims(await policyRules(client), functions);
+    });
+    expect(plan.uses.find((u) => u.key === "app_metadata.role")?.rules).toEqual(['policy "samesight_role" on lists (USING)']);
+    expect(plan.unreadable.filter((x) => x.where.includes("samesight_role2"))).toEqual([]);
+  });
+});
+
 describe("the audit catalog's publication and table checks", () => {
   const planted = (sql: string[], tables = SYNCED) =>
     rolledBack(client, async () => {

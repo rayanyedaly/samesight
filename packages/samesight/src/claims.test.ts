@@ -337,3 +337,44 @@ describe("callsIn", () => {
     expect(claimReads("h(x)", "postgres", { functions: new Map([...functions, ["Org", "select 1"]]) }).unreadable).toEqual([]);
   });
 });
+
+describe("overloads and wrappers two levels deep", () => {
+  const jwtRole = "SELECT ((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text)";
+  it("reads a call by the overload its argument count runs", () => {
+    const functions = new Map([
+      ["f", `${jwtRole}\n;\nSELECT 1 FROM members WHERE id = $1`],
+      ["f/0-0", jwtRole],
+      ["f/1-1", "SELECT 1 FROM members WHERE id = $1"],
+    ]);
+    expect(reads("(f() = 'admin'::text)", "postgres", functions)).toEqual([{ path: "app_metadata.role", compared: lit(["admin"]) }]);
+    expect(claimReads("f(org_id)", "postgres", { functions })).toEqual({ reads: [], unreadable: [] });
+  });
+
+  it("reports a call several overloads could run when any reads the token, never picking one", () => {
+    const functions = new Map([
+      ["g", `select 1\n;\n${jwtRole}`],
+      ["g/1-1", "select 1"],
+      ["g/1-2", jwtRole],
+    ]);
+    expect(claimReads("g(x)", "postgres", { functions }).unreadable).toEqual([{ text: "g", reason: "calls g, one of whose overloads reads the token" }]);
+    // Two arguments: only g/1-2 takes them.
+    expect(claimReads("g(x, y)", "postgres", { functions }).unreadable).toEqual([{ text: "g", reason: "calls g, which reads the token in a way this cannot follow" }]);
+  });
+
+  it("takes a listed name without counts for any arity, as before", () => {
+    expect(reads("(h() = 'x'::text)", "postgres", new Map([["h", jwtRole]]))).toEqual([{ path: "app_metadata.role", compared: lit(["x"]) }]);
+  });
+
+  it("reads a wrapper of a wrapper, and reports one three deep", () => {
+    const functions = new Map([
+      ["outer", "SELECT public.inner()"],
+      ["public.inner", jwtRole],
+      ["top", "SELECT outer()"],
+    ]);
+    expect(reads("(outer() = 'admin'::text)", "postgres", functions)).toEqual([{ path: "app_metadata.role", compared: lit(["admin"]) }]);
+    expect(claimReads("(top() = 'admin'::text)", "postgres", { functions })).toEqual({
+      reads: [],
+      unreadable: [{ text: "top", reason: "calls top, which reads the token in a way this cannot follow" }],
+    });
+  });
+});
