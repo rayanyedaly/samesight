@@ -4,18 +4,31 @@
  * against a PowerSync service run some other way.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 
-/** Runs `docker` with these arguments; rejects with the process error, stdout and stderr attached. */
-export type Exec = (args: string[]) => Promise<{ stdout: string; stderr: string }>;
+/**
+ * Runs `docker` with these arguments; rejects with the process error, stdout and stderr
+ * attached. `env` is added to docker's own environment: a secret passed as `--env NAME`
+ * with its value there never shows on a command line other users can list.
+ */
+export type Exec = (args: string[], env?: Record<string, string>) => Promise<{ stdout: string; stderr: string }>;
 
-export const execDocker: Exec = (args) =>
+export const execDocker: Exec = (args, env) =>
   new Promise((resolve, reject) => {
-    execFile("docker", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+    execFile("docker", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true, env: { ...process.env, ...env } }, (err, stdout, stderr) => {
       if (err) reject(Object.assign(err, { stdout, stderr }));
       else resolve({ stdout, stderr });
     });
   });
+
+/** Runs `docker` with its output shown on stderr as it comes (an image pull's progress). */
+export function streamDocker(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("docker", args, { stdio: ["ignore", 2, 2], windowsHide: true });
+    child.on("error", (e) => reject(explain(args, e)));
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new DockerError(`docker ${args[0]} failed (exit ${code})`))));
+  });
+}
 
 export class DockerError extends Error {}
 
@@ -44,9 +57,9 @@ export class Docker {
   }
 
   /** Runs docker and returns its trimmed stdout, or throws a DockerError that says what to do. */
-  async run(args: string[]): Promise<string> {
+  async run(args: string[], env?: Record<string, string>): Promise<string> {
     try {
-      return (await this.exec(args)).stdout.trim();
+      return (await this.exec(args, env)).stdout.trim();
     } catch (e) {
       throw explain(args, e);
     }

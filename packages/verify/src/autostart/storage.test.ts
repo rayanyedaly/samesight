@@ -5,20 +5,22 @@ import { POSTGRES_IMAGE, removeContainers, startStorage } from "./storage.ts";
 /** A fake docker whose pg_isready fails `notReady` times before it answers. */
 function fake(notReady: number, rmError?: string) {
   const calls: string[][] = [];
+  const envs: (Record<string, string> | undefined)[] = [];
   let left = notReady;
-  const exec: Exec = async (args) => {
+  const exec: Exec = async (args, env) => {
     calls.push(args);
+    envs.push(env);
     if (args[0] === "exec" && left-- > 0) throw Object.assign(new Error("failed"), { stderr: "127.0.0.1:5432 - no response" });
     if (args[0] === "rm" && rmError) throw Object.assign(new Error("failed"), { stderr: rmError });
     if (args[0] === "logs") return { stdout: "database system is starting up", stderr: "" };
     return { stdout: "", stderr: "" };
   };
-  return { docker: new Docker(exec), calls };
+  return { docker: new Docker(exec), calls, envs };
 }
 
 describe("startStorage", () => {
   it("runs the pinned Postgres on the network, labelled, on a tmpfs, and waits for TCP", async () => {
-    const { docker, calls } = fake(2);
+    const { docker, calls, envs } = fake(2);
     const s = await startStorage(docker, "a1b2c3d4", "supabase_network_todo");
     expect(s.container).toBe("samesight-audit-a1b2c3d4-storage");
     expect(s.uri).toMatch(/^postgresql:\/\/powersync_storage:[0-9a-f]{48}@samesight-audit-a1b2c3d4-storage:5432\/powersync_storage$/);
@@ -37,6 +39,10 @@ describe("startStorage", () => {
       "--env",
     ]);
     expect(run.at(-1)).toBe(POSTGRES_IMAGE);
+    // The password is in docker's environment, not on its command line.
+    expect(run).toContain("POSTGRES_PASSWORD");
+    expect(run.join(" ")).not.toMatch(/POSTGRES_PASSWORD=/);
+    expect(s.uri).toContain(envs[0]?.POSTGRES_PASSWORD as string);
     expect(run).not.toContain("--publish");
     expect(calls.filter((c) => c[0] === "exec")).toHaveLength(3);
     expect(calls[1]).toContain("127.0.0.1");

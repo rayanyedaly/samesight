@@ -42,10 +42,11 @@ export async function startStorage(docker: Docker, run: string, network: string,
     "POSTGRES_DB=powersync_storage",
     "--env",
     "POSTGRES_USER=powersync_storage",
+    // The value comes from docker's environment, so it never shows on a command line.
     "--env",
-    `POSTGRES_PASSWORD=${password}`,
+    "POSTGRES_PASSWORD",
     POSTGRES_IMAGE,
-  ]);
+  ], { POSTGRES_PASSWORD: password });
   // Over TCP: the image's first-start server listens on its socket only, then restarts.
   const deadline = Date.now() + timeoutMs;
   for (;;) {
