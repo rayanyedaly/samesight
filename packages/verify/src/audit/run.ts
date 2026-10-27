@@ -12,7 +12,7 @@ import { readModel, sqlHints } from "../differential/model.ts";
 import type { Teardown } from "../autostart/teardown.ts";
 import { differential, PREFIX, type Run, runUserIds, setUpUsers, stoppable, type UserClaims } from "../differential/run.ts";
 import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
-import { type Assignment, assignClaims, MAX_USERS, metadataOf } from "./assign.ts";
+import { type Assignment, assignClaims, MAX_USERS, metadataOf, valueKeyFor } from "./assign.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
@@ -293,8 +293,9 @@ export function hookKeysHeld(claims: ClaimsPlan, tokens: Map<string, Record<stri
   return claims.uses
     .filter((u) => u.cls === "hook")
     .filter((u) => {
-      const carried = new Set([...tokens.values()].map((t) => JSON.stringify(at(t, u.path) ?? null)));
-      return carried.size >= 2 && u.values.every((v) => carried.has(JSON.stringify(v)));
+      const same = valueKeyFor(u.numeric);
+      const carried = new Set([...tokens.values()].map((t) => same(at(t, u.path) ?? null)));
+      return carried.size >= 2 && u.values.every((v) => carried.has(same(v)));
     })
     .map((u) => u.key);
 }

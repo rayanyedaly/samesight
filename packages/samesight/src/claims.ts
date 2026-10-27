@@ -430,6 +430,16 @@ function typeAt(t: Token[], i: number): { type: string; end: number } | undefine
   return { type: parts.join(""), end: j };
 }
 
+const NUMERIC_TYPE = /^(int[248]?|integer|bigint|smallint|numeric|real|double precision|float[48]?|decimal)$/;
+/** Text Postgres reads as a number: optional sign, digits with an optional point, an optional exponent. */
+const NUMERIC_TEXT = /^\s*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/;
+
+/** The read's cast when it is numeric: an uncast literal compared with it is read as a number too, as Postgres does. */
+const numericCast = (casts: string[]): string[] => {
+  const cast = casts.at(-1)?.toLowerCase();
+  return cast && NUMERIC_TYPE.test(cast) ? [cast] : [];
+};
+
 /** A literal value from a single token, typed by the casts after it. */
 function literalValue(tok: Token, casts: string[]): ClaimValue | undefined {
   let v: ClaimValue | undefined;
@@ -449,10 +459,7 @@ function literalValue(tok: Token, casts: string[]): ClaimValue | undefined {
       return v;
     }
   }
-  if (typeof v === "string" && cast && /^(int[248]?|integer|bigint|smallint|numeric|real|double precision|float[48]?|decimal)$/.test(cast)) {
-    const n = Number(v);
-    return Number.isNaN(n) ? v : n;
-  }
+  if (typeof v === "string" && cast && NUMERIC_TYPE.test(cast) && NUMERIC_TEXT.test(v)) return Number(v);
   if (typeof v === "string" && (cast === "boolean" || cast === "bool")) return v === "true" || v === "t" ? true : v === "false" || v === "f" ? false : v;
   return v;
 }
@@ -584,13 +591,14 @@ function bare(side: Token[]): { tokens: Token[]; casts: string[] } {
 }
 
 /** A list of literals: 'a', 'b'::text, ... (from IN (...) or ARRAY[...]). */
-function literalList(items: Token[]): ClaimValue[] | undefined {
+function literalList(items: Token[], readCasts: string[] = []): ClaimValue[] | undefined {
   const values: ClaimValue[] = [];
   let depth = 0;
   let current: Token[] = [];
   const flush = () => {
     const b = bare(current);
-    const v = b.tokens.length === 1 ? literalValue(b.tokens[0] as Token, b.casts) : undefined;
+    // A literal's own cast wins; an uncast one takes the read's numeric type.
+    const v = b.tokens.length === 1 ? literalValue(b.tokens[0] as Token, b.casts.length ? b.casts : numericCast(readCasts)) : undefined;
     current = [];
     if (v === undefined) return false;
     values.push(v);
@@ -635,10 +643,11 @@ function arrayList(t: Token[], from: number, close: number): { from: number; to:
 }
 
 /** What one side of a comparison is. */
-function classifySide(side: Token[], negated: boolean): Compared {
+function classifySide(side: Token[], negated: boolean, readCasts: string[] = []): Compared {
   const b = bare(side);
   if (b.tokens.length === 1) {
-    const v = literalValue(b.tokens[0] as Token, b.casts);
+    // A literal's own cast wins; an uncast one takes the read's numeric type ('01' = (read)::integer is 1).
+    const v = literalValue(b.tokens[0] as Token, b.casts.length ? b.casts : numericCast(readCasts));
     if (v !== undefined) return { kind: "literals", values: [v], negated };
     const n = name(b.tokens[0]);
     if (n) return { kind: "column", column: n, negated };
@@ -680,7 +689,7 @@ function comparedWith(t: Token[], s: Span): Compared {
     if (word(right, "in") || notIn) {
       const open = s.end + (notIn ? 3 : 2);
       const close = sym(t[open], "(") ? closing(t, open) : -1;
-      const values = close > 0 && rightEdge(t, close + 1) ? literalList(t.slice(open + 1, close)) : undefined;
+      const values = close > 0 && rightEdge(t, close + 1) ? literalList(t.slice(open + 1, close), s.casts) : undefined;
       return values ? flip({ kind: "literals", values, negated: notIn }, s.start, close) : other();
     }
     if (right?.kind === "symbol" && COMPARE.has(right.text)) {
@@ -693,20 +702,20 @@ function comparedWith(t: Token[], s: Span): Compared {
         const inLike = (right.text === "=") === word(t[s.end + 2], "any");
         if (list && !inLike) return other();
         if (list) {
-          const values = rightEdge(t, close + 1) ? literalList(t.slice(list.from, list.to)) : undefined;
+          const values = rightEdge(t, close + 1) ? literalList(t.slice(list.from, list.to), s.casts) : undefined;
           return values ? flip({ kind: "literals", values, negated }, s.start, close) : other();
         }
       }
       const side = operand(t, s.end + 2, 1);
       if (!rightEdge(t, s.end + 2 + side.length)) return other();
-      return flip(classifySide(side, negated), s.start, s.end + 1 + side.length);
+      return flip(classifySide(side, negated, s.casts), s.start, s.end + 1 + side.length);
     }
   }
   if (left?.kind === "symbol" && COMPARE.has(left.text) && rightEdge(t, s.end + 1)) {
     const side = operand(t, s.start - 2, -1);
     const from = s.start - 1 - side.length;
     if (!leftEdge(t, from - 1)) return other();
-    return flip(classifySide(side, left.text !== "="), from, s.end);
+    return flip(classifySide(side, left.text !== "=", s.casts), from, s.end);
   }
   // The read alone as a condition: true when it holds.
   if (leftEdge(t, s.start - 1) && rightEdge(t, s.end + 1)) return { kind: "literals", values: [true], negated: negatedAround(t, s.start, s.end) };

@@ -24,6 +24,18 @@ describe("claimReads on SQL it used to refuse or misread", () => {
     ]);
   });
 
+  it("reads an uncast literal compared with a numeric read as a number, as Postgres does, and leaves text reads alone", () => {
+    // As a function body or hand-written SQL has it; Postgres folds '01' itself when it prints a policy.
+    const level = "((auth.jwt() -> 'app_metadata'::text) ->> 'level'::text)";
+    expect(reads(`((${level})::integer = '01')`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([1]), casts: ["integer"] }]);
+    expect(reads(`((${level})::integer IN ('01', '2'))`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([1, 2]), casts: ["integer"] }]);
+    expect(reads(`((${level})::integer = ANY (ARRAY['01', '2']))`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([1, 2]), casts: ["integer"] }]);
+    expect(reads(`(${level} = '01')`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit(["01"]) }]);
+    // The literal's own cast wins, and text that is no number stays text.
+    expect(reads(`((${level})::integer = '01'::text)`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit(["01"]), casts: ["integer"] }]);
+    expect(reads(`((${level})::integer = '')`, "postgres")).toEqual([{ path: "app_metadata.level", compared: lit([""]), casts: ["integer"] }]);
+  });
+
   it("reads public.table.column as that table's column, and another schema's as no column of the run's", () => {
     expect(reads("(auth.uid() = public.lists.owner_id)", "postgres")).toEqual([{ path: "sub", compared: { ...col("owner_id"), qualifier: "lists" } }]);
     expect(reads("(auth.uid() = private.lists.owner_id)", "postgres")).toEqual([{ path: "sub", compared: { kind: "other", text: "private.lists.owner_id" } }]);
