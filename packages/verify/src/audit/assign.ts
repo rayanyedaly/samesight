@@ -36,6 +36,8 @@ export interface SetPath {
   skipped: string[];
   /** Primary keys of that name no rule names the table of, so none is keyed (said once per name). */
   unkeyed: string[];
+  /** The pool is the ids of the first run users, by index (u0, u1). */
+  users?: true;
 }
 
 export type Metadata = Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>;
@@ -102,7 +104,7 @@ function targetsOf(columns: string[], columnTables: Record<string, string[]>, fa
         continue;
       }
       const fk = t.foreignKeys.find((k) => k.columns.length === 1 && k.columns[0] === name);
-      if (fk?.schema === "auth") {
+      if (fk?.schema === "auth" && fk.table === "users") {
         // Generated rows already point such a column at run users: the claim holds their ids.
         targets.push({ table: t.name, column: name, key: false, users: true, type: col.type });
       } else if (fk) {
@@ -279,8 +281,9 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
       const values = u.values.filter((v) => v !== null);
       let pool: ClaimValue[] | undefined;
       if (values.length === 0 && u.columns.length > 0) {
-        // Compared with a user column: the ids of two run users (u0 and u1), which rows point at.
-        const userPool = targets.some((x) => x.users) && userIds.length >= COLUMN_POOL ? userIds.slice(0, COLUMN_POOL) : undefined;
+        // Compared only with user columns: the ids of two run users (u0 and u1), which rows point at.
+        // Beside other columns, those take fresh values, which no user column can hold.
+        const userPool = targets.length > 0 && targets.every((x) => x.users) && userIds.length >= COLUMN_POOL ? userIds.slice(0, COLUMN_POOL) : undefined;
         if (!userPool) for (const x of targets.filter((y) => y.users)) skipped.push(`${x.table}.${x.column} (a key to auth.users, which takes only run users' ids)`);
         pool = userPool ?? (targets.length && families.size <= 1 && !families.has("unknown") ? columnPool(targets.filter((x) => !x.users), lead, fresh) : undefined);
         if (!pool) {
@@ -336,7 +339,7 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
         notSet.set(u.key, `it is compared only with ${u.columns.length === 1 ? "column" : "columns"} ${u.columns.join(", ")}, and no generated row can hold its values: ${[...skipped, ...found.unkeyed].join("; ")}`);
         continue;
       }
-      paths.push({ path: u.path, key: u.key, pool, columns: placed, skipped, unkeyed: found.unkeyed });
+      paths.push({ path: u.path, key: u.key, pool, columns: placed, skipped, unkeyed: found.unkeyed, ...(pool.length && pool.every((v) => typeof v === "string" && userIds.includes(v)) ? { users: true as const } : {}) });
     }
   }
 

@@ -268,7 +268,11 @@ export function claimFindings(
           const columns = `${placed}${notIn.length ? `; not in ${notIn.join("; ")}` : ""}`;
           // An unkeyed primary key is only a note when the values went into some column.
           const steered = set.skipped.length === 0 && (set.unkeyed.length === 0 || set.columns.length > 0);
-          if (!tokens) add(steered ? "ok" : "warn", `${read}; a full run gives users ${set.pool.map(show).join(", ")}, and one user none of them (not run: --static)${columns}`);
+          if (!tokens) {
+            // Run user ids are minted per run: shown as whose they are.
+            const given = set.users ? set.pool.map((_, i) => `u${i}'s id`) : set.pool.map(show);
+            add(steered ? "ok" : "warn", `${read}; a full run gives users ${given.join(", ")}, and one user none of them (not run: --static)${columns}`);
+          }
           else {
             const { line, all } = heldLine(tokens, set);
             add(all && steered ? "ok" : "warn", `${read}; held: ${line}${columns}`);
