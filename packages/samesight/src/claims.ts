@@ -25,7 +25,7 @@ export type Compared =
   /** Fixed values; `negated` for <>, NOT IN, <> ALL and IS NOT. */
   | { kind: "literals"; values: ClaimValue[]; negated: boolean }
   /** A column, by its bare name. */
-  | { kind: "column"; column: string; negated: boolean }
+  | { kind: "column"; column: string; negated: boolean; qualifier?: string }
   /** Anything else around the read, as written. */
   | { kind: "other"; text: string };
 
@@ -479,7 +479,7 @@ function classifySide(side: Token[], negated: boolean): Compared {
   }
   // alias.column (not a call: no parenthesis follows).
   if (b.tokens.length === 3 && name(b.tokens[0]) && sym(b.tokens[1], ".") && name(b.tokens[2])) {
-    return { kind: "column", column: name(b.tokens[2]) as string, negated };
+    return { kind: "column", column: name(b.tokens[2]) as string, negated, qualifier: name(b.tokens[0]) as string };
   }
   return { kind: "other", text: sqlText(side) };
 }

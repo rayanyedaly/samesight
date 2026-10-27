@@ -4,7 +4,7 @@ import { claimLabel } from "../differential/run.ts";
 import type { TableModel } from "../differential/model.ts";
 import { createUsers, signIn } from "../differential/users.ts";
 import type { Stack } from "../stack.ts";
-import { assignClaims, metadataOf, otherValue, pickCombinations, show } from "./assign.ts";
+import { assignClaims, fitsType, metadataOf, otherValue, pickCombinations, show } from "./assign.ts";
 import { claimFindings, planClaims, type RuleSql } from "./claims.ts";
 
 const policy = (where: string, sql: string): RuleSql => ({ where, sql, dialect: "postgres" });
@@ -227,7 +227,7 @@ describe("Auth's rate limit", () => {
 describe("claims compared with columns", () => {
   const col = (name: string, type: string, more: object = {}) => ({ name, type, nullable: false, hasDefault: false, computed: false, hints: [], ...more });
   const model: TableModel[] = [
-    { name: "orgs", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("name", "text")], foreignKeys: [] },
+    { name: "orgs", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("name", "text"), col("seats", "integer"), col("code", "character varying(3)")], foreignKeys: [] },
     {
       name: "documents",
       primaryKey: ["id"],
@@ -276,5 +276,29 @@ describe("claims compared with columns", () => {
     expect(a.paths.map((p) => [p.pool, p.columns])).toEqual([[["published", "samesight-other"], ["documents.status"]]]);
     // samesight-other is not in status's CHECK list: rows could not hold it.
     expect(a.claimValues.get("documents")?.get("status")).toEqual(["published"]);
+  });
+
+  const stream = (table: string, sql: string): RuleSql => ({ where: `${table} stream`, sql, dialect: "streams", table });
+
+  it("takes a joined column's table from its qualifier", () => {
+    const plan = planClaims([
+      stream("documents", "SELECT documents.* FROM documents INNER JOIN orgs ON orgs.id = documents.org_id WHERE orgs.id = auth.parameter('app_metadata') ->> 'org_id'"),
+    ]);
+    expect(plan.uses.find((u) => u.key === "app_metadata.org_id")?.columnTables).toEqual({ id: ["orgs"] });
+    expect(assignClaims(plan, fresh, model).keyPools.get("orgs")?.column).toBe("id");
+  });
+
+  it("gives an uncast claim's values only to columns of the first column's type", () => {
+    const plan = planClaims([stream("orgs", "SELECT * FROM orgs WHERE seats = auth.parameter('app_metadata') ->> 'o'"), stream("documents", "SELECT * FROM documents WHERE org_id = auth.parameter('app_metadata') ->> 'o'")]);
+    const [path] = assignClaims(plan, fresh, model).paths;
+    expect(path).toMatchObject({ pool: [101, 102], columns: ["orgs.seats"], skipped: ["orgs.id (uuid, unlike orgs.seats)"] });
+  });
+
+  it("never keys every table's id when the rule's table is unknown, and keeps values within a column's length", () => {
+    const sub = planClaims([{ where: "w", sql: `(EXISTS ( SELECT 1 FROM public.orgs o WHERE (o.id = (${read("org_id")})::uuid)))`, dialect: "postgres" }]);
+    expect(assignClaims(sub, fresh, model).keyPools).toEqual(new Map());
+    const short = planClaims([on("orgs", `(code = ${read("code")})`)]);
+    expect(assignClaims(short, fresh, model).paths[0]).toMatchObject({ pool: ["ss-a", "ss-b"], columns: [], skipped: ["orgs.code (character varying(3) takes none of the values)"] });
+    expect([fitsType("ss-a", "character varying(4)"), fitsType("ss-a", "character varying(3)"), fitsType(3, "uuid"), fitsType("3", "integer"), fitsType("x", "text")]).toEqual([true, false, false, true, true]);
   });
 });

@@ -118,7 +118,11 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const tables = await auditTables(client, named);
   // The metadata values each run user holds, and the columns generated rows put them in: a
   // uuid none of the rules name is one of the run's own (its prefix), so cleanup finds it.
-  const assignment = assignClaims(claims, () => prefixedUuid(PREFIX), await readModel(client, tables.map((name) => ({ name }))));
+  // The literals and user comparisons in the project's own rules steer the generated data.
+  const { hints, users } = sqlHints(rules.map((r) => r.sql).join("\n"));
+  // Columns compared with the user id in any spelling (auth.uid(), auth.jwt() ->> 'sub', token_parameters.user_id).
+  const userColumns = new Set([...users, ...claims.identityColumns]);
+  const assignment = assignClaims(claims, () => prefixedUuid(PREFIX), await readModel(client, tables.map((name) => ({ name, hints, userColumns }))));
   if (o.staticOnly || failed(findings)) {
     section("Claims", claimFindings(claims, hook, undefined, assignment));
     if (!o.staticOnly) o.log("skipping the differential: fix the failures above first");
@@ -128,10 +132,6 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   // Only the tables that exist: a query can read from a function (json_each) too.
   const stack = o.startPowerSync ? { ...given, ...(await o.startPowerSync(named.filter((t) => tables.includes(t)).sort())) } : given;
   o.log(`signing up users; generating rows for ${tables.join(", ")}`);
-  // The literals and user comparisons in the project's own rules steer the generated data.
-  const { hints, users } = sqlHints(rules.map((r) => r.sql).join("\n"));
-  // Columns compared with the user id in any spelling (auth.uid(), auth.jwt() ->> 'sub', token_parameters.user_id).
-  const userColumns = new Set([...users, ...claims.identityColumns]);
   let s: Run;
   try {
     s = await setUpUsers(

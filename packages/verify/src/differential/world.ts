@@ -191,7 +191,7 @@ export async function insertWorld(client: pg.Client, tables: TableModel[], world
     const fks = t.foreignKeys
       .map((fk, i) => ({ fk, i }))
       .sort((a, b) => self(a.fk) - self(b.fk) || anchored(a.fk) - anchored(b.fk) || b.fk.columns.length - a.fk.columns.length);
-    let generated = 0;
+    let keyed = 0;
     for (const gene of world[t.name] ?? []) {
       const row: Record<string, unknown> = { ...gene.values };
       if (tenant !== undefined) row[tenant] = fixed.tenants[gene.tenant % fixed.tenants.length];
@@ -208,13 +208,11 @@ export async function insertWorld(client: pg.Client, tables: TableModel[], world
         const col = t.columns.find((c) => c.name === pk);
         if (col?.type === "uuid") row[pk] = prefixedUuid(fixed.prefix);
       }
-      // The first rows take the keys run users hold in a claim (an org id), so rules comparing them match.
-      if (t.keyPool && generated < t.keyPool.values.length) row[t.keyPool.column] = t.keyPool.values[generated];
+      // The first rows take the keys run users hold in a claim (an org id), so rules comparing
+      // them match; each key is tried once, so a refused one leaves the rest of the table alone.
       if (!fks.every(({ fk, i }) => resolve(fk, gene.picks[i] ?? 0, row, t, fixed, done))) continue;
-      if (await insert(client, t.name, row)) {
-        generated++;
-        done.push({ table: t.name, row, tenant: tenant === undefined ? undefined : row[tenant] });
-      }
+      if (t.keyPool && keyed < t.keyPool.values.length) row[t.keyPool.column] = t.keyPool.values[keyed++];
+      if (await insert(client, t.name, row)) done.push({ table: t.name, row, tenant: tenant === undefined ? undefined : row[tenant] });
     }
   }
   return done.slice(existing.length);
