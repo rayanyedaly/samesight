@@ -19,6 +19,8 @@ The first published release.
 - `samesight explain` prints the compiled policy in plain words: a role by operation matrix, each rule, the columns clients write and those each role never receives.
 - Policy files load as `samesight.policy.ts` or `samesight.policy.mts`, with a clear error for a CommonJS package and for Node without TypeScript support.
 - `claimReads` (from `samesight/compiler`) finds the token claims a piece of SQL reads, in RLS as Postgres prints it, in sync streams and in sync rules, and what each is compared with: literals, a column, or something it names but cannot follow. `classify` says who sets a claim (Auth, the app's `app_metadata`, the user's `user_metadata`, an access token hook).
+- `claimReads` reads array slices (`(tags)[1:2]`), three-part names (`public.t.col`, `x.y.f()`) and every numeric constant (`1e3`, `.5`, `1.`), and refuses a table named with its database by name. A literal compared with a read cast to a number is that number (`'01'` is `1`) where a double holds it exactly. Overloads that differ only by argument type are reported as several bodies. `canonicalNumber` and `BODY_JOIN` are exported.
+- `client_id` is reserved as a claim name: Supabase Auth sets it on tokens an OAuth client gets.
 - Connects only to a database on this machine, found from the `[db]` port in `supabase/config.toml` unless `--db` says otherwise.
 - `apply_batch` treats a PUT whose row exists as a replay or an upsert: it updates the row where the caller may (last write wins) and otherwise leaves it, without ever putting it through the INSERT policy. It returns the number of ops it applied, and decodes json, jsonb and array values that PowerSync clients hold as text.
 - The compiler refuses what RLS and the streams would read differently: generated columns in read rules (logical replication does not send them), literals on arrays, json, citext and char(n), `real` literals a 4-byte float cannot hold, partitioned tables, and non-uuid ids or unquotable column names on tables clients write. A `powersync` publication made `FOR ALL TABLES` is replaced rather than failing the migration.
@@ -41,6 +43,10 @@ The first published release.
 - A run stopped by Ctrl+C, SIGTERM, SIGHUP or a closed output removes its users and rows too, not only the PowerSync service it started.
 - A sync config the PowerSync service refuses fails the start in seconds with the service's last log lines, and a device sync gives up once it has stayed unconnected to a failing service for 10 seconds.
 - A 429 from Supabase Auth at sign-in names the `[auth.rate_limit] sign_in_sign_ups` setting to raise.
+- Audit compares a claim's values as numbers where every rule reads it as one, and puts a claim read as text into number columns only as Postgres prints it back.
+- Columns compared with a claim an access token hook adds take the values the hook can add in generated rows. Audit warns when `anon` or `authenticated` can execute the hook, and on functions it calls three or more calls deep; a helper's `select *` counts as reading every column of its tables. With a hook enabled, `client_id`, `jti` and `nbf` count as the hook's claims.
+- Cleanup also removes an earlier run's rows from tables beyond this run's (an access token hook's, from a run made while it was on), as the project's own deletes would, and leaves rows only an optional column ties to a run user.
+- Policy mode removes its users and rows on Ctrl+C, SIGTERM, SIGHUP or a closed output, as audit does, and with `--mutate` puts the sync config back and restarts PowerSync as part of that; Ctrl+Break (SIGBREAK) counts on Windows. A stop that cannot finish says what is left and which run removes it.
 - The offline checks are exported for use in tests.
 
 ### @samesight/supabase
