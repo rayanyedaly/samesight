@@ -16,6 +16,7 @@ import { show } from "../audit/assign.ts";
 import { claimKey } from "../audit/claims.ts";
 import { type Coverage, measure, pending } from "../audit/coverage.ts";
 import { sendingQueries } from "./attribute.ts";
+import { likelyFixes } from "./fix.ts";
 import { policyVerdicts } from "./policies.ts";
 import { compare, type Problem } from "./compare.ts";
 import { syncOnce } from "./device.ts";
@@ -707,8 +708,8 @@ export interface DifferentialOptions {
   timeLimitMs: number;
   /** Audit only: counts which rules each passing dataset exercised, until the first failure. */
   coverage?: Coverage;
-  /** The sync config's streams, to name the query that sent a row of the counterexample. */
-  streams?: Stream[];
+  /** The sync config's streams, to name the query that sent a row of the counterexample and suggest a fix. */
+  sync?: { kind: "streams" | "bucket definitions"; streams: Stream[] };
 }
 
 export async function differential(s: Run, options: DifferentialOptions): Promise<DifferentialResult> {
@@ -786,8 +787,9 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
     const counterexample = await withWorld(s, world, async () => {
       const rows = reportRows(s, failing(await compareAll(s)));
       const claimsOf = (id: string) => s.sessions.get(id)?.claims;
-      if (options.streams) await sendingQueries(s.client, options.streams, rows, claimsOf);
+      if (options.sync) await sendingQueries(s.client, options.sync.streams, rows, claimsOf);
       await policyVerdicts(s.client, rows, claimsOf);
+      if (options.sync) await likelyFixes(s.client, options.sync, rows, claimsOf);
       return rows;
     });
     if (!counterexample.length) return fail(`a dataset failed (seed ${x.seed}) but passed when run again: devices may not have caught up${x.crash === undefined ? "" : ` (then ${RUN_FAILED}${String(x.crash)})`}`, x.datasets, true);

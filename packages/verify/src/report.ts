@@ -30,6 +30,8 @@ export interface RowReport {
   policies?: { name: string; permissive: boolean; verdict: "allows" | "refuses" }[];
   /** Why the policies were not evaluated, or what they say together. */
   policiesNote?: string;
+  /** For a leak the narrow rule covers: what to add to which query, checked against the row. */
+  fix?: { query: string; add: string; why: string };
 }
 
 /** What a row report says happened, with the streams that sent it when `via` is given. */
@@ -64,7 +66,8 @@ export function formatRow(r: RowReport): string[] {
   const by = r.kind === "gap" ? "allowed by" : "refused by";
   const policies = decided.map((p, i) => `${i === 0 ? label(by) : blank}${p.permissive ? "" : "restrictive "}policy "${p.name}" on ${r.table}`);
   const note = r.policiesNote ? [`${label("policies")}${r.policiesNote}`] : [];
-  return [`${r.kind}: ${rowSentence(r)}`, ...sent, ...policies, ...note];
+  const fix = r.fix ? [`${label("likely fix")}${r.fix.why}; add`, `${blank}${r.fix.add}`] : [];
+  return [`${r.kind}: ${rowSentence(r)}`, ...sent, ...policies, ...note, ...fix];
 }
 
 const MARK = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
