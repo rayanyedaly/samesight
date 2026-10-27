@@ -183,11 +183,11 @@ describe("watchErrors", () => {
 
   it("gives up once the service has kept failing for the window, and not before", () => {
     vi.useFakeTimers();
-    let flow: Flow = { downloading: false };
+    let flow: Flow = { connected: false, downloading: false };
     const gaveUp: string[] = [];
     watchErrors(() => flow, 10_000, (e) => gaveUp.push(e.message));
     vi.advanceTimersByTime(5_000);
-    flow = { downloading: false, error: new Error("fetch failed") };
+    flow = { connected: false, downloading: false, error: new Error("fetch failed") };
     vi.advanceTimersByTime(9_900);
     expect(gaveUp).toEqual([]);
     vi.advanceTimersByTime(500);
@@ -196,23 +196,25 @@ describe("watchErrors", () => {
     expect(gaveUp).toEqual(["fetch failed"]);
   });
 
-  it("starts again after a download, so an error the service recovers from is waited out", () => {
+  it("waits out a first sync after an error the service recovered from, though the SDK keeps the error set", () => {
     vi.useFakeTimers();
-    let flow: Flow = { downloading: false, error: new Error("first") };
+    const error = new Error("fetch failed");
+    let flow: Flow = { connected: false, downloading: false, error };
     const gaveUp: string[] = [];
     const stop = watchErrors(() => flow, 10_000, (e) => gaveUp.push(e.message));
-    vi.advanceTimersByTime(8_000);
-    flow = { downloading: true };
-    vi.advanceTimersByTime(1_000);
-    flow = { downloading: false, error: new Error("second") };
-    vi.advanceTimersByTime(8_000);
+    vi.advanceTimersByTime(5_000);
+    // The retry connects; the error stays set until a sync completes, as @powersync/common keeps it.
+    flow = { connected: true, downloading: false, error };
+    vi.advanceTimersByTime(20_000);
+    flow = { connected: true, downloading: true, error };
+    vi.advanceTimersByTime(30_000);
     expect(gaveUp).toEqual([]);
-    // An error between attempts with nothing downloaded still counts from its start.
-    flow = { downloading: false };
-    vi.advanceTimersByTime(1_000);
-    flow = { downloading: false, error: new Error("third") };
+    // Disconnected again: the window counts from there.
+    flow = { connected: false, downloading: false, error: new Error("second") };
+    vi.advanceTimersByTime(9_000);
+    expect(gaveUp).toEqual([]);
     vi.advanceTimersByTime(1_500);
-    expect(gaveUp).toEqual(["third"]);
+    expect(gaveUp).toEqual(["second"]);
     stop();
   });
 });
