@@ -47,8 +47,13 @@ export function rowSentence(r: Pick<RowReport, "kind" | "user" | "row" | "column
 
 /** A row report's lines: what happened, then where it came from, each under a label. */
 export function formatRow(r: RowReport): string[] {
-  const sent = r.sentBy.map((x) => (x.query ? `stream ${x.stream}, ${x.query}` : `stream ${x.stream}`)).join("; ");
-  return [`${r.kind}: ${rowSentence(r)}`, ...(sent ? [`  sent by    ${sent}`] : [])];
+  const label = (name: string) => `  ${name.padEnd(11)}`;
+  const blank = " ".repeat(13);
+  const sent = r.sentBy.flatMap((x, i) => [
+    `${i === 0 ? label("sent by") : blank}stream ${x.stream}${x.query ? `, ${x.query}` : ""}`,
+    ...(x.sql ? [`${blank}${x.sql.replace(/\s+/g, " ").trim()}`] : []),
+  ]);
+  return [`${r.kind}: ${rowSentence(r)}`, ...sent];
 }
 
 const MARK = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;

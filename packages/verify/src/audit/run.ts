@@ -166,7 +166,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     // Claims users hold values of: what audit set, and what the hook added from their rows when tokens differ.
     const held = new Set([...assignment.paths.map((x) => x.key), ...hookKeysHeld(claims, tokens)]);
     const coverage = await coverageScope(client, scope.synced, config.streams, p.functions, config.kind, held);
-    const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
+    const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, streams: config.streams, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
     section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, qualifyDifferential(result.findings, coverage));
     section(coverageTitle(coverage, result), coverageFindings(coverage, held, assignment.partial, new Set(claims.uses.filter((u) => u.cls === "hook").map((u) => u.key))));
     o.log("writing as each user");
