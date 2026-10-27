@@ -20,7 +20,7 @@ import { accessTokenHook, at, claimFindings, type ClaimsPlan, planClaims, policy
 import { auditScope } from "samesight/compiler";
 import { parseSyncConfig, type SyncConfig } from "samesight/compiler";
 import { coverageFindings, coverageScope, coverageTitle, qualifyDifferential } from "./coverage.ts";
-import { type Dim, type FixedPlan, type FixedRow, fixedPlan, fixedRows, hookDims } from "./fixed.ts";
+import { type Dim, type FixedPlan, type FixedRow, fixedPlan, fixedRows, hookDims, userColumn } from "./fixed.ts";
 import { type HookPlan, planHook, showUri } from "./hook.ts";
 import { checkWriteEscape } from "./writes.ts";
 
@@ -213,7 +213,7 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
   const tables = await auditTables(client, [...named, ...(fixed?.perUser ?? [])]);
   const model = await modelOf(tables);
   // A column counts as one the hook reads when its body or a function it calls names it.
-  const dims = fixed && hookPlan?.fn ? hookDims(model, fixed, hookPlan.fn.read, undefined, hookPlan.fn.body) : [];
+  const dims = fixed && hookPlan?.fn ? hookDims(model, fixed, hookPlan.fn.read, hookPlan.fn.body) : [];
   // Run users' ids are minted up front, so a claim compared with a user column can hold two of
   // them, and the hook's rows can point at them.
   const userIds = runUserIds(MAX_USERS);
@@ -257,7 +257,8 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
                 rows: rowsGiven,
                 // Rows a trigger made for a new user (a default role) would stand beside, or block, the ones audit gives.
                 clear: fixed.perUser.flatMap((t) => {
-                  const column = model.find((m) => m.name === t)?.foreignKeys.find((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1)?.columns[0];
+                  const table = model.find((m) => m.name === t);
+                  const column = table ? userColumn(table) : undefined;
                   return column ? [{ table: t, column }] : [];
                 }),
                 ...(hook ? { hook: showUri(hook.uri) } : {}),
