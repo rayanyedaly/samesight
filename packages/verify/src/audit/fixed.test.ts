@@ -135,6 +135,8 @@ describe("fixed rows across keys", () => {
     const plan = fixedPlan(model, ["memberships"]);
     expect(hookDims(model, plan, "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
     expect(hookDims(model, plan, "select m.* from public.memberships m").map((d) => d.column)).toEqual(["team_id", "role"]);
+    // A helper's select * reads its own table, not every column of the hook's.
+    expect(hookDims(model, plan, "select team_id from public.memberships\n;\nselect * from settings", undefined, "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
     const rows = fixedRows(model, plan, [], [], [], mint, undefined, undefined, (t) => (t === "teams" ? new Map([["name", ["red", "blue"]]]) : undefined));
     expect(rows.map((r) => r.row.name)).toEqual(["red", "blue"]);
   });
@@ -175,6 +177,22 @@ describe("deleteRows on a table found by its user column alone", () => {
       ['delete from public.memberships where id::text like $1 or user_id = any($2::uuid[])', ["5a3e5a3e%", ["u0"]]],
       ['delete from public.user_roles where user_id = any($1::uuid[])', [["u0"]]],
     ]);
+  });
+
+  it("takes a table keyed by team and user with an optional inviter, by its required user column", async () => {
+    const members: TableModel = {
+      name: "team_members",
+      primaryKey: ["team_id", "user_id"],
+      unique: [],
+      columns: [col("team_id", "uuid"), col("user_id", "uuid"), col("invited_by", "uuid", { nullable: true })],
+      foreignKeys: [toUsers("invited_by"), toUsers("user_id"), to("team_id", "teams")],
+    };
+    expect(fixedPlan([teams, members], ["team_members"])).toMatchObject({ tables: ["teams", "team_members"], perUser: ["team_members"] });
+    const sql: [string, unknown[]][] = [];
+    await deleteRows({ query: async (text: string, values: unknown[] = []) => sql.push([text, values]) } as never, [members], "5a3e5a3e", ["u0"]);
+    expect(sql.filter(([t]) => t.startsWith("delete"))).toEqual([['delete from public.team_members where invited_by = any($1::uuid[]) or user_id = any($1::uuid[])', [["u0"]]]]);
+    const rows = fixedRows([teams, members], fixedPlan([teams, members], ["team_members"]), [], [[]], ["u0-id"], () => "5a3e5a3e-k");
+    expect(rows.find((r) => r.table === "team_members")?.row).toMatchObject({ user_id: "u0-id", invited_by: "u0-id" });
   });
 
   it("still refuses a table without a single key whose owner column may be null: such rows would never be found", async () => {

@@ -520,7 +520,8 @@ export async function compareAll(s: Run, options: IterationOptions = {}): Promis
   const ours = (table: string, id: string) => {
     const t = s.model.find((m) => m.name === table);
     const key = t?.columns.find((c) => c.name === t.primaryKey[0]);
-    return key?.type !== "uuid" || id.startsWith(s.fixed.prefix);
+    // A row keyed by its user's id (a profile) is the run's when the user is, whoever chose the id.
+    return key?.type !== "uuid" || id.startsWith(s.fixed.prefix) || s.fixed.users.some((u) => u.id === id);
   };
   if (options.tally) {
     for (const rs of seen) for (const key of rs.keys()) {
