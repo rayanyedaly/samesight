@@ -97,11 +97,11 @@ const letter = (i: number) => String.fromCharCode(65 + i);
 /** Held for the run: runs share one prefix and one email domain, so a second would delete the first's data. */
 const LOCK = Number.parseInt(PREFIX, 16);
 
-/** Whether this process holds LOCK: set once taken, cleared once let go. */
-let lockHeld = false;
+/** The connections holding LOCK: added once it is taken, removed once let go. Exported for tests. */
+export const holdingLock = new WeakSet<pg.Client>();
 
 const unlock = async (client: pg.Client) => {
-  lockHeld = false;
+  holdingLock.delete(client);
   await client.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
 };
 
@@ -131,7 +131,7 @@ export async function stoppable(
     },
     step: async () => {
       if (ending) return ending.catch(() => {});
-      if (!lockHeld) return;
+      if (!holdingLock.has(client)) return;
       stopping = true;
       const later = "the next run removes them";
       let fresh: pg.Client | undefined;
@@ -141,7 +141,7 @@ export async function stoppable(
         client.on("error", () => {});
         await fresh.query("select pg_terminate_backend($1, 5000)", [pid]);
         for (let i = 0; i < 50 && (await rows(fresh, "select 1 from pg_stat_activity where pid = $1", [pid])).length; i++) await new Promise((r) => setTimeout(r, 100));
-        lockHeld = false;
+        holdingLock.delete(client);
         const [{ locked } = { locked: false }] = await rows<{ locked: boolean }>(fresh, "select pg_try_advisory_lock($1) as locked", [LOCK]);
         if (!locked) {
           log(`could not take the run's lock to remove its users and rows; ${later}`);
@@ -257,7 +257,7 @@ export function auditRefusals(model: TableModel[], synced: string[]): string[] {
 async function exclusive<T extends Run>(client: pg.Client, stack: Stack, tables: ScopeTable[], prepare: () => Promise<T>): Promise<T> {
   const [{ locked } = { locked: false }] = await rows<{ locked: boolean }>(client, "select pg_try_advisory_lock($1) as locked", [LOCK]);
   if (!locked) throw new Error("another samesight verify run is using this database; wait for it to finish");
-  lockHeld = true;
+  holdingLock.add(client);
   try {
     return await prepare();
   } catch (e) {

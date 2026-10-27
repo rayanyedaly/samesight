@@ -1,12 +1,13 @@
 /**
- * The one way an auto-started run is taken down, whatever ends it: the audit finishing,
+ * The one way an audit run is taken down, whatever ends it: the audit finishing,
  * an error, Ctrl+C, SIGTERM, the terminal closing (SIGHUP) or the output closing (EPIPE).
  * Steps are added before the thing they remove is created, so a run that fails half way
  * removes exactly what it made; they run in reverse order, once, and one step failing
  * does not stop the others.
  *
  * A run killed outright (SIGKILL, a crash of Docker) gets no teardown: the sweep of the
- * next audit that starts PowerSync removes what it left.
+ * next audit that starts PowerSync removes its service, and the next to reach the
+ * differential its users and rows.
  */
 
 export class Teardown {
@@ -14,6 +15,8 @@ export class Teardown {
   private done: Promise<string[]> | undefined;
   private pending: Promise<unknown> = Promise.resolve();
   private readonly log: (line: string) => void;
+  /** What began the teardown, when onSignals did (SIGINT, output closed): the run did not end on its own. */
+  stoppedBy: string | undefined;
 
   constructor(log: (line: string) => void) {
     this.log = log;
@@ -108,7 +111,10 @@ export function onSignals(
     } catch {}
     setTimeout(() => proc.exit(exitCode), graceMs).unref();
     // A teardown the run began itself finishes and reports on its own.
-    if (!teardown.started) void teardown.run().then(() => proc.exit(exitCode));
+    if (!teardown.started) {
+      teardown.stoppedBy = why;
+      void teardown.run().then(() => proc.exit(exitCode));
+    }
   };
   const handlers = [
     ["SIGINT", () => end("SIGINT", 130)],

@@ -23,11 +23,17 @@ export interface Session {
   expiresAt: number;
 }
 
+const AUTH_TIMEOUT_MS = 30_000;
+
 async function auth(stack: Stack, path: string, init: RequestInit & { admin?: boolean }): Promise<unknown> {
   const key = init.admin ? stack.secretKey : stack.publishableKey;
+  // Bounded, so a signal's cleanup, which waits for users being made, is never held by a hung Auth.
   const res = await fetch(`${stack.api}/auth/v1${path}`, {
     ...init,
     headers: { apikey: key, ...(init.admin ? { authorization: `Bearer ${key}` } : {}), "content-type": "application/json" },
+    signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+  }).catch((e: Error) => {
+    throw e.name === "TimeoutError" ? new Error(`Auth ${init.method ?? "GET"} ${path}: no answer within ${AUTH_TIMEOUT_MS / 1000}s`) : e;
   });
   const text = await res.text();
   if (res.status === 429 && path.startsWith("/token")) {
