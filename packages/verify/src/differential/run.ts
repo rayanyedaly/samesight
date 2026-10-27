@@ -780,7 +780,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {
     const left = options.timeLimitMs - (Date.now() - started);
     if (left <= 0) break;
-    x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, seed: seed + pass });
+    x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, seed: (seed + pass) % (MAX_SEED + 1) });
     datasets += x.datasets;
   }
   x = { ...x, datasets };

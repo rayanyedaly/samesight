@@ -92,4 +92,35 @@ streams:
     expect(leak.fix).toBeUndefined();
     expect(run).toEqual([]);
   });
+
+  it("counts a stream that is not auto-subscribed as having the same query too", async () => {
+    // PowerSync names a shared bucket after its first stream: the device can name one no device subscribes to.
+    const streams = parseStreams(`
+streams:
+  asked:
+    query: SELECT * FROM lists
+  mine:
+    auto_subscribe: true
+    query: SELECT * FROM lists
+`);
+    const run: string[] = [];
+    const client = {
+      query: async (text: string) => {
+        run.push(text);
+        return { rows: [] };
+      },
+    } as unknown as pg.Client;
+    const leak: RowReport = {
+      kind: "leak",
+      summary: "",
+      user: { label: "u1", id: "id-1" },
+      table: "lists",
+      id: "5a3e5a3e-1",
+      row: "lists 5a3e5a3e-1",
+      sentBy: [{ stream: "asked", query: "query", sql: "SELECT * FROM lists" }],
+      policies: [{ name: "owned lists", permissive: true, verdict: "refuses" }],
+    };
+    await likelyFixes(client, { kind: "streams", streams }, [leak], () => ({ sub: "id-1" }));
+    expect(run).toEqual([]);
+  });
 });

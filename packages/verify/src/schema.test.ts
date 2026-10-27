@@ -7,7 +7,7 @@ type Schema = { [k: string]: unknown };
 const schema = JSON.parse(readFileSync(new URL("../schema/report.schema.json", import.meta.url), "utf8")) as Schema;
 
 // A validator for the keywords the schema uses, and no others: the guard below fails if it uses one more.
-const KEYWORDS = new Set(["$schema", "title", "description", "type", "properties", "required", "additionalProperties", "items", "enum", "const", "$ref", "$defs", "minimum"]);
+const KEYWORDS = new Set(["$schema", "title", "description", "type", "properties", "required", "additionalProperties", "items", "enum", "const", "$ref", "$defs", "minimum", "maximum"]);
 const TYPES = new Set(["object", "array", "string", "integer", "number", "boolean", "null"]);
 
 const isObject = (v: unknown): v is Schema => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -34,6 +34,7 @@ function errors(s: Schema, v: unknown, at = "$"): string[] {
   if ("const" in s && !same(s.const, v)) out.push(`${at}: not ${JSON.stringify(s.const)}`);
   if (Array.isArray(s.enum) && !s.enum.some((e) => same(e, v))) out.push(`${at}: not one of ${JSON.stringify(s.enum)}`);
   if (typeof s.minimum === "number" && typeof v === "number" && v < s.minimum) out.push(`${at}: below ${s.minimum}`);
+  if (typeof s.maximum === "number" && typeof v === "number" && v > s.maximum) out.push(`${at}: above ${s.maximum}`);
   if (isObject(v)) {
     for (const k of (s.required ?? []) as string[]) if (!(k in v)) out.push(`${at}: lacks ${k}`);
     const props = (s.properties ?? {}) as Schema;

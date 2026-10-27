@@ -9,12 +9,9 @@ const DROPPED = ["--seed", "--json", "--report"];
 const VALUED = new Set(["--seed", "--report"]);
 
 /**
- * The command that replays a run: its own arguments (those after `audit` in audit mode) less
- * `--seed`, `--json` and `--report`, then `--seed <seed>`, each quoted for a shell.
- */
-/**
  * The largest --seed: fast-check folds a seed into 32 bits, so anything above 2^31 - 1 comes
- * back negative, and the run adds up to 3 for its extra passes.
+ * back negative. The run's extra passes add up to 3 and wrap at MAX_SEED, so every seed a
+ * replay line prints is one --seed takes.
  */
 export const MAX_SEED = 2 ** 31 - 4;
 
@@ -24,6 +21,10 @@ export function readSeed(v: string): number | undefined {
   return Number.isInteger(n) && n >= 0 && n <= MAX_SEED ? n : undefined;
 }
 
+/**
+ * The command that replays a run: its own arguments (those after `audit` in audit mode) less
+ * `--seed`, `--json` and `--report`, then `--seed <seed>`, each quoted for a shell.
+ */
 export function replayCommand(mode: "policy" | "audit", argv: string[], seed: number): string {
   const kept: string[] = [];
   for (let i = 0; i < argv.length; i++) {

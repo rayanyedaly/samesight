@@ -80,7 +80,7 @@ export async function likelyFixes(client: pg.Client, sync: { kind: string; strea
     if (r.policies?.some((p) => !p.permissive && p.verdict === "refuses")) continue;
     // An identical query in another stream shares its bucket and sends the row too: fixing one would leave the other.
     const same = (sql: string) => sql.replace(/\s+/g, " ").trim().toLowerCase();
-    if (candidates(sync.streams, r.table).filter((c) => same(c.sql) === same(sent.sql as string)).length > 1) continue;
+    if (candidates(sync.streams, r.table, new Set(sync.streams.map((x) => x.name))).filter((c) => same(c.sql) === same(sent.sql as string)).length > 1) continue;
     const stream = sync.streams.find((s) => s.name === sent.stream);
     const claims = claimsOf(r.user.id);
     if (!stream || !claims) continue;
