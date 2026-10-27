@@ -61,7 +61,8 @@ jobs:
   verify:
     name: verifier on Fieldbook
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Above test:stack's own limit, so a hang there fails (with the logs step) rather than cancels.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -78,7 +79,7 @@ jobs:
       # and a --mutate run stopped by Ctrl+C, which restarts PowerSync on the original sync
       # config and waits for it to catch up before the gate below.
       - run: pnpm --filter @samesight/verify test:stack
-        timeout-minutes: 20
+        timeout-minutes: 25
       # The gate: static, catalog, differential, write path and every mutant caught, in under 5 minutes.
       - name: samesight-verify --mutate
         working-directory: examples/fieldbook

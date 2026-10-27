@@ -126,13 +126,18 @@ export async function cleanup(client: pg.Client, stack: Stack, model: TableModel
   if (rowsDeleted !== undefined) throw rowsDeleted;
   if (!failed.length) return;
   // Auth answers a row that still references the user with Postgres' 23503, naming its table.
-  const tables = failed.map((f) => /still referenced from table \\?"([^"\\]+)/.exec(f)?.[1]);
-  if (tables.every((t) => t !== undefined)) {
+  const tables = [...new Set(failed.flatMap((f) => /still referenced from table \\?"([^"\\]+)\\?"/.exec(f)?.[1] ?? []))];
+  const how =
+    "they may hold that user's data, so remove or repoint them by hand, then, with no verify run going, delete the users (delete from auth.users where email like '%@verify.samesight.test'; " +
+    "a foreign key with on delete cascade then removes the rows that point at them, someone else's included)";
+  if (tables.length) {
     throw new UsersBlocked(
-      `could not delete ${failed.length} run users: rows in ${[...new Set(tables)].join(", ")} still reference them, and are not the run's to delete (a real user owns them too, or only an optional column ties them to a run user; they may hold that user's data). Remove or repoint those rows, then delete the users (delete from auth.users where email like '%@verify.samesight.test'); until then no run can: ${failed.join("; ")}`,
+      `could not delete ${failed.length} run users: rows in ${tables.join(", ")} still reference them that are not the run's to delete (a real user owns them too, or only an optional column ties them to a run user); ${how}. Until then no run can: ${failed.join("; ")}`,
     );
   }
-  throw new Error(`could not delete ${failed.length} run users: ${failed.join("; ")}`);
+  throw new Error(
+    `could not delete ${failed.length} run users (a row a foreign key without on delete cascade ties to them, one the run may not delete, can block it): ${failed.join("; ")}`,
+  );
 }
 
 /** Run users that rows the run may not delete still reference: no later run removes them either. */

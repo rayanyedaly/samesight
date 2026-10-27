@@ -109,16 +109,28 @@ describe("stoppable", () => {
     const lines: string[] = [];
     const stop = await stoppable(client, { ...stack, api: "http://127.0.0.1:54321" }, [], (l) => lines.push(l));
     holdingLock.add(client);
-    fresh.users = ["0b0b0b0b-0000-4000-8000-000000000001"];
-    // As Auth answers when a row still references the user.
-    const body = JSON.stringify({ code: "23503", message: 'update or delete on table "users" violates foreign key constraint "messages_recipient_fkey" on table "messages"', detail: 'Key (id)=(0b0b…) is still referenced from table "messages".' });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 500 })));
+    fresh.users = ["0b0b0b0b-0000-4000-8000-000000000001", "0b0b0b0b-0000-4000-8000-000000000002"];
+    // As Auth answers when a row still references the user (a table name long enough that a
+    // body cut at 300 characters would lose it), and, for the second user, something else.
+    const table = "organization_member_invitation_history";
+    const blocked = JSON.stringify({
+      code: "23503",
+      message: `update or delete on table "users" violates foreign key constraint "${table}_recipient_id_fkey" on table "${table}"`,
+      detail: `Key (id)=(0b0b0b0b-0000-4000-8000-000000000001) is still referenced from table "${table}".`,
+    });
+    let n = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => (n++ === 0 ? new Response(blocked, { status: 500 }) : new Response("upstream timeout", { status: 504 }))));
     try {
       await stop.step();
     } finally {
       vi.unstubAllGlobals();
     }
-    expect(lines).toEqual([expect.stringMatching(/^could not remove the run's users and rows: could not delete 1 run users: rows in messages still reference them, and are not the run's to delete .*Remove or repoint those rows/)]);
+    expect(lines).toEqual([
+      expect.stringMatching(
+        new RegExp(`^could not remove the run's users and rows: could not delete 2 run users: rows in ${table} still reference them that are not the run's to delete .*remove or repoint them by hand, then, with no verify run going, delete the users .*on delete cascade`),
+      ),
+    ]);
+    expect(lines[0]).toContain("504 upstream timeout");
     expect(lines[0]).not.toContain(LEFT_FOR_NEXT);
   });
 

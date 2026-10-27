@@ -50,14 +50,16 @@ describe("withSyncConfig under the run's teardown", () => {
     const dir = mkdtempSync(join(tmpdir(), "samesight-reload-test-"));
     const configPath = join(dir, "sync-config.yaml");
     const marker = join(dir, "restarts");
+    const done = join(dir, "finished");
     writeFileSync(configPath, "streams: {}\n");
     vi.stubGlobal("fetch", async () => new Response("", { status: 200 }));
     let n = 0;
     const slots = { query: async () => ({ rows: [{ name: `powersync_${++n}` }] }) } as unknown as pg.Client;
-    const script = `const fs=require("fs");const n=fs.existsSync(${JSON.stringify(marker)})?fs.readFileSync(${JSON.stringify(marker)},"utf8").length:0;fs.appendFileSync(${JSON.stringify(marker)},"r");setTimeout(()=>process.exit(n>=${failFrom}||n===${failAt}?1:0),${delayMs})`;
+    const script = `const fs=require("fs");const n=fs.existsSync(${JSON.stringify(marker)})?fs.readFileSync(${JSON.stringify(marker)},"utf8").length:0;fs.appendFileSync(${JSON.stringify(marker)},"r");setTimeout(()=>{fs.appendFileSync(${JSON.stringify(done)},"d");process.exit(n>=${failFrom}||n===${failAt}?1:0)},${delayMs})`;
     const ps = { configPath, restart: [process.execPath, "-e", script], cwd: dir, url: "http://127.0.0.1:1" };
     const restarts = () => readFileSync(marker, "utf8").length;
-    return { ps, slots, restarts };
+    const finished = () => (existsSync(done) ? readFileSync(done, "utf8").length : 0);
+    return { ps, slots, restarts, finished };
   }
 
   it("puts the original back as a step when a stop comes mid-run, and the run's own put-back then does nothing", async () => {
@@ -122,7 +124,7 @@ describe("withSyncConfig under the run's teardown", () => {
     expect(existsSync(copy)).toBe(true);
   });
 
-  it("restarts PowerSync once when a stop comes while the run is still going, whoever finishes first", async () => {
+  it("restarts PowerSync once when a stop comes while the run is still going", async () => {
     const { ps, slots, restarts } = live(Number.POSITIVE_INFINITY, { delayMs: 300 });
     const t = new Teardown(() => {}, "policy");
     // The stop's step starts restarting; the run then fails (its devices lose PowerSync) and puts back too.
@@ -142,6 +144,32 @@ describe("withSyncConfig under the run's teardown", () => {
     // Loaded once, restored once.
     expect(restarts()).toBe(2);
     expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
+  });
+
+  it("lets a stop in during the put-back's restart, and the step waits for that restart instead of its own", async () => {
+    const { ps, slots, restarts, finished } = live(Number.POSITIVE_INFINITY, { delayMs: 1000 });
+    const t = new Teardown(() => {}, "policy");
+    let during: [number, number] | undefined;
+    let stop: Promise<string[]> | undefined;
+    await withSyncConfig(
+      slots,
+      ps,
+      `${MUTANT_HEADER}\nstreams: {}\n`,
+      async () => {
+        // The run ends; the stop comes once its put-back's restart has begun.
+        const poll = setInterval(() => {
+          if (restarts() < 2) return;
+          clearInterval(poll);
+          during = [restarts(), finished()];
+          stop = t.run();
+        }, 10);
+      },
+      t,
+    );
+    // The stop got in while that restart ran (it does not block: one finished, the load's), and restarted nothing itself.
+    expect(during).toEqual([2, 1]);
+    expect(await stop).toEqual([]);
+    expect(restarts()).toBe(2);
   });
 
   it("refuses to begin once the teardown has", async () => {
