@@ -139,20 +139,11 @@ jobs:
       - name: samesight-verify audit on sync rules
         working-directory: examples/audit-todolist
         run: timeout 600 pnpm run verify:rules
-      # Every auto-started container, role and slot must be gone after the runs above, and
-      # the demo's own publication untouched.
+      # Every auto-started container, role and slot, every run user and every run row must be
+      # gone after the runs above, and the demo's own publication untouched.
       - name: nothing left behind
         if: ${{ !cancelled() }}
-        run: |
-          sql() { docker exec supabase_db_react-supabase-todolist psql -tA -U postgres -d postgres -c "$1"; }
-          left=$(docker ps --all --quiet --filter label=dev.samesight.audit.run)
-          roles=$(sql "select count(*) from pg_roles where starts_with(rolname, 'samesight_audit_')")
-          slots=$(sql "select count(*) from pg_replication_slots where starts_with(slot_name, 'samesight_audit_')")
-          pub=$(sql "select count(*) from pg_publication where pubname = 'powersync' and puballtables")
-          if [ -n "$left" ] || [ "$roles" != 0 ] || [ "$slots" != 0 ] || [ "$pub" != 1 ]; then
-            echo "left behind: containers [$left], $roles roles, $slots slots; demo publication present: $pub"
-            exit 1
-          fi
+        run: bash scripts/ci/left-behind.sh supabase_db_react-supabase-todolist powersync all
       - if: failure()
         run: docker logs supabase_db_react-supabase-todolist --tail 100 || true
       - if: always()
