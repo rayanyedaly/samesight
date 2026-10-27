@@ -198,6 +198,12 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
         config,
         ...(o.keep ? { labels: [`${KEEP_LABEL}=${fingerprint}`] } : {}),
         aborted: () => teardown.started,
+        replicating: async () =>
+          (
+            await o.client.query<{ ok: boolean }>("select exists (select from pg_replication_slots where active and starts_with(slot_name, $1)) as ok", [
+              replication.slotPrefix,
+            ])
+          ).rows[0]?.ok === true,
       }),
     );
     log(`PowerSync is ready at ${powersync.url} (tokens checked ${"jwksUri" in auth ? "against the project's JWKS" : "with its shared secret"})`);

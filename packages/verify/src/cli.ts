@@ -343,8 +343,9 @@ async function auditMain(argv: string[]): Promise<number> {
     threw = true;
     throw e;
   } finally {
-    // A run that broke down shows the service's last words before they are removed.
-    const left = (await started?.stop(threw ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? (await teardown.run());
+    // A run that broke down (an error, or datasets the run could not finish) shows the service's last words before they are removed.
+    const brokeDown = threw || findings.some((f) => f.status === "fail" && /^the run failed: |\(then a run failed: /.test(f.detail));
+    const left = (await started?.stop(brokeDown ? { logs: (text) => process.stderr.write(`\nPowerSync's last log lines:\n${text}\n`) } : {})) ?? (await teardown.run());
     stopListening();
     if (left.length) section("Clean-up", left.map((what) => ({ status: "warn" as const, check: "clean-up", detail: `could not remove ${what}; the next audit that starts PowerSync removes it` })));
     await client?.end();

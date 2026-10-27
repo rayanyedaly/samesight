@@ -118,6 +118,7 @@ function db(o: { locked?: boolean; keptAlive?: boolean; roles?: string[]; held?:
         return { rows: (o.held ?? []).filter((s) => s.startsWith(values[0] as string)).map((slot) => ({ slot })) };
       }
       if (/exists \(select from pg_roles/.test(text)) return { rows: [{ exists: true }] };
+      if (/where active and starts_with\(slot_name, \$1\)\) as ok/.test(text)) return { rows: [{ ok: true }] };
       return { rows: [] };
     }) as never,
   };
