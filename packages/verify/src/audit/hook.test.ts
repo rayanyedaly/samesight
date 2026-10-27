@@ -123,10 +123,12 @@ describe("scanDeep", () => {
     expect(unfollowed(scanDeep("select private.deeper(uid), public.team_of(uid)", bare), bare)).toEqual([]);
   });
 
-  it("names only the tables a body selects every column of", () => {
+  it("names the tables a statement with select * reads, and not those of the body's other statements", () => {
     expect(starredTables("select * from settings; select team_id from public.memberships")).toEqual(["public.settings"]);
-    expect(starredTables(`select m.* from only "Teams" m join x using (id)`)).toEqual(["public.Teams"]);
-    expect(starredTables("select * from private.flags where exists (select * from public.memberships)")).toEqual(["private.flags"]);
+    expect(starredTables("select * into r from public.memberships where user_id = uid; return to_jsonb(r)")).toEqual(["public.memberships"]);
+    expect(starredTables(`select t.* from members m join only "Teams" t using (id)`)).toEqual(["public.members", "public.Teams"]);
+    expect(starredTables("select *, 1 as x from a, b")).toEqual(["public.a", "public.b"]);
+    expect(starredTables("select 1 from t where exists (select * from public.memberships)")).toEqual([]);
   });
 
   it("takes select * as reading every column, but not exists (select * ...)", () => {

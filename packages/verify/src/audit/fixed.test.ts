@@ -267,6 +267,16 @@ describe("deleteRows on a table found by its user column alone", () => {
     };
     expect(await deleted()).toEqual(["delete from public.audits where id::text like $1 or reviewer_id = any($2::uuid[]) or user_id = any($2::uuid[])"]);
     expect(await deleted(new Set(["audits"]))).toEqual(["delete from public.audits where id::text like $1 or user_id = any($2::uuid[])"]);
+    // Two owners a row must have: beyond the run's tables, both must be run users; in the run's own, either.
+    const messages: TableModel = { ...audits, name: "messages", columns: [col("id", "uuid"), col("sender_id", "uuid"), col("recipient_id", "uuid")], foreignKeys: [toUsers("sender_id"), toUsers("recipient_id")] };
+    const sql: string[] = [];
+    const recorder = { query: async (text: string) => sql.push(text) } as never;
+    await deleteRows(recorder, [messages], "5a3e5a3e", ["u0"], { ownedOnly: new Set(["messages"]) });
+    await deleteRows(recorder, [messages], "5a3e5a3e", ["u0"]);
+    expect(sql.filter((x) => x.startsWith("delete"))).toEqual([
+      "delete from public.messages where id::text like $1 or sender_id = any($2::uuid[]) and recipient_id = any($2::uuid[])",
+      "delete from public.messages where id::text like $1 or sender_id = any($2::uuid[]) or recipient_id = any($2::uuid[])",
+    ]);
   });
 
   it("says which tables it can clean", () => {

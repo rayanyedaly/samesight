@@ -124,7 +124,7 @@ export async function cleanup(client: pg.Client, stack: Stack, model: TableModel
   const failed: string[] = [];
   for (const id of users) await deleteUser(stack, id).catch((e: Error) => failed.push(`${id}: ${e.message}`));
   if (rowsDeleted !== undefined) throw rowsDeleted;
-  if (failed.length) throw new Error(`could not delete ${failed.length} run users (a row outside the audited tables may still reference them): ${failed.join("; ")}`);
+  if (failed.length) throw new Error(`could not delete ${failed.length} run users (a row a foreign key without on delete cascade ties to them may still reference them, one a real user owns too included, which needs deleting by hand): ${failed.join("; ")}`);
 }
 
 /** The tables of `names` deleteRows can clean; none when they cannot be read. */
