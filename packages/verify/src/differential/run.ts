@@ -124,8 +124,19 @@ export async function cleanup(client: pg.Client, stack: Stack, model: TableModel
   const failed: string[] = [];
   for (const id of users) await deleteUser(stack, id).catch((e: Error) => failed.push(`${id}: ${e.message}`));
   if (rowsDeleted !== undefined) throw rowsDeleted;
-  if (failed.length) throw new Error(`could not delete ${failed.length} run users (a row a foreign key without on delete cascade ties to them may still reference them, one a real user owns too included, which needs deleting by hand): ${failed.join("; ")}`);
+  if (!failed.length) return;
+  // Auth answers a row that still references the user with Postgres' 23503, naming its table.
+  const tables = failed.map((f) => /still referenced from table \\?"([^"\\]+)/.exec(f)?.[1]);
+  if (tables.every((t) => t !== undefined)) {
+    throw new UsersBlocked(
+      `could not delete ${failed.length} run users: rows in ${[...new Set(tables)].join(", ")} still reference them, and are not the run's to delete (a real user owns them too, or only an optional column ties them to a run user; they may hold that user's data). Remove or repoint those rows, then delete the users (delete from auth.users where email like '%@verify.samesight.test'); until then no run can: ${failed.join("; ")}`,
+    );
+  }
+  throw new Error(`could not delete ${failed.length} run users: ${failed.join("; ")}`);
 }
+
+/** Run users that rows the run may not delete still reference: no later run removes them either. */
+export class UsersBlocked extends Error {}
 
 /** The tables of `names` deleteRows can clean; none when they cannot be read. */
 async function outsideModel(client: pg.Client, names: string[]): Promise<TableModel[]> {
@@ -196,7 +207,7 @@ export async function stoppable(
           await fresh.query("select pg_advisory_unlock($1)", [LOCK]).catch(() => {});
         }
       } catch (e) {
-        log(`could not remove the run's users and rows: ${(e as Error).message}; ${later}`);
+        log(`could not remove the run's users and rows: ${(e as Error).message}${e instanceof UsersBlocked ? "" : `; ${later}`}`);
       } finally {
         await fresh?.end().catch(() => {});
       }
