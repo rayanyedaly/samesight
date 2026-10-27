@@ -378,3 +378,49 @@ describe("overloads and wrappers two levels deep", () => {
     });
   });
 });
+
+describe("review fixes to negation, cast lists, calls and overloads", () => {
+  const role = "((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text)";
+  it.each([
+    [`(false = (${role} = 'admin'::text))`, true],
+    [`(true <> (${role} = 'admin'::text))`, true],
+    [`(NOT ((${role} = 'admin'::text) IS DISTINCT FROM false))`, true],
+    [`((${role} = 'admin'::text) IS DISTINCT FROM true)`, true],
+    [`((${role} = 'admin'::text) IS NOT DISTINCT FROM true)`, false],
+  ])("%s", (sql, negated) => {
+    expect(reads(sql, "postgres")).toEqual([{ path: "app_metadata.role", compared: lit(["admin"], negated) }]);
+  });
+
+  it("reads = ALL and <> ANY over several values as neither IN nor NOT IN", () => {
+    expect(reads(`(${role} = ALL (ARRAY['a'::text, 'b'::text]))`, "postgres")[0]?.compared).toMatchObject({ kind: "other" });
+    expect(reads(`(${role} <> ANY (ARRAY['a'::text, 'b'::text]))`, "postgres")[0]?.compared).toMatchObject({ kind: "other" });
+    expect(reads(`(${role} <> ALL (ARRAY['a'::text, 'b'::text]))`, "postgres")[0]?.compared).toEqual(lit(["a", "b"], true));
+  });
+
+  it("never lets a quote or comment marker inside a plpgsql string hide a call", () => {
+    expect(callsIn("begin v := 'a--b'; perform f(); end")).toEqual(["f"]);
+    expect(callsIn("begin v := '/*'; perform f(); v := '*/'; end")).toEqual(["f"]);
+    expect(callsIn("begin raise notice $m$don't$m$; perform g(); v := 'a'; end")).toEqual(["g"]);
+    expect(callsIn("begin v := E'don\\'t'; perform h(); v := 'x'; end")).toEqual(["h"]);
+    expect(callsIn("select exists (select 1) and x in (1) and coalesce(a, b)")).toEqual([]);
+  });
+
+  it("resolves a bare call to any schema's function of that name", () => {
+    const functions = new Map([
+      ["app.k", "select auth.jwt() ->> 'x'"],
+      ["public.k", "select 1"],
+      ["k", "select 1"],
+      ["h", "begin return k(); end"],
+    ]);
+    expect(claimReads("h(x)", "postgres", { functions }).unreadable).toHaveLength(1);
+  });
+
+  it("keeps a call of overloads that read only the user id a user id read", () => {
+    const functions = new Map([
+      ["m", "select auth.uid() = $1\n;\nselect auth.uid() = $1"],
+      ["m/1-1", "select auth.uid() = $1"],
+      ["m/1-2", "select auth.uid() = $1"],
+    ]);
+    expect(claimReads("m(owner_id)", "postgres", { functions })).toMatchObject({ reads: [{ path: ["sub"] }], unreadable: [] });
+  });
+});
