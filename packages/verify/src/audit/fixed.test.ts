@@ -160,6 +160,27 @@ describe("assignClaims with the hook's dims", () => {
     expect(a.findings).toContainEqual(expect.objectContaining({ detail: expect.stringMatching(/^8 combinations of claim values and access token hook rows, and 8 users hold 6 of them/) }));
   });
 
+  it("gives a column compared with a hook claim the values the hook can add, never a key or the hook's own table", () => {
+    const docs: TableModel = {
+      name: "documents",
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [col("id", "uuid"), col("required_role", "text"), col("level", "integer")],
+      foreignKeys: [],
+    };
+    const rule = (sql: string, table: string) => ({ where: `policy on ${table}`, sql, dialect: "postgres" as const, table });
+    const hookPlan = planClaims([
+      rule("(required_role = (auth.jwt() ->> 'team_role'::text))", "documents"),
+      rule("((auth.jwt() ->> 'team_role'::text) = 'lead'::text)", "documents"),
+      rule("(role = (auth.jwt() ->> 'team_role'::text))", "memberships"),
+      rule("(id = ((auth.jwt() ->> 'team_id'::text))::uuid)", "documents"),
+    ]);
+    const a = assignClaims(hookPlan, () => "fresh", [...model, docs], [], dims);
+    expect(a.claimValues.get("documents")?.get("required_role")).toEqual(["lead", "member"]);
+    expect(a.claimValues.get("documents")?.has("id")).toBe(false);
+    expect(a.claimValues.get("memberships")).toBeUndefined();
+  });
+
   it("names a hook row no user holds", () => {
     const wide = [{ table: "memberships", column: "role", options: ["a", "b", "c", "d", "e", "f", "g", "h"] }];
     const a = assignClaims(planClaims([]), () => "fresh", [], [], wide);
