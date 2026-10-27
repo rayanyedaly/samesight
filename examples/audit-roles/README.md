@@ -26,7 +26,7 @@ its users in.
 
 ```bash
 pnpm --filter audit-roles stack:up             # supabase start, with an ES256 signing key
-pnpm --filter audit-roles verify               # must pass; run users hold admin, editor and another role
+pnpm --filter audit-roles verify               # must pass, every rule seen allowing and refusing: users hold each role and org
 pnpm --filter audit-roles verify:planted       # must fail: the editor stream loses its status filter
 pnpm --filter @samesight/verify test:roles     # the live tests on this app
 pnpm --filter audit-roles stack:down

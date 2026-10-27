@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal } from "../db.ts";
 import { type AutoStarted, autoStart } from "../autostart/run.ts";
 import { differential, PREFIX, type Run, setUpUsers, tearDown } from "../differential/run.ts";
+import { readModel } from "../differential/model.ts";
 import { prefixedUuid } from "../differential/world.ts";
 import { readStack } from "../stack.ts";
 import { metadataOf } from "./assign.ts";
@@ -47,11 +48,17 @@ beforeAll(async () => {
   });
   stack = { ...stack, powersync: started.url, slotPrefix: started.slotPrefix };
   plan = await discover();
-  assignment = assign(plan, () => prefixedUuid(PREFIX));
+  assignment = assign(plan, () => prefixedUuid(PREFIX), await readModel(client, SYNCED.map((name) => ({ name }))));
   s = await setUpUsers(
     client,
     stack,
-    { tables: SYNCED.map((name) => ({ name, userColumns: new Set(plan.identityColumns) })), synced: SYNCED },
+    {
+      tables: SYNCED.map((name) => {
+        const pool = assignment.keyPools.get(name);
+        return { name, userColumns: new Set(plan.identityColumns), claimValues: assignment.claimValues.get(name) ?? new Map(), ...(pool ? { keyPool: pool } : {}) };
+      }),
+      synced: SYNCED,
+    },
     { metadata: assignment.users.map((v) => metadataOf(assignment.paths, v)), paths: assignment.paths.map((p) => p.path) },
   );
 }, 180_000);
@@ -105,50 +112,40 @@ describe("claim discovery on the roles app", () => {
 });
 
 
-describe("run users holding the roles", () => {
-  it("signs users up with each role, whose tokens carry it, labelled by it", () => {
-    expect(s.fixed.users.map((u) => u.label)).toEqual([
-      "u0 (app_metadata.role=admin)",
-      "u1 (app_metadata.role=editor)",
-      "u2 (app_metadata.role=samesight-other)",
-      "u3 (app_metadata.role=admin)",
-      "u4",
+describe("run users holding the roles and the orgs", () => {
+  it("signs users up with every role and org together, whose tokens carry them, labelled by them", () => {
+    const [orgA, orgB] = assignment.paths.find((p) => p.key === "app_metadata.org_id")?.pool ?? [];
+    expect(assignment.paths.map((p) => [p.key, p.columns])).toEqual([
+      ["app_metadata.org_id", ["orgs.id"]],
+      ["app_metadata.role", []],
     ]);
+    expect(assignment.keyPools.get("orgs")).toEqual({ column: "id", values: [orgA, orgB] });
+    // Three roles by two orgs: all six combinations, a copy of the first user, and one with neither.
+    const labels = s.fixed.users.map((u) => u.label.replace(String(orgA), "A").replace(String(orgB), "B"));
+    expect(labels).toHaveLength(8);
+    expect(new Set(labels.slice(0, 6))).toEqual(
+      new Set(["A", "B"].flatMap((o) => ["admin", "editor", "samesight-other"].map((r) => `(app_metadata.org_id=${o}, app_metadata.role=${r})`)).map((x) => expect.stringContaining(x))),
+    );
+    expect(labels[6]?.replace(/^u\d+/, "")).toBe(labels[0]?.replace(/^u\d+/, ""));
+    expect(labels[7]).toBe("u7");
     const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
-    expect(tokens.get("u1")).toMatchObject({ app_metadata: { role: "editor", provider: "email" } });
-    const role = claimFindings(plan, undefined, tokens, assignment).find((f) => f.detail.startsWith("app_metadata.role"));
-    expect(role).toMatchObject({ status: "ok", detail: expect.stringMatching(/; held: admin u0 u3, editor u1, samesight-other u2, none u4$/) });
+    expect(tokens.get("u0")).toMatchObject({ app_metadata: { provider: "email", org_id: expect.stringMatching(/^5a3e5a3e-/) } });
+    const lines = claimFindings(plan, undefined, tokens, assignment);
+    expect(lines.filter((f) => f.status !== "ok")).toEqual([]);
+    expect(lines.find((f) => f.detail.startsWith("app_metadata.org_id"))?.detail).toMatch(/; generated rows take them in orgs\.id$/);
   });
 });
 
 describe("coverage on the roles app", () => {
-  it("sees every role policy and stream both ways, and the org ones, whose claim no user holds yet, only refusing", async () => {
+  it("sees every policy and stream allowing and refusing a run user a row", async () => {
     const config = parseSyncConfig(CONFIG);
     const cov = await coverageScope(client, SYNCED, config.streams, await policyFunctions(client), config.kind, new Set(assignment.paths.map((p) => p.key)));
     const result = await differential(s, { runs: 4, seed: 5, timeLimitMs: 120_000, coverage: cov });
     expect(result.findings.filter((f) => f.status === "fail")).toEqual([]);
-    const policies = Object.fromEntries(cov.policies.map((p) => [`${p.table}: ${p.name}`, stateOf(p.tally)]));
-    expect(policies).toEqual({
-      "documents: admins read all": "exercised",
-      "documents: editors read published": "exercised",
-      "documents: no archived": "exercised",
-      "documents: org members read": "only refused",
-      "documents: own documents": "exercised",
-      "orgs: admins read orgs": "exercised",
-      "orgs: org members": "only refused",
-      "orgs: org owners": "exercised",
-    });
-    const units = Object.fromEntries(cov.units.map((u) => [`${u.streams.join("+")} ${u.table}`, stateOf(u.tally)]));
-    expect(units).toEqual({
-      "admin documents": "exercised",
-      "editor documents": "exercised",
-      "org documents": "only refused",
-      "own documents": "exercised",
-      "admin orgs": "exercised",
-      "org orgs": "only refused",
-      "own orgs": "exercised",
-    });
-    expect(cov.notes).toEqual([expect.objectContaining({ status: "ok", detail: expect.stringMatching(/^what policies let users write .*: not measured/) })]);
+    expect(cov.policies.map((p) => [`${p.table}: ${p.name}`, stateOf(p.tally)]).filter(([, state]) => state !== "exercised")).toEqual([]);
+    expect(cov.policies).toHaveLength(8);
+    expect(cov.units.map((u) => [`${u.streams.join("+")} ${u.table}`, stateOf(u.tally)]).filter(([, state]) => state !== "exercised")).toEqual([]);
+    expect(cov.units).toHaveLength(7);
     expect(cov.triggers).toEqual([]);
   }, 300_000);
 });
