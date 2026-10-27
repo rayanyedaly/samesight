@@ -103,10 +103,11 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
   // The run's secrets, kept out of the errors and log lines it prints.
   const secrets = o.jwtSecret ? [o.jwtSecret] : [];
   const redact = (text: string) => secrets.reduce((t, s) => t.replaceAll(s, "***"), text);
-  const teardown = new Teardown(o.log);
+  const log = (line: string) => o.log(redact(line));
+  const teardown = new Teardown(log);
   // Closing the connection releases it too, so this step never fails.
   teardown.add("the audit's lock on the database", () => unlock().catch(() => {}));
-  const stopListening = onSignals(teardown, o.log, o.proc);
+  const stopListening = onSignals(teardown, log, o.proc);
   const logsOf = async (container: string, logs?: (text: string) => void) => {
     if (logs) logs(redact(await docker.logs(container, 50).catch((e: Error) => `(no logs: ${e.message})`)));
   };
@@ -122,14 +123,14 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
       }
       stopListening();
       await unlock().catch(() => {});
-      o.log(`kept the PowerSync service at ${url}; the next audit of this project that starts PowerSync reuses it if nothing changed and otherwise replaces it, and removes it at its end unless given --keep-powersync`);
+      log(`kept the PowerSync service at ${url}; the next audit of this project that starts PowerSync reuses it if nothing changed and otherwise replaces it, and removes it at its end unless given --keep-powersync`);
       return [];
     };
 
   try {
     const kept = await keptRun(docker, o.client, supabase.project, fingerprint, o.tables);
     if (kept) {
-      o.log(`reusing the PowerSync service an earlier run kept (${kept.run}) at ${kept.url}`);
+      log(`reusing the PowerSync service an earlier run kept (${kept.run}) at ${kept.url}`);
       secrets.push(...kept.secrets);
       const role = `${PREFIX}${kept.run}`;
       teardown.add(`role ${role} and its replication slots`, () => tearDownReplication(o.client, { role, slotPrefix: `${role}_` }));
@@ -142,11 +143,11 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
 
     // Each step that makes or removes something runs through teardown.step, so Ctrl+C
     // mid-start waits for it, and nothing is made after the teardown has run.
-    const leftovers = await teardown.step(() => sweep(docker, o.client, supabase.project, o.log));
-    if (leftovers.length) o.log(`removed what an earlier run left: ${leftovers.join(", ")}`);
+    const leftovers = await teardown.step(() => sweep(docker, o.client, supabase.project, log));
+    if (leftovers.length) log(`removed what an earlier run left: ${leftovers.join(", ")}`);
     // Pulled before anything is created, so a failed pull leaves nothing to remove.
     if (teardown.started) throw new Error("stopped");
-    await ensureImage(docker, o.log);
+    await ensureImage(docker, log);
 
     const run = runName();
     // Each step is added before what it removes is made: a run failing half way removes what it made.
@@ -154,7 +155,7 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
     teardown.add(`role ${role} and its replication slots`, () => tearDownReplication(o.client, { role, slotPrefix: `${role}_` }));
     const containers = [containerName(run, "storage"), containerName(run, "powersync")];
     teardown.add(`containers ${containers.join(", ")}`, () => removeContainers(docker, containers));
-    o.log(`starting PowerSync ${POWERSYNC_VERSION} for this run (${run}) on ${supabase.network}`);
+    log(`starting PowerSync ${POWERSYNC_VERSION} for this run (${run}) on ${supabase.network}`);
     const replication = await teardown.step(() => setUpReplication(o.client, run, o.tables));
     secrets.push(replication.password);
     const storagePassword = randomBytes(24).toString("hex");
@@ -177,7 +178,7 @@ export async function autoStart(o: AutoStartOptions): Promise<AutoStarted> {
         aborted: () => teardown.started,
       }),
     );
-    o.log(`PowerSync is ready at ${powersync.url} (tokens checked ${"jwksUri" in auth ? "against the project's JWKS" : "with its shared secret"})`);
+    log(`PowerSync is ready at ${powersync.url} (tokens checked ${"jwksUri" in auth ? "against the project's JWKS" : "with its shared secret"})`);
     // Kept from here on: Ctrl+C no longer removes it.
     if (o.keep) stopListening();
     return { url: powersync.url, version: POWERSYNC_VERSION, slotPrefix: replication.slotPrefix, reused: false, stop: stopper(powersync.container, o.keep === true, powersync.url) };
@@ -225,6 +226,6 @@ async function keptRun(
   if (!url || !(await isReady(url))) return null;
   // Its passwords, from the config it was given, to keep out of what this run prints.
   const config = Buffer.from(info?.Config.Env?.find((e) => e.startsWith("POWERSYNC_CONFIG_B64="))?.slice(21) ?? "", "base64").toString();
-  const secrets = [...config.matchAll(/postgresql:\/\/[^:/@\s]+:([^@\s]+)@/g)].flatMap((m) => (m[1] ? [m[1]] : []));
+  const secrets = [...config.matchAll(/postgresql:\/\/[^:/@\s]+:([^@\s]{16,})@/g)].flatMap((m) => (m[1] ? [m[1]] : []));
   return { run, url, secrets };
 }
