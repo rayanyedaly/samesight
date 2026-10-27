@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { type ClaimDialect, type ClaimRead, callsIn, claimReads, classify, wrapperRead } from "./claims.ts";
+import { BODY_JOIN, type ClaimDialect, type ClaimRead, callsIn, claimReads, classify, wrapperRead } from "./claims.ts";
 import { parseSyncConfig } from "./sync/config.ts";
 
 /** The reads of one rule as [path, compared] pairs, for compact expectations. */
@@ -395,6 +395,14 @@ describe("overloads and wrappers two levels deep", () => {
     expect(claimReads("g(x)", "postgres", { functions }).unreadable).toEqual([{ text: "g", reason: "calls g, one of whose overloads reads the token" }]);
     // Two arguments: only g/1-2 takes them.
     expect(claimReads("g(x, y)", "postgres", { functions }).unreadable).toEqual([{ text: "g", reason: "calls g, which reads the token in a way this cannot follow" }]);
+  });
+
+  it("reports overloads that differ only by argument type, which share one key, as several bodies", () => {
+    const functions = new Map([
+      ["f", `select 1${BODY_JOIN}${jwtRole}`],
+      ["f/1-1", `select 1${BODY_JOIN}${jwtRole}`],
+    ]);
+    expect(claimReads("f(x)", "postgres", { functions }).unreadable).toEqual([{ text: "f", reason: "calls f, one of whose overloads reads the token" }]);
   });
 
   it("takes a listed name without counts for any arity, as before", () => {

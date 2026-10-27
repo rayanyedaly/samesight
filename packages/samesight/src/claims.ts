@@ -229,6 +229,9 @@ const READS_CLAIMS = /auth\s*\.\s*(jwt|role|email|parameters?)\s*\(|request\s*\.
  * case, a quoted one kept as written, schema.name when qualified. A body that does not
  * tokenize (plpgsql's := and the like) is scanned with its comments and strings removed.
  */
+/** How function bodies are joined under one key: the overloads that take one argument count. */
+export const BODY_JOIN = "\n;\n";
+
 export function callsIn(body: string): string[] {
   const out = new Set<string>();
   let t: Token[] | undefined;
@@ -834,8 +837,9 @@ export function claimReads(sql: string, dialect: ClaimDialect, options: ClaimOpt
         const reading = run.filter((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>));
         if (reading.length) {
           const claims = reading.some((k) => readsTokenThrough(k, options.functions as ReadonlyMap<string, string>, new Set(), READS_CLAIMS));
-          if (claims && run.length > 1) {
-            // Several overloads take this many arguments: which one runs is Postgres's choice by type.
+          // Several overloads take this many arguments (under several keys, or joined under one when
+          // they differ only by type): which one runs is Postgres's choice by type.
+          if (claims && (run.length > 1 || run.some((k) => options.functions?.get(k)?.includes(BODY_JOIN)))) {
             unreadable.push({ text: qualified, reason: `calls ${qualified}, one of whose overloads reads the token` });
           } else if (claims) {
             unreadable.push({ text: qualified, reason: `calls ${qualified}, which reads the token in a way this cannot follow` });

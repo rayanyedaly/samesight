@@ -8,7 +8,7 @@
  */
 
 import type pg from "pg";
-import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, outputTable, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
+import { BODY_JOIN, type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, outputTable, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import { type Assignment, castFamily, type SetPath, show as plain, valueKeyFor } from "./assign.ts";
@@ -141,13 +141,14 @@ export async function policyFunctions(client: pg.Client): Promise<Map<string, st
              or (not starts_with(fn.nspname, 'pg_')
                  and fn.nspname not in ('extensions', ${SUPABASE_SCHEMAS.map((x) => `'${x}'`).join(", ")})
                  and not exists (select from pg_depend e where e.classid = 'pg_proc'::regclass and e.objid = f.oid and e.deptype = 'e')))
-      order by 1, 2, 3`,
+      -- Overloads of one argument count by their types too, so their joined bodies keep one order.
+      order by 1, 2, 3, pg_get_function_identity_arguments(f.oid)`,
     ),
   );
   const out = new Map<string, string>();
   // Each overload by the argument counts it takes (name/min-max), and the name alone for all
   // of them: their bodies together, so a call matched by name alone sees any that reads the token.
-  const add = (key: string, body: string) => out.set(key, out.has(key) ? `${out.get(key)}\n;\n${body}` : body);
+  const add = (key: string, body: string) => out.set(key, out.has(key) ? `${out.get(key)}${BODY_JOIN}${body}` : body);
   for (const f of fns) {
     if (f.body === null) continue;
     const range = `${f.args - f.defaults}-${f.variadic ? "*" : f.args}`;
