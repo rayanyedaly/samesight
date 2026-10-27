@@ -13,7 +13,7 @@
  */
 
 import type pg from "pg";
-import { claimReads, classify, ident, outputTable, parseQuery, type Stream } from "samesight/compiler";
+import { type ClaimReads, claimReads, classify, ident, outputTable, render, type Stream, type Token, tokenize } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { DeviceRow } from "../differential/device.ts";
 import type { Run } from "../differential/run.ts";
@@ -46,6 +46,8 @@ export interface ScopedPolicy {
 export interface StreamUnit {
   streams: string[];
   table: string;
+  /** Its queries read nothing of the user: every user gets the same rows. */
+  sameForAll: boolean;
   /** Claims its queries read that tell users apart, by key. */
   claims: string[];
   reachable: boolean;
@@ -68,7 +70,7 @@ export interface Coverage {
  * Supabase's own event triggers: they only NOTIFY PostgREST, which a rolled-back
  * transaction never sends.
  */
-const HARMLESS_TRIGGERS = new Set(["pgrst_ddl_watch:pgrst_ddl_watch", "pgrst_drop_watch:pgrst_drop_watch"]);
+const HARMLESS_TRIGGERS = new Set(["pgrst_ddl_watch:extensions.pgrst_ddl_watch", "pgrst_drop_watch:extensions.pgrst_drop_watch"]);
 
 const READ_COMMANDS = new Set(["r", "*"]);
 
@@ -96,13 +98,17 @@ export async function coverageScope(
       [synced],
     ),
   );
+  // Functions print schema-qualified (an empty search_path), so a look-alike elsewhere is not taken for PostgREST's.
+  // Only triggers that fire in a normal session: O (origin) and A (always), not R (replica) or D.
   const triggers = (
-    await rows<{ name: string; fn: string }>(
-      client,
-      `select e.evtname as name, e.evtfoid::regproc::text as fn from pg_catalog.pg_event_trigger e
-        where e.evtenabled <> 'D' and e.evtevent in ('ddl_command_start', 'ddl_command_end', 'sql_drop')
-          and (e.evttags is null or 'DROP POLICY' = any(e.evttags))
-        order by 1`,
+    await qualified(client, () =>
+      rows<{ name: string; fn: string }>(
+        client,
+        `select e.evtname as name, e.evtfoid::pg_catalog.regproc::text as fn from pg_catalog.pg_event_trigger e
+          where e.evtenabled in ('O', 'A') and e.evtevent in ('ddl_command_start', 'ddl_command_end', 'sql_drop')
+            and (e.evttags is null or 'DROP POLICY' = any(e.evttags))
+          order by 1`,
+      ),
     )
   )
     .filter((t) => !HARMLESS_TRIGGERS.has(`${t.name}:${t.fn}`))
@@ -123,12 +129,18 @@ export async function coverageScope(
     .map((p): ScopedPolicy => {
       const found = claimReads(p.qual as string, "postgres", { functions });
       const claims = userClaims(found.reads);
-      const sameForAll = found.unreadable.length === 0 && found.reads.every((r) => classify(r.path) === "shared");
+      const sameForAll = alike(found);
       const reachable = found.unreadable.length === 0 && claims.every((k) => held.has(k));
       return { table: p.table, name: p.name, permissive: p.permissive, qual: p.qual as string, sameForAll, claims, reachable, tally: { allowed: 0, refused: 0 } };
     });
+  const protectedTables = new Set(
+    (await rows<{ table: string }>(client, "select c.relname as table from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = any($1) and c.relrowsecurity", [synced])).map(
+      (r) => r.table,
+    ),
+  );
   for (const t of synced) {
-    if (!scoped.some((p) => p.table === t)) notes.push({ status: "warn", check: "coverage", detail: `${t}: no read policy for authenticated users to measure` });
+    if (!protectedTables.has(t)) notes.push({ status: "warn", check: "coverage", detail: `${t}: RLS is off, so there is no policy to measure` });
+    else if (!scoped.some((p) => p.table === t)) notes.push({ status: "warn", check: "coverage", detail: `${t}: no read policy for authenticated users to measure` });
   }
   if (triggers.length) {
     notes.push({
@@ -141,19 +153,42 @@ export async function coverageScope(
   return { policies: scoped, units, inserted: new Map(), datasets: 0, triggers, notes };
 }
 
+/**
+ * True when what a rule reads of the token is the same for every run user: claims all
+ * users share, or whether the user id is null (every run user has one). Nothing it cannot follow.
+ */
+function alike(found: ClaimReads): boolean {
+  if (found.unreadable.length) return false;
+  return found.reads.every((r) => {
+    const cls = classify(r.path);
+    return cls === "shared" || (cls === "identity" && r.compared.kind === "literals" && r.compared.values.every((v) => v === null));
+  });
+}
+
 /** The claim keys reads tell users apart by: neither the user id nor one every user shares. */
 function userClaims(reads: { path: string[] }[]): string[] {
   return [...new Set(reads.filter((r) => !["identity", "shared"].includes(classify(r.path))).map((r) => claimKey(r.path)))].sort();
 }
 
 /**
- * Per stream and table. PowerSync puts queries that differ only in conditions comparing
- * auth.parameter() with literals in one bucket, named after the first stream: those are
- * one unit, since a device cannot tell which of them sent a row.
+ * Per stream and table. PowerSync puts queries that differ only in top-level conditions
+ * comparing auth.parameter() with literals in one bucket, named after the first stream:
+ * those streams are one unit, since a device cannot tell which of them sent a row. Only
+ * streams without CTEs are grouped; anything less plain keeps its own unit.
  */
 export function streamUnits(streams: Stream[], kind: "streams" | "bucket definitions" = "streams"): Omit<StreamUnit, "reachable">[] {
-  const units = new Map<string, Omit<StreamUnit, "reachable">>();
   const dialect = kind === "streams" ? "streams" : "rules";
+  // Union-find over stream/table nodes, joined through the bucket a query lands in.
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    const p = parent.get(x) ?? x;
+    if (p === x) return x;
+    const root = find(p);
+    parent.set(x, root);
+    return root;
+  };
+  const join = (a: string, b: string) => parent.set(find(a), find(b));
+  const nodes = new Map<string, { stream: string; table: string; reads: ClaimReads[] }>();
   for (const st of streams) {
     if (!st.autoSubscribe) continue;
     for (const q of st.queries) {
@@ -163,40 +198,71 @@ export function streamUnits(streams: Stream[], kind: "streams" | "bucket definit
       } catch {
         continue;
       }
-      const key = kind === "streams" ? (bucketKey(q.sql) ?? `${st.name}\u0000${table}`) : `${st.name}\u0000${table}`;
-      const own = `${st.name}\u0000${table}`;
-      // A stream already in a unit for this table joins it; so does one whose query shares a bucket.
-      const unit = units.get(key) ?? [...units.values()].find((u) => u.table === table && u.streams.includes(st.name));
+      const node = `${st.name}\u0000${table}`;
       // What decides the rows: the query, and the stream's CTEs or the bucket's parameter queries.
-      const claims = userClaims([q.sql, ...st.ctes.values()].flatMap((sql) => claimReads(sql, dialect).reads));
-      if (unit) {
-        if (!unit.streams.includes(st.name)) unit.streams.push(st.name);
-        unit.claims = [...new Set([...unit.claims, ...claims])].sort();
-        units.set(key, unit);
-        units.set(own, unit);
-      } else {
-        const created = { streams: [st.name], table, claims, tally: { allowed: 0, refused: 0 } };
-        units.set(key, created);
-        units.set(own, created);
+      const reads = [q.sql, ...st.ctes.values()].map((sql) => claimReads(sql, dialect));
+      const known = nodes.get(node);
+      nodes.set(node, { stream: st.name, table, reads: [...(known?.reads ?? []), ...reads] });
+      parent.set(node, parent.get(node) ?? node);
+      const bucket = kind === "streams" && st.ctes.size === 0 ? bucketKey(q.sql) : undefined;
+      if (bucket !== undefined) {
+        const key = `bucket\u0000${bucket}`;
+        parent.set(key, parent.get(key) ?? key);
+        join(node, key);
       }
     }
   }
-  return [...new Set(units.values())].sort((a, b) => a.table.localeCompare(b.table) || (a.streams[0] ?? "").localeCompare(b.streams[0] ?? ""));
+  const units = new Map<string, Omit<StreamUnit, "reachable">>();
+  for (const [node, n] of nodes) {
+    const root = find(node);
+    const unit = units.get(root) ?? { streams: [], table: n.table, sameForAll: true, claims: [], tally: { allowed: 0, refused: 0 } };
+    units.set(root, unit);
+    if (!unit.streams.includes(n.stream)) unit.streams.push(n.stream);
+    unit.claims = [...new Set([...unit.claims, ...userClaims(n.reads.flatMap((r) => r.reads))])].sort();
+    unit.sameForAll &&= n.reads.every(alike);
+  }
+  return [...units.values()].sort((a, b) => a.table.localeCompare(b.table) || (a.streams[0] ?? "").localeCompare(b.streams[0] ?? ""));
 }
 
-/** The query without its conditions that compare auth.parameter() with literals; undefined when it cannot tell. */
+/**
+ * The query without its top-level AND conditions that only compare auth.parameter() with
+ * literals; undefined when it has a top-level OR, or a condition with a subquery that reads
+ * the token, so nothing is grouped that PowerSync would keep apart.
+ */
 function bucketKey(sql: string): string | undefined {
+  let t: Token[];
   try {
-    const q = parseQuery(sql);
-    const kept = q.terms.filter((term) => {
-      const found = claimReads(term, "streams");
-      const filter = found.reads.length > 0 && found.unreadable.length === 0 && found.reads.every((r) => r.compared.kind === "literals" && classify(r.path) !== "identity");
-      return !filter;
-    });
-    return `${q.table}\u0000${q.projection === "*" ? "*" : q.projection.join(",")}\u0000${[...kept].sort().join("\u0000")}`;
+    t = tokenize(sql);
   } catch {
     return undefined;
   }
+  const isWord = (x: Token | undefined, w: string) => x?.kind === "word" && x.text === w;
+  // Top-level positions, outside parentheses.
+  const depthAt: number[] = [];
+  let depth = 0;
+  for (const x of t) {
+    if (x.kind === "symbol" && x.text === "(") depth++;
+    depthAt.push(depth);
+    if (x.kind === "symbol" && x.text === ")") depth--;
+  }
+  const where = t.findIndex((x, i) => depthAt[i] === 0 && isWord(x, "where"));
+  if (where === -1) return render(t);
+  const terms: Token[][] = [[]];
+  for (let i = where + 1; i < t.length; i++) {
+    if (depthAt[i] === 0 && isWord(t[i], "or")) return undefined;
+    if (depthAt[i] === 0 && isWord(t[i], "and")) terms.push([]);
+    else terms.at(-1)?.push(t[i] as Token);
+  }
+  const kept = terms.map(render).filter((term) => {
+    const found = claimReads(term, "streams");
+    const filter =
+      found.reads.length > 0 &&
+      found.unreadable.length === 0 &&
+      !/\bselect\b/i.test(term) &&
+      found.reads.every((r) => r.compared.kind === "literals" && !r.inSubquery && classify(r.path) !== "identity");
+    return !filter;
+  });
+  return `${render(t.slice(0, where))}\u0000${kept.sort().join("\u0000")}`;
 }
 
 /** Ids by table, as text. */
@@ -246,6 +312,7 @@ export async function measure(s: Run, cov: Coverage, inserted: Inserted[], devic
       const full = await readAll(s.client, table, mine, readers);
       for (const p of cov.policies.filter((x) => x.table === table)) {
         await s.client.query("savepoint samesight_policy");
+        // A policy that cannot be measured (a lock wait, a table the role does not own) is a gap, never a failed run.
         try {
           const drop = p.permissive ? all.filter((x) => x.name !== p.name) : all.filter((x) => x.name === p.name);
           for (const x of drop) await s.client.query(`drop policy ${ident(x.name)} on public.${ident(table)}`);
@@ -264,11 +331,15 @@ export async function measure(s: Run, cov: Coverage, inserted: Inserted[], devic
               else if (seen.has(id)) p.tally.refused++;
             }
           }
+        } catch (e) {
+          p.tally.error ??= (e as Error).message;
         } finally {
           await s.client.query("rollback to savepoint samesight_policy");
         }
       }
     }
+  } catch (e) {
+    for (const p of cov.policies) if (ids.get(p.table)?.length) p.tally.error ??= (e as Error).message;
   } finally {
     await s.client.query("rollback").catch(() => {});
   }
@@ -304,10 +375,14 @@ export function stateOf(t: Tally): State {
   return "not seen";
 }
 
-/** True while a rule run users can exercise has not been seen both ways: worth another pass. */
+/**
+ * True while a rule run users can exercise has never been seen allowing a row: more random
+ * rows can match it. One seen only allowing usually cannot refuse (a stream of shared rows,
+ * an owner policy beside a wider one), so it does not keep passes going.
+ */
 export function pending(cov: Coverage): boolean {
-  const open = (x: { reachable: boolean; tally: Tally }) => x.reachable && x.tally.error === undefined && stateOf(x.tally) !== "exercised";
-  return cov.policies.some((p) => !p.sameForAll && open(p)) || cov.units.some(open);
+  const open = (x: { reachable: boolean; sameForAll: boolean; tally: Tally }) => !x.sameForAll && x.reachable && x.tally.error === undefined && x.tally.allowed === 0;
+  return (cov.triggers.length === 0 && cov.policies.some(open)) || cov.units.some(open);
 }
 
 const SIDES: Record<State, [string, string]> = {
@@ -352,6 +427,7 @@ export function coverageFindings(cov: Coverage, held: ReadonlySet<string>, toget
     if (u.tally.error !== undefined) return { status: "warn", check: "coverage", detail: `${name}: not measured (${u.tally.error})` };
     const state = stateOf(u.tally);
     if (state === "exercised") return undefined;
+    if (u.sameForAll) return { status: "ok", check: "coverage", detail: `${name}: ${SIDES[state][1]}; it reads nothing of the user, so every user gets the same rows` };
     return { status: "warn", check: "coverage", detail: `${name}: ${SIDES[state][1]} (${reason(cov, u, held, together, "stream")})` };
   };
   const policyLines = measured.map(policyLine);
@@ -375,5 +451,5 @@ export function coverageFindings(cov: Coverage, held: ReadonlySet<string>, toget
 /** Rules that tell users apart and were not seen both ways: what the Differential line owns up to. */
 export function untested(cov: Coverage): number {
   const policies = cov.triggers.length ? [] : cov.policies.filter((p) => !p.sameForAll);
-  return [...policies, ...cov.units].filter((x) => x.tally.error !== undefined || stateOf(x.tally) !== "exercised").length;
+  return [...policies, ...cov.units.filter((u) => !u.sameForAll)].filter((x) => x.tally.error !== undefined || stateOf(x.tally) !== "exercised").length;
 }

@@ -246,6 +246,7 @@ describe("coverage on the demo", () => {
   it("sees both policies and the user_data stream's two tables allowing and refusing, and a hook-only policy only refusing", async () => {
     // Committed for the run, since coverage reads in its own transaction: it lets no run user
     // read more (no token carries app_role), so the differential still passes.
+    await client.query("drop policy if exists samesight_hook_only on public.lists");
     await client.query("create policy samesight_hook_only on public.lists for select to authenticated using ((auth.jwt() ->> 'app_role') = 'auditor')");
     try {
       const cov = await scope();
@@ -272,7 +273,7 @@ describe("coverage on the demo", () => {
       await client.query("create event trigger samesight_test_ddl on ddl_command_end execute function public.samesight_test_ddl()");
       return scope();
     });
-    expect(cov.triggers).toEqual(["samesight_test_ddl (samesight_test_ddl)"]);
+    expect(cov.triggers).toEqual(["samesight_test_ddl (public.samesight_test_ddl)"]);
     expect(cov.notes).toContainEqual(expect.objectContaining({ status: "warn", detail: expect.stringMatching(/^policies not measured: .*event triggers would run on that \(samesight_test_ddl/) }));
   });
 });
