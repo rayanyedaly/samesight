@@ -11,6 +11,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal } from "../db.ts";
 import { readStack } from "../stack.ts";
 import { Docker } from "./docker.ts";
+import { KEPT_ALIVE } from "./run.ts";
 import { PROJECT_LABEL } from "./storage.ts";
 import { sweep } from "./sweep.ts";
 
@@ -28,7 +29,7 @@ beforeAll(async () => {
 afterEach(async () => {
   for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   children.clear();
-  await sweep(docker, client, PROJECT);
+  await sweep(docker, client, PROJECT, (line) => process.stderr.write(`${line}\n`));
 });
 afterAll(async () => {
   await client?.end();
@@ -73,6 +74,13 @@ async function leftovers(): Promise<string[]> {
   return [...(await docker.containers([`label=${PROJECT_LABEL}=${PROJECT}`])), ...roles.rows.map((r) => r.name), ...slots.rows.map((r) => r.name)];
 }
 
+describe("the kept-run check, on the real database", () => {
+  it("is false, not an error, for a role that is gone", async () => {
+    const { rows } = await client.query(KEPT_ALIVE, ["samesight_audit_gone0000", "samesight_audit_gone0000_", ["lists", "todos"]]);
+    expect(rows).toEqual([{ ok: false }]);
+  });
+});
+
 describe("auto-start on the demo", () => {
   it("serves the sync config, and removes everything on Ctrl+C or SIGTERM", async () => {
     for (const [signal, code] of [
@@ -98,6 +106,18 @@ describe("auto-start on the demo", () => {
     child.stderr?.destroy();
     child.kill("SIGHUP");
     expect(await exit).toBe(129);
+    expect(await leftovers()).toEqual([]);
+  }, 240_000);
+
+  it("removes everything when its output goes away with no signal (a reader that quit), exiting 141", async () => {
+    const { child } = await startChild();
+    expect((await leftovers()).length).toBeGreaterThan(0);
+    const exit = exited(child);
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    // Its next write fails.
+    child.kill("SIGUSR2");
+    expect(await exit).toBe(141);
     expect(await leftovers()).toEqual([]);
   }, 240_000);
 
