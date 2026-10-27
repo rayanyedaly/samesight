@@ -8,8 +8,9 @@ describe("parseHookUri", () => {
     expect(parseHookUri("pg-functions://postgres/public")).toEqual({ kind: "unknown" });
   });
 
-  it("prints an HTTP hook without its user, password, query or fragment", () => {
-    expect(showUri("https://user:secret@hooks.example.com/token?key=abc#x")).toBe("https://hooks.example.com/token");
+  it("prints an HTTP hook as its host, since its user, password, path or query may hold a secret", () => {
+    expect(showUri("https://user:secret@hooks.example.com/token/abc123?key=abc#x")).toBe("https://hooks.example.com/...");
+    expect(showUri(" https://u:pw@hooks.example.com/ ")).toBe("https://hooks.example.com");
     expect(showUri("pg-functions://postgres/public/hook")).toBe("pg-functions://postgres/public/hook");
   });
 });
@@ -28,7 +29,7 @@ describe("scanBody", () => {
     end`;
 
   it("finds the tables a body reads after FROM and JOIN, comments, strings and functions aside", () => {
-    expect(scanBody(hook)).toEqual({ reads: ["public.memberships", "public.teams", "public.orgs"], writes: [], calls: expect.arrayContaining(["jsonb_set", "json_each"]), dynamic: false, metadataWrites: [] });
+    expect(scanBody(hook)).toEqual({ reads: ["public.memberships", "public.teams", "public.orgs"], writes: [], calls: ["json_each", "jsonb_set", "to_jsonb", "jsonb_build_object"], dynamic: false, metadataWrites: [] });
   });
 
   it("tells writes, dynamic SQL and metadata set in the claims from reads", () => {
@@ -45,6 +46,36 @@ describe("scanBody", () => {
     expect(s.reads).toEqual(["public.memberships"]);
     expect(s.dynamic).toBe(true);
     expect(s.metadataWrites).toEqual(["app_metadata.role", "app_metadata.tier", "user_metadata"]);
+  });
+
+  it("reads every table of a comma list, USING, and a table read and written", () => {
+    const s = scanBody(`
+      select m.role into r from public.memberships m, public.teams t, lateral (select 1) x, public.never where m.team_id = t.id;
+      delete from public.seen s using public.orgs o where s.org = o.id;
+      update public.profiles set last_sign_in = now() where id = uid;
+      select role into r from public.profiles where id = uid;
+      insert into http_log (at) values (now());
+      perform extensions.dblink_exec('x', 'y');
+      perform pg_catalog.pg_notify('c', 'p');`);
+    expect(s.reads).toEqual(["public.memberships", "public.teams", "public.profiles", "public.orgs"]);
+    expect(s.writes).toEqual(["public.http_log", "public.profiles", "public.seen"]);
+    expect(s.calls).not.toContain("http_log");
+    expect(s.calls).toEqual(expect.arrayContaining(["extensions.dblink_exec", "pg_catalog.pg_notify"]));
+  });
+
+  it("tells metadata set in the token from metadata read", () => {
+    expect(
+      scanBody(`
+        r := event #>> '{claims,app_metadata,role}';
+        x := event->'claims'->'app_metadata';
+        y := jsonb_set(x, '{a}', event->'claims'->'app_metadata', true);`).metadataWrites,
+    ).toEqual([]);
+    expect(
+      scanBody(`
+        claims := jsonb_set(coalesce(claims, '{}'), '{app_metadata,tier}', '"gold"');
+        claims := claims || jsonb_build_object('at', now(), 'user_metadata', x);
+        claims := claims || '{"app_metadata": {}}'::jsonb;`).metadataWrites,
+    ).toEqual(["app_metadata.tier", "app_metadata", "user_metadata"]);
   });
 
   it("keeps a quoted name's case and reads a quoted schema", () => {

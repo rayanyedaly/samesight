@@ -126,8 +126,8 @@ describe("claimFindings", () => {
   });
 
   it("warns about a hook that runs off this machine, printed without its secrets", () => {
-    expect(details(claimFindings(plan, { uri: "https://hooks.example.com/claims" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/claims is not on this machine/);
-    expect(details(claimFindings(plan, { uri: "https://u:pw@hooks.example.com/claims?key=k" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/claims is not/);
+    expect(details(claimFindings(plan, { uri: "https://hooks.example.com/claims" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/\.\.\. is not on this machine/);
+    expect(details(claimFindings(plan, { uri: "https://u:pw@hooks.example.com/claims?key=k" }))[0]).toMatch(/^warn the access token hook https:\/\/hooks\.example\.com\/\.\.\. is not/);
     expect(remoteHook("http://127.0.0.1:3000/hook")).toBe(false);
     expect(remoteHook("http://[::1]:3000/hook")).toBe(false);
     expect(remoteHook("https://[2001:db8::1]/hook")).toBe(true);

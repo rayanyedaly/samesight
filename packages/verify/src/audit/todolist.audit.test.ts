@@ -216,6 +216,34 @@ describe("an access token hook on the demo's catalog", () => {
     ]);
   });
 
+  it("reads a SQL-standard hook's tables from pg_depend, and checks a SECURITY DEFINER helper's as its owner's", async () => {
+    const standard = await rolledBack(client, async () => {
+      await client.query(
+        "create function public.samesight_test_hook(event jsonb) returns jsonb language sql stable return jsonb_set(event, '{claims,n}', to_jsonb((select count(*) from public.lists)))",
+      );
+      // No function bodies to scan: only pg_depend can say what it reads.
+      return planHook(client, URI, new Map());
+    });
+    expect(standard.tables).toEqual(["lists"]);
+    const helper = await plan([
+      "create function public.samesight_test_owner(u uuid) returns bigint language sql stable security definer return (select count(*) from public.todos where created_by = u)",
+      `create function public.samesight_test_hook(event jsonb) returns jsonb language plpgsql stable as $$
+         begin return jsonb_set(event, '{claims,n}', to_jsonb(public.samesight_test_owner((event->>'user_id')::uuid))); end $$`,
+    ]);
+    expect(helper.tables).toEqual(["todos"]);
+    expect(helper.findings).toEqual([]);
+  });
+
+  it("names a view the hook reads, which audit gives no rows", async () => {
+    const p = await plan([
+      "create view public.samesight_test_owned as select owner_id from public.lists",
+      `create function public.samesight_test_hook(event jsonb) returns jsonb language plpgsql stable as $$
+         begin perform 1 from public.samesight_test_owned; return event; end $$`,
+    ]);
+    expect(p).toMatchObject({ tables: [], cannot: "it reads no public table, only samesight_test_owned" });
+    expect(p.findings.map((f) => f.detail)).toEqual([expect.stringMatching(/reads samesight_test_owned, which is not a table \(a view, say\)/)]);
+  });
+
   it("cannot steer a hook whose function is missing, or that reads no public table", async () => {
     const missing = await plan([]);
     expect(missing).toMatchObject({ tables: [], cannot: "it names no function public.samesight_test_hook(jsonb) in the database" });
