@@ -3,7 +3,7 @@ import type { ColumnModel, TableModel } from "../differential/model.ts";
 import { deleteRows } from "../differential/world.ts";
 import { assignClaims } from "./assign.ts";
 import { planClaims } from "./claims.ts";
-import { dimLabel, fixedPlan, fixedRows, hookDims } from "./fixed.ts";
+import { dimLabel, fixedPlan, fixedRows, hookDims, userColumn } from "./fixed.ts";
 import { hookKeysHeld } from "./run.ts";
 
 const col = (name: string, type: string, more: Partial<ColumnModel> = {}): ColumnModel => ({ name, type, nullable: false, hasDefault: false, computed: false, hints: [], ...more });
@@ -49,7 +49,7 @@ describe("hookDims and fixedRows", () => {
   const plan = fixedPlan(model, ["memberships"]);
 
   it("varies a per-user row over the rows its key points at and its CHECK list", () => {
-    const dims = hookDims(model, plan, body);
+    const dims = hookDims(model, plan, body, body);
     expect(dims).toEqual([
       { table: "memberships", column: "team_id", options: [0, 1], parent: "teams" },
       { table: "memberships", column: "role", options: ["lead", "member"] },
@@ -59,19 +59,19 @@ describe("hookDims and fixedRows", () => {
 
   it("counts a column a function the hook calls names as read (planHook passes their bodies together)", () => {
     const helper = "select role from public.memberships where user_id = u";
-    expect(hookDims(model, plan, "select public.role_of((event->>'user_id')::uuid)").map((d) => d.column)).toEqual(["team_id"]);
-    expect(hookDims(model, plan, `select public.role_of((event->>'user_id')::uuid)\n;\n${helper}`).map((d) => d.column)).toEqual(["team_id", "role"]);
+    expect(hookDims(model, plan, "select public.role_of((event->>'user_id')::uuid)", "select public.role_of((event->>'user_id')::uuid)").map((d) => d.column)).toEqual(["team_id"]);
+    expect(hookDims(model, plan, `select public.role_of((event->>'user_id')::uuid)\n;\n${helper}`, "select public.role_of((event->>'user_id')::uuid)").map((d) => d.column)).toEqual(["team_id", "role"]);
   });
 
   it("takes a column's literals only when the hook names it, and varies a table with nothing else by a row or none", () => {
     const flags: TableModel = { name: "flags", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("user_id", "uuid"), col("tier", "text", { hints: ["gold"] })], foreignKeys: [toUsers("user_id")] };
     const p = fixedPlan([flags], ["flags"]);
-    expect(hookDims([flags], p, "select tier from public.flags")).toEqual([{ table: "flags", column: "tier", options: ["gold"] }]);
-    expect(hookDims([flags], p, "select 1 from public.flags")).toEqual([{ table: "flags", column: null, options: [true, false] }]);
+    expect(hookDims([flags], p, "select tier from public.flags", "select tier from public.flags")).toEqual([{ table: "flags", column: "tier", options: ["gold"] }]);
+    expect(hookDims([flags], p, "select 1 from public.flags", "select 1 from public.flags")).toEqual([{ table: "flags", column: null, options: [true, false] }]);
   });
 
   it("makes parent rows first, then a row per user with picks, pointing at them", () => {
-    const dims = hookDims(model, plan, body);
+    const dims = hookDims(model, plan, body, body);
     let n = 0;
     const mint = () => `5a3e5a3e-0000-4000-8000-${String(++n).padStart(12, "0")}`;
     const rows = fixedRows(model, plan, dims, [[1, 0], [0, 1], undefined], ["u0-id", "u1-id", "u2-id"], mint);
@@ -106,7 +106,7 @@ describe("fixed rows across keys", () => {
     const m = [owned, memberships, grants];
     const plan = fixedPlan(m, ["memberships", "grants"]);
     expect(plan).toMatchObject({ tables: ["teams", "memberships", "grants"], perUser: ["memberships", "grants"] });
-    const dims = hookDims(m, plan, "select team_id, role, membership_id from memberships join grants using (user_id)");
+    const dims = hookDims(m, plan, "select team_id, role, membership_id from memberships join grants using (user_id)", "select team_id, role, membership_id from memberships join grants using (user_id)");
     // No dim for the self-key on teams, or for grants.membership_id (the user's own membership).
     expect(dims.map((d) => `${d.table}.${d.column}`)).toEqual(["memberships.team_id", "memberships.role", "grants.null"]);
     const rows = fixedRows(m, plan, dims, [[0, 0, 0], [1, 1, 1], [0, 1, 0]], ["u0-id", "u1-id", "u2-id"], mint);
@@ -133,10 +133,10 @@ describe("fixed rows across keys", () => {
 
   it("varies a CHECK list only when the hook reads the column, and gives parent rows the values run users hold in a claim", () => {
     const plan = fixedPlan(model, ["memberships"]);
-    expect(hookDims(model, plan, "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
-    expect(hookDims(model, plan, "select m.* from public.memberships m").map((d) => d.column)).toEqual(["team_id", "role"]);
+    expect(hookDims(model, plan, "select team_id from public.memberships", "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
+    expect(hookDims(model, plan, "select m.* from public.memberships m", "select m.* from public.memberships m").map((d) => d.column)).toEqual(["team_id", "role"]);
     // A helper's select * reads its own table, not every column of the hook's.
-    expect(hookDims(model, plan, "select team_id from public.memberships\n;\nselect * from settings", undefined, "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
+    expect(hookDims(model, plan, "select team_id from public.memberships\n;\nselect * from settings", "select team_id from public.memberships").map((d) => d.column)).toEqual(["team_id"]);
     const rows = fixedRows(model, plan, [], [], [], mint, undefined, undefined, (t) => (t === "teams" ? new Map([["name", ["red", "blue"]]]) : undefined));
     expect(rows.map((r) => r.row.name)).toEqual(["red", "blue"]);
   });
@@ -145,7 +145,7 @@ describe("fixed rows across keys", () => {
 describe("assignClaims with the hook's dims", () => {
   const read = (key: string) => `(auth.jwt() -> 'app_metadata'::text) ->> '${key}'::text`;
   const plan = planClaims([{ where: 'policy "p" on docs (USING)', sql: `(${read("role")}) = 'admin'::text`, dialect: "postgres", table: "docs" }]);
-  const dims = hookDims(model, fixedPlan(model, ["memberships"]), body);
+  const dims = hookDims(model, fixedPlan(model, ["memberships"]), body, body);
 
   it("picks metadata and hook rows together, with a copy of the first user and one with nothing", () => {
     const a = assignClaims(plan, () => "fresh", [], [], dims);
@@ -188,6 +188,8 @@ describe("deleteRows on a table found by its user column alone", () => {
       foreignKeys: [toUsers("invited_by"), toUsers("user_id"), to("team_id", "teams")],
     };
     expect(fixedPlan([teams, members], ["team_members"])).toMatchObject({ tables: ["teams", "team_members"], perUser: ["team_members"] });
+    // Keys come in constraint-name order (invited_by first): the user column is the required one.
+    expect(userColumn(members)).toBe("user_id");
     const sql: [string, unknown[]][] = [];
     await deleteRows({ query: async (text: string, values: unknown[] = []) => sql.push([text, values]) } as never, [members], "5a3e5a3e", ["u0"]);
     expect(sql.filter(([t]) => t.startsWith("delete"))).toEqual([['delete from public.team_members where invited_by = any($1::uuid[]) or user_id = any($1::uuid[])', [["u0"]]]]);
@@ -199,6 +201,7 @@ describe("deleteRows on a table found by its user column alone", () => {
     const client = { query: async () => ({ rows: [] }) } as never;
     const links: TableModel = { name: "links", primaryKey: ["a_id", "b_id"], unique: [], columns: [col("a_id", "uuid"), col("b_id", "uuid"), col("created_by", "uuid", { nullable: true })], foreignKeys: [toUsers("created_by")] };
     await expect(deleteRows(client, [links], "5a3e5a3e", ["u0"])).rejects.toThrow(/cannot tell the run's rows of links apart/);
+    expect(fixedPlan([links], ["links"]).refusal).toBe("links has no uuid key or required column pointing at auth.users of its own, so audit could not find its rows again");
   });
 });
 
