@@ -145,6 +145,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
           return { name, hints, userColumns, claimValues: assignment.claimValues.get(name) ?? new Map(), ...(pool ? { keyPool: pool } : {}) };
         }),
         synced: scope.synced,
+        deviceTables: scope.deviceTables,
       },
       { metadata: assignment.users.map((values) => metadataOf(assignment.paths, values)), paths: assignment.paths.map((p) => p.path), ids: userIds },
     );

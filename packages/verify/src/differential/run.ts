@@ -52,6 +52,8 @@ export interface Run {
   password: string;
   /** The tables read through RLS and compared with the devices. */
   synced: string[];
+  /** Device table names a query's alias gives, with the synced table each holds rows of. */
+  deviceTables?: Record<string, string>;
   /** Per table, the columns this user's devices must not hold. */
   hidden: (user: Member) => Map<string, string[]>;
   /**
@@ -122,7 +124,7 @@ export function runUserIds(count: number): string[] {
  * auth.users, and what a device may hold is whatever RLS lets its user read. A user is
  * labelled by the values its token carries at the claim paths: u2 (app_metadata.role=editor).
  */
-export async function setUpUsers(client: pg.Client, stack: Stack, scope: { tables: ScopeTable[]; synced: string[] }, claims?: UserClaims): Promise<Run> {
+export async function setUpUsers(client: pg.Client, stack: Stack, scope: { tables: ScopeTable[]; synced: string[]; deviceTables?: Record<string, string> }, claims?: UserClaims): Promise<Run> {
   const count = claims?.metadata.length || AUDIT_USERS;
   return exclusive(client, stack, scope.tables, async () => {
     const model = insertOrder(await readModel(client, scope.tables));
@@ -145,6 +147,7 @@ export async function setUpUsers(client: pg.Client, stack: Stack, scope: { table
       sessions,
       password,
       synced: scope.synced,
+      ...(scope.deviceTables ? { deviceTables: scope.deviceTables } : {}),
       hidden: () => new Map(),
       gaps: "warn",
     };
@@ -347,7 +350,7 @@ export async function syncAll(s: Run): Promise<Map<string, Awaited<ReturnType<ty
         session = await signIn(s.stack, u.email, s.password);
         s.sessions.set(u.id, session);
       }
-      out.set(u.id, await syncOnce(s.stack.powersync, session.token));
+      out.set(u.id, await syncOnce(s.stack.powersync, session.token, s.deviceTables ? { deviceTables: s.deviceTables } : {}));
     }),
   );
   return out;

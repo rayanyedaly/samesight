@@ -41,8 +41,15 @@ export function streamOfBucket(name: string): string {
   return afterVersion.split(/[|[]/)[0] ?? afterVersion;
 }
 
+export interface SyncOptions {
+  timeoutMs?: number;
+  /** Each device table name with the table its rows come from, where a query's alias renames it. */
+  deviceTables?: Record<string, string>;
+}
+
 /** Connects with `token`, waits for the first complete sync, and returns every row the device holds. */
-export async function syncOnce(endpoint: string, token: string, timeoutMs = 60_000): Promise<DeviceRow[]> {
+export async function syncOnce(endpoint: string, token: string, options: SyncOptions = {}): Promise<DeviceRow[]> {
+  const timeoutMs = options.timeoutMs ?? 60_000;
   const dir = mkdtempSync(join(tmpdir(), "samesight-device-"));
   const db = new PowerSyncDatabase({ schema: new Schema({}), database: { dbFilename: "device.db", dbLocation: dir } });
   try {
@@ -68,6 +75,7 @@ export async function syncOnce(endpoint: string, token: string, timeoutMs = 60_0
            from ps_oplog o join ps_buckets b on b.id = o.bucket
           where b.name <> '$local'`,
       ),
+      options.deviceTables,
     );
   } finally {
     await db.disconnectAndClear().catch(() => {});
@@ -76,18 +84,25 @@ export async function syncOnce(endpoint: string, token: string, timeoutMs = 60_0
   }
 }
 
-/** Folds the oplog into rows: each row once, with every column any bucket sent, and which stream sent which. */
-export function rowsFromOps(ops: Op[]): DeviceRow[] {
+/**
+ * Folds the oplog into rows: each row once, with every column any bucket sent, and which
+ * stream sent which. A row type in `deviceTables` is read as the table it names, so a row
+ * two queries send under different names is one row, with a copy from each.
+ */
+export function rowsFromOps(ops: Op[], deviceTables: Record<string, string> = {}): DeviceRow[] {
   const byKey = new Map<string, DeviceRow>();
   for (const op of ops) {
     if (op.data === null) continue;
-    const key = `${op.row_type}\u0000${op.row_id}`;
+    // Audit reads an unquoted alias lowercased, as Postgres would; the device may keep its case.
+    const named = Object.hasOwn(deviceTables, op.row_type) ? op.row_type : op.row_type.toLowerCase();
+    const table = Object.hasOwn(deviceTables, named) ? (deviceTables[named] as string) : op.row_type;
+    const key = `${table}\u0000${op.row_id}`;
     const data = JSON.parse(op.data) as Record<string, unknown>;
     const stream = streamOfBucket(op.bucket);
     const row = byKey.get(key);
     const source = { stream, columns: Object.keys(data) };
     const copy = { stream, data: { ...data } };
-    if (!row) byKey.set(key, { table: op.row_type, id: op.row_id, data, sources: [source], copies: [copy] });
+    if (!row) byKey.set(key, { table, id: op.row_id, data, sources: [source], copies: [copy] });
     else {
       row.copies = [...(row.copies ?? []), copy];
       // The same row from several buckets: keep every column any of them sent.
