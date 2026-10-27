@@ -83,6 +83,7 @@ What it checks:
 
 - **The sync config**: which tables each query sends. Query shapes it cannot map to one table are refused, never guessed at.
 - **The catalog**: RLS on every synced table, the policies on them, `anon` reach, role bypasses, policy functions it cannot read, views, the PowerSync publication, and policies or stream queries that read `user_metadata`, which users can set on themselves.
+- **The claims**: which token claims the policies and the sync config read, following SQL wrapper functions one level, and what each is compared with. Run users carry only their user id for now, so every other claim a rule reads is listed with why it is not tested: one Auth gives every user alike (`role`, `aal`), one only an access token hook adds, or a read audit cannot follow, which is reported rather than guessed at. Columns compared with the user id in any spelling (`auth.uid()`, `auth.jwt() ->> 'sub'`, `token_parameters.user_id`) get the run's users.
 - **The differential**: plain signed-up users (no tenants or roles), generated rows for the synced tables and every table they or their policies reference, a device per user, and RLS reads with the same tokens. Values come from the literals the policies and stream queries compare, and columns they compare to the user's id get the run's users. Every synced row must be one RLS returns.
 - **The write path**: each user inserts copies of other users' rows through RLS. An insert RLS allows that its writer cannot read back fails the run: that is a row a user can plant in data someone else syncs.
 

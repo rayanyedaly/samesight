@@ -25,6 +25,7 @@ export { assertLocal, DEFAULT_DB_URL, introspect, projectDbUrl, withLocalClient 
 export { buildIR, CompileError, type IR, type IRTable, type Rule, snake } from "./ir.ts";
 export { loadPolicy, POLICY_FILES, resolvePolicyPath } from "./load.ts";
 export { explainPolicy } from "./explain.ts";
+export { readSupabaseConfig, type SupabaseConfig } from "./supabase-config.ts";
 export type { ColumnInfo, ForeignKey, SchemaInfo, TableInfo } from "./schema.ts";
 export { parseSyncConfig, type SyncConfig } from "./sync/config.ts";
 export { type ParsedQuery, parseQuery, render, sqlText, type Token, type TokenizeOptions, tokenize } from "./sync/sql.ts";

@@ -329,6 +329,7 @@ async function auditMain(argv: string[]): Promise<number> {
       ...(seed !== undefined ? { seed } : {}),
       section,
       log,
+      projectDir: project,
       ...(ownService ? {} : { startPowerSync }),
     });
   } catch (e) {

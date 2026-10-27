@@ -14,6 +14,7 @@ import { worldArbitrary } from "../differential/world.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
+import { accessTokenHook, claimFindings, planClaims, policyFunctions, policyRules, type RuleSql } from "./claims.ts";
 import { auditScope } from "samesight/compiler";
 import { parseSyncConfig } from "samesight/compiler";
 import { checkWriteEscape } from "./writes.ts";
@@ -29,6 +30,8 @@ export interface AuditOptions {
   timeLimitMs: number;
   section: (title: string, findings: Finding[]) => void;
   log: (line: string) => void;
+  /** The directory holding supabase/, to read its access token hook settings. */
+  projectDir?: string;
   /**
    * Starts a PowerSync service for the differential, once the sync config and catalog
    * have passed, given the public tables it must read; resolves with where it runs.
@@ -82,12 +85,13 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
 
   let scope: ReturnType<typeof auditScope>;
   let warnings: Finding[];
-  let streamSql: { where: string; sql: string }[];
+  let streamSql: RuleSql[];
   try {
     const config = parseSyncConfig(o.syncConfig.text);
+    const dialect = config.kind === "streams" ? "streams" : "rules";
     streamSql = config.streams.flatMap((st) => [
-      ...[...st.ctes].map(([name, sql]) => ({ where: `${st.name}.${name}`, sql })),
-      ...st.queries.map((q) => ({ where: `${st.name}.${q.label}`, sql: q.sql })),
+      ...[...st.ctes].map(([name, sql]) => ({ where: `${st.name}.${name}`, sql, dialect }) as const),
+      ...st.queries.map((q) => ({ where: `${st.name}.${q.label}`, sql: q.sql, dialect }) as const),
     ]);
     scope = auditScope(config.streams, config.kind);
     warnings = config.findings;
@@ -107,9 +111,12 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     ...streamSql,
   ];
   section("Database catalog", [...(await checkAuditCatalog(client, scope.synced, o.publication, scope.reads)), ...checkUserEditableClaims(rules)]);
-  if (o.staticOnly) return findings;
-  if (failed(findings)) {
-    o.log("skipping the differential: fix the failures above first");
+  // The claims the rules read: shown now when no user will sign in, else once users have.
+  const claims = planClaims([...(await policyRules(client)), ...streamSql], await policyFunctions(client));
+  const hook = o.projectDir === undefined ? undefined : accessTokenHook(o.projectDir);
+  if (o.staticOnly || failed(findings)) {
+    section("Claims", claimFindings(claims, hook));
+    if (!o.staticOnly) o.log("skipping the differential: fix the failures above first");
     return findings;
   }
 
@@ -120,8 +127,12 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   o.log(`signing up users; generating rows for ${tables.join(", ")}`);
   // The literals and user comparisons in the project's own rules steer the generated data.
   const { hints, users } = sqlHints(rules.map((r) => r.sql).join("\n"));
-  const s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name, hints, userColumns: users })), synced: scope.synced });
+  // Columns compared with the user id in any spelling (auth.uid(), auth.jwt() ->> 'sub', token_parameters.user_id).
+  const userColumns = new Set([...users, ...claims.identityColumns]);
+  const s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name, hints, userColumns })), synced: scope.synced });
   try {
+    const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
+    section("Claims", claimFindings(claims, hook, tokens));
     o.log("generating datasets for the differential");
     const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
     section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, result.findings);
