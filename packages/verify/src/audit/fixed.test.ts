@@ -170,6 +170,12 @@ describe("deleteRows on a table found by its user column alone", () => {
       ['delete from public.user_roles where user_id = any($1::uuid[])', [["u0"]]],
     ]);
   });
+
+  it("still refuses a table without a single key whose owner column may be null: such rows would never be found", async () => {
+    const client = { query: async () => ({ rows: [] }) } as never;
+    const links: TableModel = { name: "links", primaryKey: ["a_id", "b_id"], unique: [], columns: [col("a_id", "uuid"), col("b_id", "uuid"), col("created_by", "uuid", { nullable: true })], foreignKeys: [toUsers("created_by")] };
+    await expect(deleteRows(client, [links], "5a3e5a3e", ["u0"])).rejects.toThrow(/cannot tell the run's rows of links apart/);
+  });
 });
 
 describe("hookKeysHeld", () => {

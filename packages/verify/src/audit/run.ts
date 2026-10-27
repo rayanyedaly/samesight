@@ -212,7 +212,8 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
   }
   const tables = await auditTables(client, [...named, ...(fixed?.perUser ?? [])]);
   const model = await modelOf(tables);
-  const dims = fixed && hookPlan?.fn ? hookDims(model, fixed, hookPlan.fn.body) : [];
+  // A column counts as one the hook reads when its body or a function it calls names it.
+  const dims = fixed && hookPlan?.fn ? hookDims(model, fixed, hookPlan.fn.read) : [];
   // Run users' ids are minted up front, so a claim compared with a user column can hold two of
   // them, and the hook's rows can point at them.
   const userIds = runUserIds(MAX_USERS);

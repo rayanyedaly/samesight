@@ -246,8 +246,10 @@ export async function deleteRows(client: pg.Client, tables: TableModel[], prefix
       const [key] = t.primaryKey;
       const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
       const keyed = t.primaryKey.length === 1 && key !== undefined;
-      // A table the run's rows are found in by owner alone (user_roles keyed by user and role) needs no single key.
-      if (!keyed && !owners.length) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column, no single-column primary key and no column pointing at auth.users`);
+      // A table the run's rows are found in by owner alone (user_roles keyed by user and role) needs
+      // no single key, but then every row must have an owner: one left null would never be found.
+      const owned = owners.length > 0 && owners.every((c) => t.columns.find((x) => x.name === c)?.nullable === false);
+      if (!keyed && !owned) throw new Error(`cannot tell the run's rows of ${t.name} apart: it has no tenant column, no single-column primary key and no required column pointing at auth.users`);
       const params: unknown[] = [];
       const conds = [
         ...(keyed ? [`${ident(key)}::text like $${params.push(`${prefix}%`)}`] : []),

@@ -363,7 +363,8 @@ async function prepareRun(client: pg.Client, stack: Stack, ir: IR): Promise<Setu
   plan.push({ tenant: 0, role: ir.claims.roles[1] ?? ir.claims.roles[0] ?? null }, { tenant: null, role: null });
 
   const runId = PREFIX.slice(0, 4) + Date.now().toString(36);
-  const { users, password } = await createUsers(stack, plan.length, runId, [], runUserIds(plan.length));
+  // Policy mode's claims come from tenants and roles, not ids: Auth picks them, as any Auth can.
+  const { users, password } = await createUsers(stack, plan.length, runId);
   const members: Member[] = users.map((u, i) => {
     const p = plan[i] ?? { tenant: null, role: null };
     const tenant = p.tenant === null ? null : (tenants[p.tenant] ?? null);
