@@ -8,7 +8,7 @@
  */
 
 import type pg from "pg";
-import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, outputTable, readSupabaseConfig, type SyncConfig, tablesNamed } from "samesight/compiler";
+import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, outputTable, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import { type Assignment, type SetPath, show as plain } from "./assign.ts";
@@ -20,7 +20,7 @@ export interface RuleSql {
   dialect: ClaimDialect;
   /** The table whose rows the rule decides: a policy's table, a query's output table. */
   table?: string;
-  /** Every table the rule's query names at its top level (a join's too), when known. */
+  /** Every table the rule's query names in its FROM and joins, when known. */
   tables?: string[];
   /** The query's table aliases (o in JOIN orgs o), when known. */
   aliases?: Record<string, string>;
@@ -89,13 +89,8 @@ function outputOf(sql: string): { table?: string; tables?: string[]; aliases?: R
     const out = outputTable(sql);
     return { table: out.table, tables: out.reads, aliases: out.aliases };
   } catch {
-    // Audit refuses a query it cannot read (an aliased output table, say); its tables are still worth knowing.
-    try {
-      const named = tablesNamed(sql);
-      return named.length === 1 ? { tables: named } : {};
-    } catch {
-      return {};
-    }
+    // A query audit cannot read (an aliased output table, say): its tables are unknown.
+    return {};
   }
 }
 
@@ -189,8 +184,10 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
         // An alias (documents d) is no table name: with one table it is that table's, else unknown.
         const named = rule.tables;
         const q = c.qualifier;
+        // Without the query's tables, a qualifier is trusted only beside a known table (a policy's own).
+        const alias = q !== undefined && rule.aliases && Object.hasOwn(rule.aliases, q) ? rule.aliases[q] : undefined;
         const table =
-          q === undefined || named === undefined ? (q ?? rule.table) : (rule.aliases?.[q] ?? (named.includes(q) ? q : named.length === 1 ? named[0] : undefined));
+          q === undefined ? rule.table : named === undefined ? (rule.table === undefined ? undefined : q) : (alias ?? (named.includes(q) ? q : named.length === 1 ? named[0] : undefined));
         if (table !== undefined && !read.inSubquery) {
           const tables = use.columnTables[c.column] ?? [];
           use.columnTables[c.column] = tables;
