@@ -19,40 +19,47 @@ describe("Teardown", () => {
     expect(await t.run()).toEqual(["storage container"]);
     expect(await t.run()).toEqual(["storage container"]);
     expect(order).toEqual(["powersync", "role"]);
-    expect(lines).toEqual(["could not remove storage container: docker is gone; the next run removes it"]);
+    expect(lines).toEqual(["could not remove storage container: docker is gone; the next audit that starts PowerSync removes it"]);
   });
 });
 
-/** A process stand-in: emits signals, records exits. */
-function proc() {
+/** A process stand-in: emits signals, records exits in `events`, and resolves `exited` on the first. */
+function proc(events: string[] = []) {
   const emitter = new EventEmitter();
   const exits: number[] = [];
+  let exited: (code: number) => void = () => {};
+  const first = new Promise<number>((r) => {
+    exited = r;
+  });
   const p = Object.assign(emitter, {
     exit: (code: number) => {
       exits.push(code);
+      events.push(`exit ${code}`);
+      exited(code);
       return undefined as never;
     },
   }) as unknown as Signals & EventEmitter;
-  return { p, exits };
+  return { p, exits, exited: first };
 }
 
 describe("onSignals", () => {
-  it("tears down on Ctrl+C or SIGTERM, then exits as a killed process would", async () => {
+  it("tears down on Ctrl+C, SIGTERM or SIGHUP, then exits as a killed process would", async () => {
     for (const [signal, code] of [
       ["SIGINT", 130],
       ["SIGTERM", 143],
+      ["SIGHUP", 129],
     ] as const) {
-      const { p, exits } = proc();
-      const removed: string[] = [];
+      const events: string[] = [];
+      const { p, exited } = proc(events);
       const t = new Teardown(() => {});
       t.add("x", async () => {
-        removed.push("x");
+        await new Promise((r) => setTimeout(r, 5));
+        events.push("removed x");
       });
       onSignals(t, () => {}, p);
       p.emit(signal);
-      await t.run();
-      await new Promise((r) => setImmediate(r));
-      expect([removed, exits], signal).toEqual([["x"], [code]]);
+      await exited;
+      expect(events, signal).toEqual(["removed x", `exit ${code}`]);
     }
   });
 
@@ -68,6 +75,6 @@ describe("onSignals", () => {
     const second = proc();
     const stop = onSignals(new Teardown(() => {}), () => {}, second.p);
     stop();
-    expect(second.p.listenerCount("SIGINT") + second.p.listenerCount("SIGTERM")).toBe(0);
+    expect(["SIGINT", "SIGTERM", "SIGHUP"].map((s) => second.p.listenerCount(s))).toEqual([0, 0, 0]);
   });
 });
