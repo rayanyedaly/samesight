@@ -161,7 +161,7 @@ export interface HookPlan {
   cannot?: string;
   findings: Finding[];
   /** When audit gives the hook rows (planRun): the tables with a row per run user, and the run's plan, said once. */
-  steer?: { perUser: string[]; summary: string };
+  steer?: { perUser: string[]; summary: string; names?: ReadonlyMap<string, string> };
 }
 
 const warn = (detail: string): Finding => ({ status: "warn", check: "access token hook", detail });

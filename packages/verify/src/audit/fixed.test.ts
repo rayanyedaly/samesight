@@ -18,7 +18,8 @@ const memberships: TableModel = {
   foreignKeys: [toUsers("user_id"), to("team_id", "teams")],
 };
 const audits: TableModel = { name: "audits", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("at", "text")], foreignKeys: [] };
-const model = [teams, memberships, audits];
+// Children before parents, as a catalog may list them: fixed rows still go in parents first.
+const model = [memberships, teams, audits];
 const body = "select team_id, role into m from public.memberships where user_id = (event->>'user_id')::uuid";
 
 describe("fixedPlan", () => {

@@ -142,7 +142,10 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   }
   try {
     const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
-    const refused = (s.fixedRefused ?? []).map((r): Finding => ({ status: "warn", check: "claims", detail: `the database refused a row audit gave for the access token hook, so that user holds none there: ${r}` }));
+    const given = s.fixedRefused ?? [];
+    const refused: Finding[] = given.length
+      ? [{ status: "warn", check: "claims", detail: `the database refused ${given.length === 1 ? "a row" : `${given.length} rows`} audit gave for the access token hook, so ${given.length === 1 ? "that user holds" : "those users hold"} none there: ${given.slice(0, 3).join("; ")}${given.length > 3 ? `; and ${given.length - 3} more` : ""}` }]
+      : [];
     section("Claims", [...claimFindings(claims, hook, tokens, assignment, hookPlan), ...refused]);
     o.log("generating datasets for the differential");
     // Claims users hold values of: what audit set, and what the hook added from their rows when tokens differ.
@@ -224,7 +227,7 @@ export async function planRun(client: pg.Client, config: SyncConfig, projectDir?
       for (const [i, r] of rowsGiven.filter((x) => x.table === t).entries()) names.set(String(r.row[key]), `${t} row ${i + 1}`);
     }
   }
-  if (hookPlan && fixed) hookPlan.steer = { perUser: fixed.perUser, summary: steerSummary(hookPlan, fixed, dims, assignment.hookPicks, rowsGiven) };
+  if (hookPlan && fixed) hookPlan.steer = { perUser: fixed.perUser, summary: steerSummary(hookPlan, fixed, dims, assignment.hookPicks, rowsGiven), names };
   if (hookPlan) hookPlan.findings.push(...notes.map((detail): Finding => ({ status: "warn", check: "access token hook", detail })));
 
   const scopeTables = tables.map((name) => {
