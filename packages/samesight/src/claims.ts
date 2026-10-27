@@ -224,13 +224,14 @@ interface Span {
 /** Token reads other than the user id: a helper that reads only auth.uid() tells users apart by id alone. */
 const READS_CLAIMS = /auth\s*\.\s*(jwt|role|email|parameters?)\s*\(|request\s*\.\s*jwt\s*\(|token_parameters\s*\.|current_setting\s*\(\s*'request\.jwt/i;
 
+/** How function bodies are joined under one key: the overloads that take one argument count. */
+export const BODY_JOIN = "\n;\n";
+
 /**
  * The functions a body calls, as Postgres resolves names: an unquoted name folded to lower
  * case, a quoted one kept as written, schema.name when qualified. A body that does not
  * tokenize (plpgsql's := and the like) is scanned with its comments and strings removed.
  */
-/** How function bodies are joined under one key: the overloads that take one argument count. */
-export const BODY_JOIN = "\n;\n";
 
 export function callsIn(body: string): string[] {
   const out = new Set<string>();
@@ -484,7 +485,8 @@ function literalValue(tok: Token, casts: string[]): ClaimValue | undefined {
   if (typeof v === "string" && (cast === "json" || cast === "jsonb")) {
     try {
       const parsed: unknown = JSON.parse(v);
-      // An object or array is no single value to give a user.
+      // An object or array is no single value to give a user; a number keeps its exactness.
+      if (typeof parsed === "number") return exactNumber(v.trim());
       return parsed !== null && typeof parsed === "object" ? undefined : (parsed as ClaimValue);
     } catch {
       return v;

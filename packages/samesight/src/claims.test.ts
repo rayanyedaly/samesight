@@ -49,6 +49,8 @@ describe("claimReads on SQL it used to refuse or misread", () => {
     // Postgres refuses '1.5' and '1e2' as integers.
     expect(one(`((${level})::integer IN ('1.5', '1e2', ' 7 '))`)).toEqual(["1.5", "1e2", 7]);
     expect(one(`((${level})::numeric IN ('1.5', '1e2'))`)).toEqual([1.5, 100]);
+    expect(one(`((auth.jwt() -> 'app_metadata'::text) -> 'level'::text) = '9007199254740993'::jsonb`)).toEqual(["9007199254740993"]);
+    expect(one(`((auth.jwt() -> 'app_metadata'::text) -> 'level'::text) = '2'::jsonb`)).toEqual([2]);
   });
 
   it("reads public.table.column as that table's column, and another schema's as no column of the run's", () => {

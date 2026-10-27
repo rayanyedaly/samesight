@@ -149,7 +149,7 @@ describe("overloaded policy functions on the demo's catalog", () => {
     expect(plan.unreadable.filter((x) => x.where.includes("samesight_role2"))).toEqual([]);
   });
 
-  it("joins overloads that take the same counts in the order of their argument types", async () => {
+  it("joins overloads that take the same counts in the order of their identity arguments", async () => {
     const functions = await rolledBack(client, async () => {
       await client.query("create function public.samesight_test_f(u uuid) returns text language sql stable as $$ select 'u' $$");
       await client.query("create function public.samesight_test_f(t text) returns text language sql stable as $$ select 't' $$");

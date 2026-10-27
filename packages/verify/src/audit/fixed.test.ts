@@ -178,9 +178,18 @@ describe("assignClaims with the hook's dims", () => {
       rule("(id = ((auth.jwt() ->> 'team_id'::text))::uuid)", "documents"),
     ]);
     const a = assignClaims(hookPlan, () => "fresh", [...model, docs], [], dims);
-    expect(a.claimValues.get("documents")?.get("required_role")).toEqual(["lead", "member"]);
+    // With one value no hook gives, so a document no role matches is generated too.
+    expect(a.claimValues.get("documents")?.get("required_role")).toEqual(["lead", "member", "samesight-other"]);
     expect(a.claimValues.get("documents")?.has("id")).toBe(false);
     expect(a.claimValues.get("memberships")).toBeUndefined();
+  });
+
+  it("gives the hook's parent rows two values at least, so their run users' tokens differ", () => {
+    const named = planClaims([
+      { where: "policy on teams", sql: "(name = (auth.jwt() ->> 'team_name'::text))", dialect: "postgres", table: "teams" },
+      { where: "policy on documents", sql: "((auth.jwt() ->> 'team_name'::text) = 'red'::text)", dialect: "postgres", table: "documents" },
+    ]);
+    expect(assignClaims(named, () => "fresh", model, [], dims).claimValues.get("teams")?.get("name")).toEqual(["red", "lead", "member", "samesight-other"]);
   });
 
   it("names a hook row no user holds", () => {
