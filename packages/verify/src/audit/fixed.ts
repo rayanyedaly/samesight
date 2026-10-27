@@ -38,18 +38,26 @@ export function fixedPlan(model: TableModel[], hookTables: string[]): FixedPlan 
   const perUser = hookTables.filter((n) => byName.has(n) && userColumn(byName.get(n) as TableModel) !== undefined);
   const notes = hookTables.filter((n) => !perUser.includes(n)).map((n) => `the access token hook reads ${n}, which has no column pointing at auth.users, so audit does not choose its rows`);
   const set = new Set(perUser);
-  // Every public table a row there points at, transitively.
+  // Every public table a row there must point at, transitively: a key it may leave null leaves
+  // its table generated, as before.
   const walk = [...set];
   for (let i = 0; i < walk.length; i++) {
-    for (const fk of byName.get(walk[i] as string)?.foreignKeys ?? []) {
-      if (fk.schema === "public" && fk.table !== walk[i] && !set.has(fk.table) && byName.has(fk.table)) {
+    const t = byName.get(walk[i] as string) as TableModel;
+    for (const fk of t.foreignKeys) {
+      const must = fk.columns.every((c) => t.columns.find((x) => x.name === c)?.nullable === false);
+      if (must && fk.schema === "public" && fk.table !== walk[i] && !set.has(fk.table) && byName.has(fk.table)) {
         set.add(fk.table);
         walk.push(fk.table);
       }
     }
   }
   // Parents first: a row's key to a fixed table takes one of that table's rows.
-  const tables = insertOrder(model.filter((t) => set.has(t.name))).map((t) => t.name);
+  let tables: string[];
+  try {
+    tables = insertOrder(model.filter((t) => set.has(t.name))).map((t) => t.name);
+  } catch {
+    return { tables: [], perUser: [], notes, refusal: `the tables its rows must point at (${[...set].join(", ")}) point at each other in a cycle` };
+  }
   for (const name of tables) {
     const t = byName.get(name) as TableModel;
     const own = perUser.includes(name);
@@ -90,21 +98,24 @@ export const PARENT_ROWS = 2;
  */
 export function hookDims(model: TableModel[], plan: FixedPlan, body: string, parentRows: (table: string) => number = () => PARENT_ROWS): Dim[] {
   const out: Dim[] = [];
-  const named = (c: string) => new RegExp(`(?<![A-Za-z0-9_$])${c.replace(/[$]/g, "\\$")}(?![A-Za-z0-9_$])`, "i").test(body);
+  // A column the hook reads: named in its body, or any, when it selects *.
+  const star = /(?<![A-Za-z0-9_$])select\s+(?:[A-Za-z_][A-Za-z0-9_$]*\.)?\*/i.test(body);
+  const named = (c: string) => star || new RegExp(`(?<![A-Za-z0-9_$])${c.replace(/[$]/g, "\\$")}(?![A-Za-z0-9_$])`, "i").test(body);
   for (const name of plan.perUser) {
     const t = model.find((m) => m.name === name) as TableModel;
     const user = userColumn(t);
     const own: Dim[] = [];
     for (const c of t.columns) {
       if (c.name === user || c.computed || (t.primaryKey.includes(c.name) && uuidKey(t))) continue;
-      const fk = t.foreignKeys.find((k) => k.columns.length === 1 && k.columns[0] === c.name && k.schema === "public" && plan.tables.includes(k.table));
+      // A key to a parent's rows varies; one to itself, or to another per-user table (the same user's row there), does not.
+      const fk = t.foreignKeys.find((k) => k.columns.length === 1 && k.columns[0] === c.name && k.schema === "public" && k.table !== name && plan.tables.includes(k.table) && !plan.perUser.includes(k.table));
       if (fk) {
         own.push({ table: name, column: c.name, options: Array.from({ length: parentRows(fk.table) }, (_, i) => i), parent: fk.table });
         continue;
       }
       if (t.foreignKeys.some((k) => k.columns.includes(c.name))) continue;
       if (c.values?.length) {
-        own.push({ table: name, column: c.name, options: [...c.values] });
+        if (named(c.name)) own.push({ table: name, column: c.name, options: [...c.values] });
         continue;
       }
       const literals = [...new Set([...c.hints, ...(c.claimValues ?? [])])].filter((v) => fitsType(v as ClaimValue, c.type));
@@ -137,41 +148,55 @@ export function fixedRows(
   mint: () => string,
   parentRows: (table: string) => number = () => PARENT_ROWS,
   keyPool: (table: string) => { column: string; values: unknown[] } | undefined = () => undefined,
+  claimValues: (table: string) => ReadonlyMap<string, unknown[]> | undefined = () => undefined,
 ): FixedRow[] {
   const out: FixedRow[] = [];
   const keysOf = new Map<string, unknown[]>();
+  // Per-user tables' rows by user, for a per-user row that points at the same user's row in another.
+  const mineOf = new Map<string, Map<number, Record<string, unknown>>>();
   const fill = (t: TableModel, row: Record<string, unknown>, seed: number) => {
     for (const c of t.columns) {
-      if (row[c.name] !== undefined || !required(c)) continue;
-      row[c.name] = c.values?.[seed % c.values.length] ?? sampleValue(c, seed);
+      if (row[c.name] !== undefined || c.computed) continue;
+      // Values run users hold in a claim the rules compare this column with, as generated rows would take them.
+      const held = claimValues(t.name)?.get(c.name);
+      if (held?.length) row[c.name] = held[seed % held.length];
+      else if (required(c)) row[c.name] = c.values?.[seed % c.values.length] ?? sampleValue(c, seed);
     }
     return row;
   };
+  const toUsers = (t: TableModel) => t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
   for (const name of plan.tables) {
     const t = model.find((m) => m.name === name) as TableModel;
     const key = t.primaryKey[0] as string;
     if (!plan.perUser.includes(name)) {
       const pool = keyPool(name);
       const keys = Array.from({ length: parentRows(name) }, (_, i) => (pool?.column === key ? pool.values[i] : undefined) ?? mint());
-      keysOf.set(name, keys);
       for (const [i, k] of keys.entries()) {
         const row: Record<string, unknown> = { [key]: k };
-        // A key to another fixed table: its rows in turn.
+        // A key to another fixed table: its rows in turn; to auth.users, the run's users in turn; to itself, none.
         for (const fk of t.foreignKeys) {
-          if (fk.schema === "public" && fk.columns.length === 1 && keysOf.has(fk.table)) {
+          if (fk.columns.length !== 1) continue;
+          if (fk.schema === "public" && fk.table !== name && keysOf.has(fk.table)) {
             const parents = keysOf.get(fk.table) as unknown[];
             row[fk.columns[0] as string] = parents[i % parents.length];
           }
         }
+        for (const c of toUsers(t)) if (userIds.length) row[c] = userIds[i % userIds.length];
         out.push({ table: name, row: fill(t, row, i) });
       }
+      keysOf.set(name, keys);
       continue;
     }
     const user = userColumn(t) as string;
     const mine = dims.map((d, i) => ({ d, i })).filter(({ d }) => d.table === name);
+    const rows = new Map<number, Record<string, unknown>>();
+    mineOf.set(name, rows);
     for (const [u, pick] of picks.entries()) {
       if (!pick || userIds[u] === undefined) continue;
-      const row: Record<string, unknown> = { [user]: userIds[u] };
+      const row: Record<string, unknown> = {};
+      // Every key to auth.users is this user (a created_by beside user_id).
+      for (const c of toUsers(t)) row[c] = userIds[u];
+      row[user] = userIds[u];
       if (uuidKey(t)) row[key] = mint();
       let present = true;
       for (const { d, i } of mine) {
@@ -180,7 +205,18 @@ export function fixedRows(
         else if (d.parent) row[d.column] = (keysOf.get(d.parent) ?? [])[option as number];
         else row[d.column] = option;
       }
-      if (present) out.push({ table: name, row: fill(t, row, 100 + u), user: u });
+      // A key to another per-user table: this user's row there, or none.
+      for (const fk of t.foreignKeys) {
+        const parent = fk.columns.length === 1 && fk.schema === "public" && fk.table !== name ? mineOf.get(fk.table) : undefined;
+        if (!parent) continue;
+        const theirs = parent.get(u);
+        const column = fk.columns[0] as string;
+        if (theirs) row[column] = theirs[fk.references[0] as string];
+        else if (t.columns.find((c) => c.name === column)?.nullable === false) present = false;
+      }
+      if (!present) continue;
+      rows.set(u, fill(t, row, 100 + u));
+      out.push({ table: name, row, user: u });
     }
   }
   return out;

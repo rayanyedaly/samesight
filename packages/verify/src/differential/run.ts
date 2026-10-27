@@ -181,6 +181,8 @@ export interface FixedSetUp {
   hook?: string;
   /** Fixed rows' keys as labels show them (teams row 1). */
   names?: Map<string, string>;
+  /** Per-user tables and their user columns: run users' rows there (a sign-up trigger's) go before the fixed ones. */
+  clear?: { table: string; column: string }[];
 }
 
 /** The metadata audit gives each run user, and the claim paths to label users by. */
@@ -228,6 +230,20 @@ export async function setUpUsers(
     // database refuses leaves the others.
     const fixedRows: Inserted[] = [];
     const fixedRefused: string[] = [];
+    if (scope.fixed?.clear?.length) {
+      await client.query("begin");
+      try {
+        // As cleanup deletes: past the project's own delete triggers.
+        await client.query("set local session_replication_role = replica");
+        for (const { table, column } of scope.fixed.clear) {
+          await client.query(`delete from public.${ident(table)} where ${ident(column)} = any($1::uuid[])`, [users.map((u) => u.id)]);
+        }
+        await client.query("commit");
+      } catch (e) {
+        await client.query("rollback").catch(() => {});
+        throw e;
+      }
+    }
     if (scope.fixed?.rows.length) {
       await client.query("begin");
       try {
