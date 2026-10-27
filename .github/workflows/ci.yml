@@ -168,11 +168,11 @@ jobs:
       - run: pnpm --filter audit-roles stack:up
       # Claim discovery and the catalog on an app whose rules read app_metadata.
       - run: pnpm --filter @samesight/verify test:roles
-      # Every role policy and stream is seen both ways; the org ones wait for column claims.
+      # Every policy and stream, the role and org ones included, is seen both ways.
       - name: samesight-verify audit
         run: >-
           timeout 300 bash scripts/ci/verify-coverage.sh examples/audit-roles
-          "6 of 8 RLS read policies on synced tables were seen both allowing and refusing a run user a row; 2 were not \(below\)\. 5 of 7 stream/table pairs both sent and withheld a row\."
+          "8 of 8 RLS read policies on synced tables were seen both allowing and refusing a run user a row\. 7 of 7 stream/table pairs both sent and withheld a row\."
           --sync-config sync-config.yaml --runs 4
       # Run users hold the roles the rules compare: a leak only editors see must be caught.
       - name: samesight-verify audit on a planted editor leak

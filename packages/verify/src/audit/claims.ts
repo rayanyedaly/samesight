@@ -8,7 +8,7 @@
  */
 
 import type pg from "pg";
-import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
+import { type ClaimClass, type ClaimDialect, type ClaimValue, claimReads, classify, outputTable, readSupabaseConfig, type SyncConfig } from "samesight/compiler";
 import { rows } from "../db.ts";
 import type { Finding } from "../report.ts";
 import { type Assignment, type SetPath, show as plain } from "./assign.ts";
@@ -18,6 +18,8 @@ export interface RuleSql {
   where: string;
   sql: string;
   dialect: ClaimDialect;
+  /** The table whose rows the rule decides: a policy's table, a query's output table. */
+  table?: string;
 }
 
 /** Everything the rules read at one claim path. */
@@ -32,6 +34,8 @@ export interface ClaimUse {
   values: ClaimValue[];
   /** Columns compared with it, by bare name. */
   columns: string[];
+  /** Per column, the tables of the rules that compare it, where known. */
+  columnTables: Record<string, string[]>;
   /** Other comparisons, as written: audit cannot tell what value they need. */
   other: string[];
   casts: string[];
@@ -72,8 +76,16 @@ export function syncRules(config: SyncConfig): RuleSql[] {
   const dialect = config.kind === "streams" ? "streams" : "rules";
   return config.streams.flatMap((st) => [
     ...[...st.ctes].map(([name, sql]) => ({ where: `${st.name}.${name}`, sql, dialect }) as const),
-    ...st.queries.map((q) => ({ where: `${st.name}.${q.label}`, sql: q.sql, dialect }) as const),
+    ...st.queries.map((q) => ({ where: `${st.name}.${q.label}`, sql: q.sql, dialect, ...outputOf(q.sql) }) as const),
   ]);
+}
+
+function outputOf(sql: string): { table?: string } {
+  try {
+    return { table: outputTable(sql).table };
+  } catch {
+    return {};
+  }
 }
 
 /** Each public policy's USING and WITH CHECK, in a stable order. */
@@ -85,8 +97,8 @@ export async function policyRules(client: pg.Client): Promise<RuleSql[]> {
     ),
   );
   return policies.flatMap((p) => [
-    ...(p.qual ? [{ where: `policy "${p.name}" on ${p.table} (USING)`, sql: p.qual, dialect: "postgres" as const }] : []),
-    ...(p.with_check ? [{ where: `policy "${p.name}" on ${p.table} (WITH CHECK)`, sql: p.with_check, dialect: "postgres" as const }] : []),
+    ...(p.qual ? [{ where: `policy "${p.name}" on ${p.table} (USING)`, sql: p.qual, dialect: "postgres" as const, table: p.table }] : []),
+    ...(p.with_check ? [{ where: `policy "${p.name}" on ${p.table} (WITH CHECK)`, sql: p.with_check, dialect: "postgres" as const, table: p.table }] : []),
   ]);
 }
 
@@ -150,7 +162,7 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
     for (const u of found.unreadable) unreadable.push({ where: rule.where, ...u });
     for (const read of found.reads) {
       const key = claimKey(read.path);
-      const use = uses.get(key) ?? { path: read.path, key, cls: classify(read.path), rules: [], values: [], columns: [], other: [], casts: [], negated: false };
+      const use = uses.get(key) ?? { path: read.path, key, cls: classify(read.path), rules: [], values: [], columns: [], columnTables: {}, other: [], casts: [], negated: false };
       uses.set(key, use);
       if (!use.rules.includes(rule.where)) use.rules.push(rule.where);
       for (const c of read.casts) if (!use.casts.includes(c)) use.casts.push(c);
@@ -160,6 +172,12 @@ export function planClaims(rules: RuleSql[], functions: ReadonlyMap<string, stri
         for (const v of c.values) if (!use.values.some((x) => valueKey(x) === valueKey(v))) use.values.push(v);
       } else if (c.kind === "column") {
         if (!use.columns.includes(c.column)) use.columns.push(c.column);
+        // A column in a subquery is another table's: only the rule's own table is known.
+        if (rule.table !== undefined && !read.inSubquery) {
+          const tables = use.columnTables[c.column] ?? [];
+          use.columnTables[c.column] = tables;
+          if (!tables.includes(rule.table)) tables.push(rule.table);
+        }
         // By bare name, as the generator applies them (a membership table's user_id in a
         // subquery included); it never gives user ids to a primary or foreign key.
         if (use.cls === "identity") identityColumns.add(c.column);
@@ -222,12 +240,14 @@ export function claimFindings(
         const set = assignment?.paths.find((p) => p.key === u.key);
         const reason = assignment?.notSet.get(u.key);
         if (set) {
-          // Values come from the literals only: a comparison with a column is not steered yet.
-          const columns = u.columns.length ? `; the comparison with ${u.columns.length === 1 ? "column" : "columns"} ${u.columns.join(", ")} gets no values of its own yet` : "";
-          if (!tokens) add(columns ? "warn" : "ok", `${read}; a full run gives users ${set.pool.map(show).join(", ")}, and one user none of them (not run: --static)${columns}`);
+          // Generated rows hold the values in the columns compared with the claim, where they can.
+          const placed = set.columns.length ? `; generated rows take them in ${set.columns.join(", ")}` : "";
+          const columns = `${placed}${set.skipped.length ? `; not in ${set.skipped.join("; ")}` : ""}`;
+          const steered = set.skipped.length === 0;
+          if (!tokens) add(steered ? "ok" : "warn", `${read}; a full run gives users ${set.pool.map(show).join(", ")}, and one user none of them (not run: --static)${columns}`);
           else {
             const { line, all } = heldLine(tokens, set);
-            add(all && !columns ? "ok" : "warn", `${read}; held: ${line}${columns}`);
+            add(all && steered ? "ok" : "warn", `${read}; held: ${line}${columns}`);
           }
           break;
         }

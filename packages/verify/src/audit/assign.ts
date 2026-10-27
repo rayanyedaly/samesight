@@ -4,10 +4,16 @@
  * none of them match. Users take every combination of the pools when there are at most six,
  * else as many as six users can show, holding every value when each pool fits; then one user
  * holds the same claims as the first (rows of someone else with the same role), and one holds
- * none. Pure: the run signs the users up with what this gives them.
+ * none. A path compared only with columns gets two values of the columns' type (from a
+ * CHECK list, or fresh run uuids), and generated rows take a path's values in the columns
+ * it is compared with: a key column's first rows take them as keys (a foreign key's
+ * referenced table, for a foreign key), any other column draws them often. Columns are
+ * matched by bare name in the tables of the rules that compare them. Pure: the run signs
+ * the users up, and generates rows, with what this gives.
  */
 
 import type { ClaimValue } from "samesight/compiler";
+import type { TableModel } from "../differential/model.ts";
 import type { Finding } from "../report.ts";
 import type { ClaimsPlan } from "./claims.ts";
 
@@ -20,6 +26,10 @@ export interface SetPath {
   key: string;
   /** The values users take: the rules' literals, then the one none of them match, if any. */
   pool: ClaimValue[];
+  /** Columns generated rows put these values in, as table.column. */
+  columns: string[];
+  /** Columns compared with it that get none, and why. */
+  skipped: string[];
 }
 
 export type Metadata = Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>;
@@ -34,6 +44,73 @@ export interface Assignment {
   findings: Finding[];
   /** Some combination of values of two or more paths is held by no user. */
   partial: boolean;
+  /** Per table and column, values generated rows draw often. */
+  claimValues: Map<string, Map<string, unknown[]>>;
+  /** Per table, a key column whose first generated rows take these values. */
+  keyPools: Map<string, { column: string; values: unknown[] }>;
+}
+
+/** Values of a column's type that two users can tell apart. */
+const COLUMN_POOL = 2;
+
+interface Target {
+  table: string;
+  column: string;
+  /** Rows take the values as keys (the first rows), or draw them. */
+  key: boolean;
+  /** The column's own CHECK or enum values. */
+  values?: string[];
+  type: string;
+}
+
+/** Where generated rows put a path's values, and the columns compared with it that cannot take them. */
+function targetsOf(columns: string[], columnTables: Record<string, string[]>, family: string | undefined, model: TableModel[]): { targets: Target[]; skipped: string[] } {
+  const targets: Target[] = [];
+  const skipped: string[] = [];
+  for (const name of columns) {
+    const tables = columnTables[name]?.length ? model.filter((t) => columnTables[name]?.includes(t.name)) : model;
+    if (!tables.some((t) => t.columns.some((c) => c.name === name))) skipped.push(`${name} (no generated table has it)`);
+    for (const t of tables) {
+      const col = t.columns.find((c) => c.name === name);
+      if (!col) continue;
+      const kind = castFamily(col.type);
+      if (family !== undefined && kind !== family) {
+        skipped.push(`${t.name}.${name} (${col.type}, which the rules do not cast the claim to)`);
+        continue;
+      }
+      const fk = t.foreignKeys.find((k) => k.columns.length === 1 && k.columns[0] === name);
+      if (fk?.schema === "auth") {
+        skipped.push(`${t.name}.${name} (a key to auth.users: not given run user ids yet)`);
+      } else if (fk) {
+        const parent = model.find((m) => m.name === fk.table);
+        const ref = fk.references[0] as string;
+        if (parent && parent.primaryKey.length === 1 && parent.primaryKey[0] === ref) targets.push({ table: parent.name, column: ref, key: true, type: col.type });
+        else skipped.push(`${t.name}.${name} (a key to ${fk.table}.${ref}, which the run does not generate keys for)`);
+      } else if (t.primaryKey.length === 1 && t.primaryKey[0] === name) {
+        targets.push({ table: t.name, column: name, key: true, type: col.type });
+      } else targets.push({ table: t.name, column: name, key: false, type: col.type, ...(col.values?.length ? { values: col.values } : {}) });
+    }
+  }
+  const seen = new Set<string>();
+  return { targets: targets.filter((x) => !seen.has(`${x.table}.${x.column}`) && seen.add(`${x.table}.${x.column}`)), skipped };
+}
+
+/** Two values of the targets' type for a path compared only with columns; undefined when audit has none. */
+function columnPool(targets: Target[], family: string | undefined, fresh: () => string): ClaimValue[] | undefined {
+  const listed = targets.find((x) => x.values?.length)?.values;
+  if (listed && !targets.some((x) => x.key)) return listed.slice(0, COLUMN_POOL);
+  switch (family ?? castFamily(targets[0]?.type ?? "")) {
+    case "uuid":
+      return Array.from({ length: COLUMN_POOL }, fresh);
+    case "number":
+      return [101, 102];
+    case "boolean":
+      return [true, false];
+    case "text":
+      return targets.some((x) => x.key) ? undefined : ["samesight-a", "samesight-b"];
+    default:
+      return undefined;
+  }
 }
 
 /** The value none of the literals match, of the type every cast on the path accepts; undefined when there is none. */
@@ -61,23 +138,62 @@ function castFamily(cast: string): "uuid" | "number" | "boolean" | "text" | "unk
 
 const isPrefix = (a: string[], b: string[]) => a.length < b.length && a.every((k, i) => b[i] === k);
 
-export function assignClaims(plan: ClaimsPlan, fresh: () => string): Assignment {
+export function assignClaims(plan: ClaimsPlan, fresh: () => string, model: TableModel[] = []): Assignment {
   const notSet = new Map<string, string>();
+  const claimValues = new Map<string, Map<string, unknown[]>>();
+  const keyPools = new Map<string, { column: string; values: unknown[] }>();
   const candidates = plan.uses.filter((u) => u.cls === "app_metadata" || u.cls === "user_metadata");
   const paths: SetPath[] = [];
   for (const u of candidates) {
     const prefixOf = candidates.find((o) => o !== u && (isPrefix(o.path, u.path) || isPrefix(u.path, o.path)));
     if (u.other.length) notSet.set(u.key, `a rule uses it as ${u.other.join("; ")}, so audit cannot tell what value it needs`);
     else if (prefixOf) notSet.set(u.key, `rules also read ${prefixOf.key}, so audit cannot give users a value at both`);
-    else if (u.values.every((v) => v === null) && u.columns.length > 0) {
-      notSet.set(u.key, `it is compared only with ${u.columns.length === 1 ? "column" : "columns"} ${u.columns.join(", ")}; users are not given values for that yet`);
-    } else {
+    else {
+      const families = new Set(u.casts.map(castFamily));
+      const family = families.size === 1 && !families.has("unknown") ? [...families][0] : undefined;
+      const { targets, skipped } = targetsOf(u.columns, u.columnTables, family, model);
       // A user with no claims shows null (IS NULL): the pool holds values.
       const values = u.values.filter((v) => v !== null);
-      const other = otherValue(values, u.casts, fresh);
-      const pool = other === undefined ? values : [...values, other];
-      if (pool.length) paths.push({ path: u.path, key: u.key, pool });
-      else notSet.set(u.key, "audit found no value of the type its casts need");
+      let pool: ClaimValue[] | undefined;
+      if (values.length === 0 && u.columns.length > 0) {
+        pool = targets.length && (families.size <= 1 && !families.has("unknown")) ? columnPool(targets, family, fresh) : undefined;
+        if (!pool) {
+          const why = skipped.length ? `: ${skipped.join("; ")}` : targets.length ? ", and audit has no values of their type" : "";
+          notSet.set(u.key, `it is compared only with ${u.columns.length === 1 ? "column" : "columns"} ${u.columns.join(", ")}, and no generated row can hold its values${why}`);
+          continue;
+        }
+      } else {
+        const other = otherValue(values, u.casts, fresh);
+        pool = other === undefined ? values : [...values, other];
+      }
+      if (!pool.length) {
+        notSet.set(u.key, "audit found no value of the type its casts need");
+        continue;
+      }
+      const placed: string[] = [];
+      for (const x of targets) {
+        if (x.key) {
+          // One pool of keys per table: a second claim keyed on the same table is not placed.
+          const taken = keyPools.get(x.table);
+          if (taken && taken.column !== x.column) {
+            skipped.push(`${x.table}.${x.column} (the table's first rows already take another claim's keys)`);
+            continue;
+          }
+          keyPools.set(x.table, { column: x.column, values: [...new Set([...(taken?.values ?? []), ...pool])] });
+        } else {
+          // A column with a CHECK list takes only values the list allows: the rest would be refused.
+          const fits = x.values ? pool.filter((v) => x.values?.includes(String(v))) : pool;
+          if (!fits.length) {
+            skipped.push(`${x.table}.${x.column} (its CHECK list allows none of the values)`);
+            continue;
+          }
+          const columns = claimValues.get(x.table) ?? new Map<string, unknown[]>();
+          claimValues.set(x.table, columns);
+          columns.set(x.column, [...new Set([...(columns.get(x.column) ?? []), ...fits])]);
+        }
+        placed.push(`${x.table}.${x.column}`);
+      }
+      paths.push({ path: u.path, key: u.key, pool, columns: placed, skipped });
     }
   }
 
@@ -101,7 +217,7 @@ export function assignClaims(plan: ClaimsPlan, fresh: () => string): Assignment 
     const held = new Set(users.filter((u) => u.size).map((u) => JSON.stringify([...u])));
     findings.push({ status: "warn", check: "claims", detail: `${combos} combinations of claim values, and ${count} users hold ${held.size} of them; rules that need values together may not be tested` });
   }
-  return { paths, users, notSet, findings, partial };
+  return { paths, users, notSet, findings, partial, claimValues, keyPools };
 }
 
 /** Beyond this many combinations, users take value i of each pool, which still holds each value while pools fit. */
@@ -149,7 +265,7 @@ export function pickCombinations(sizes: number[], n: number): number[][] {
 }
 
 /** The create-user body's metadata for one user's values. */
-export function metadataOf(paths: SetPath[], values: Map<string, ClaimValue>): Metadata {
+export function metadataOf(paths: Pick<SetPath, "path" | "key">[], values: Map<string, ClaimValue>): Metadata {
   const out: Metadata = {};
   for (const p of paths) {
     if (!values.has(p.key)) continue;

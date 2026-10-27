@@ -8,7 +8,7 @@
 import fc from "fast-check";
 import type pg from "pg";
 import { rows } from "../db.ts";
-import { sqlHints } from "../differential/model.ts";
+import { readModel, sqlHints } from "../differential/model.ts";
 import { differential, PREFIX, type Run, setUpUsers, tearDown } from "../differential/run.ts";
 import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
 import { assignClaims, metadataOf } from "./assign.ts";
@@ -114,16 +114,17 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const functions = await policyFunctions(client);
   const claims = planClaims([...(await policyRules(client)), ...streamSql], functions);
   const hook = o.projectDir === undefined ? undefined : accessTokenHook(o.projectDir);
-  // The metadata values each run user holds: a uuid none of the rules name is one of the run's own.
-  const assignment = assignClaims(claims, () => prefixedUuid(PREFIX));
+  const named = [...new Set([...scope.synced, ...scope.reads])];
+  const tables = await auditTables(client, named);
+  // The metadata values each run user holds, and the columns generated rows put them in: a
+  // uuid none of the rules name is one of the run's own (its prefix), so cleanup finds it.
+  const assignment = assignClaims(claims, () => prefixedUuid(PREFIX), await readModel(client, tables.map((name) => ({ name }))));
   if (o.staticOnly || failed(findings)) {
     section("Claims", claimFindings(claims, hook, undefined, assignment));
     if (!o.staticOnly) o.log("skipping the differential: fix the failures above first");
     return findings;
   }
 
-  const named = [...new Set([...scope.synced, ...scope.reads])];
-  const tables = await auditTables(client, named);
   // Only the tables that exist: a query can read from a function (json_each) too.
   const stack = o.startPowerSync ? { ...given, ...(await o.startPowerSync(named.filter((t) => tables.includes(t)).sort())) } : given;
   o.log(`signing up users; generating rows for ${tables.join(", ")}`);
@@ -136,7 +137,13 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     s = await setUpUsers(
       client,
       stack,
-      { tables: tables.map((name) => ({ name, hints, userColumns })), synced: scope.synced },
+      {
+        tables: tables.map((name) => {
+          const pool = assignment.keyPools.get(name);
+          return { name, hints, userColumns, claimValues: assignment.claimValues.get(name) ?? new Map(), ...(pool ? { keyPool: pool } : {}) };
+        }),
+        synced: scope.synced,
+      },
       { metadata: assignment.users.map((values) => metadataOf(assignment.paths, values)), paths: assignment.paths.map((p) => p.path) },
     );
   } catch (e) {

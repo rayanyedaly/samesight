@@ -1,6 +1,7 @@
 import type { ClaimValue } from "samesight/compiler";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { claimLabel } from "../differential/run.ts";
+import type { TableModel } from "../differential/model.ts";
 import { createUsers, signIn } from "../differential/users.ts";
 import type { Stack } from "../stack.ts";
 import { assignClaims, metadataOf, otherValue, pickCombinations, show } from "./assign.ts";
@@ -82,7 +83,7 @@ describe("assignClaims", () => {
     );
     expect(a.paths).toEqual([]);
     expect(Object.fromEntries(a.notSet)).toEqual({
-      "app_metadata.org_id": "it is compared only with column org_id; users are not given values for that yet",
+      "app_metadata.org_id": "it is compared only with column org_id, and no generated row can hold its values: org_id (no generated table has it)",
       "app_metadata.team": expect.stringMatching(/^a rule uses it as lower\(/),
       "app_metadata.plan": "rules also read app_metadata.plan.tier, so audit cannot give users a value at both",
       "app_metadata.plan.tier": "rules also read app_metadata.plan, so audit cannot give users a value at both",
@@ -107,7 +108,7 @@ describe("assignClaims", () => {
   it("does not take a null literal for a value when the other comparisons are with a column", () => {
     const a = assignClaims(planClaims([policy("n", claim("org", "IS NULL")), policy("c", "(org_id = (((auth.jwt() -> 'app_metadata'::text) ->> 'org'::text))::uuid)")]), fresh);
     expect(a.paths).toEqual([]);
-    expect(a.notSet.get("app_metadata.org")).toMatch(/^it is compared only with column org_id/);
+    expect(a.notSet.get("app_metadata.org")).toMatch(/^it is compared only with column org_id, and no generated row can hold/);
   });
 
   it("keeps null out of the pool: the user with no claims shows it", () => {
@@ -189,7 +190,7 @@ describe("the Claims section with users holding values", () => {
   it("warns that a comparison with a column is not steered when the path also has literals", () => {
     const mixed = planClaims([role("a", "admin"), policy("c", "(team = ((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text))")]);
     const [line] = claimFindings(mixed, undefined, undefined, assignClaims(mixed, fresh));
-    expect(line).toMatchObject({ status: "warn", detail: expect.stringMatching(/\(not run: --static\); the comparison with column team gets no values of its own yet$/) });
+    expect(line).toMatchObject({ status: "warn", detail: expect.stringMatching(/\(not run: --static\); not in team \(no generated table has it\)$/) });
   });
 
   it("says what a full run would give under --static", () => {
@@ -220,5 +221,60 @@ describe("Auth's rate limit", () => {
       expect.objectContaining({ app_metadata: { role: "admin" }, email_confirm: true }),
       expect.not.objectContaining({ app_metadata: expect.anything() }),
     ]);
+  });
+});
+
+describe("claims compared with columns", () => {
+  const col = (name: string, type: string, more: object = {}) => ({ name, type, nullable: false, hasDefault: false, computed: false, hints: [], ...more });
+  const model: TableModel[] = [
+    { name: "orgs", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("name", "text")], foreignKeys: [] },
+    {
+      name: "documents",
+      primaryKey: ["id"],
+      unique: ["id"],
+      columns: [col("id", "uuid"), col("org_id", "uuid"), col("owner_id", "uuid"), col("status", "text", { values: ["draft", "published", "archived"] }), col("team", "text")],
+      foreignKeys: [
+        { columns: ["org_id"], schema: "public", table: "orgs", references: ["id"] },
+        { columns: ["owner_id"], schema: "auth", table: "users", references: ["id"] },
+      ],
+    },
+  ];
+  const on = (table: string, sql: string): RuleSql => ({ where: `policy on ${table}`, sql, dialect: "postgres", table });
+  const read = (key: string, cast = "") => `((auth.jwt() -> 'app_metadata'::text) ->> '${key}'::text)${cast}`;
+
+  it("gives an org claim two run uuids, which the referenced table's first rows take as keys", () => {
+    const plan = planClaims([on("documents", `(org_id = (${read("org_id")})::uuid)`), on("orgs", `(id = (${read("org_id")})::uuid)`)]);
+    const a = assignClaims(plan, fresh, model);
+    const [org] = a.paths;
+    expect(org).toMatchObject({ key: "app_metadata.org_id", columns: ["orgs.id"], skipped: [] });
+    expect(org?.pool).toHaveLength(2);
+    expect(org?.pool.every((v) => String(v).startsWith("5a3e5a3e-"))).toBe(true);
+    // documents.id is not compared with the claim: only orgs' rules compare an id.
+    expect(a.keyPools).toEqual(new Map([["orgs", { column: "id", values: org?.pool }]]));
+    expect(a.claimValues).toEqual(new Map());
+    expect(a.users).toHaveLength(4);
+  });
+
+  it("draws a plain column's values from its CHECK list, and leaves out keys to auth.users and other types", () => {
+    const plan = planClaims([
+      on("documents", `(status = ${read("stage")})`),
+      on("documents", `(owner_id = (${read("delegate")})::uuid)`),
+      on("documents", `(team = (${read("team_id")})::uuid)`),
+    ]);
+    const a = assignClaims(plan, fresh, model);
+    expect(a.paths.map((p) => [p.key, p.pool, p.columns])).toEqual([["app_metadata.stage", ["draft", "published"], ["documents.status"]]]);
+    expect(a.claimValues).toEqual(new Map([["documents", new Map([["status", ["draft", "published"]]])]]));
+    expect(Object.fromEntries(a.notSet)).toEqual({
+      "app_metadata.delegate": "it is compared only with column owner_id, and no generated row can hold its values: documents.owner_id (a key to auth.users: not given run user ids yet)",
+      "app_metadata.team_id": "it is compared only with column team, and no generated row can hold its values: documents.team (text, which the rules do not cast the claim to)",
+    });
+  });
+
+  it("puts a literal-compared claim's values in the columns it is also compared with", () => {
+    const plan = planClaims([on("documents", `(${read("stage")} = 'published'::text)`), on("documents", `(status = ${read("stage")})`)]);
+    const a = assignClaims(plan, fresh, model);
+    expect(a.paths.map((p) => [p.pool, p.columns])).toEqual([[["published", "samesight-other"], ["documents.status"]]]);
+    // samesight-other is not in status's CHECK list: rows could not hold it.
+    expect(a.claimValues.get("documents")?.get("status")).toEqual(["published"]);
   });
 });
