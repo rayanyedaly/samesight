@@ -116,6 +116,7 @@ See [auditing an existing project](docs/verify.md#audit-mode).
 - [The verifier and audit mode](docs/verify.md)
 - [Fieldbook](examples/fieldbook), the example app: multi-tenant inspections with three roles, offline writes and append-only records
 - [Quickstart](examples/quickstart): what the getting-started guide produces, verified in CI
+- [Audit roles](examples/audit-roles): hand-written RLS and sync streams reading a role and an org from `app_metadata`, audited in CI
 - [Changelog](CHANGELOG.md)
 
 ## What it does not do
