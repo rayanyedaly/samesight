@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { auditScope } from "./scope.ts";
-import { parseSyncConfig } from "./sync-config.ts";
+import { parseSyncConfig } from "./config.ts";
 
 // Real sync configs from PowerSync's demos, and copies with a planted leak: see corpus/SOURCES.md.
 const corpus = fileURLToPath(new URL("../../../../corpus/", import.meta.url));

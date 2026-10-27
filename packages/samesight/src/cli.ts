@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * samesight init | generate | check | doctor | explain
+ * samesight init | generate | check | doctor | explain | lint
  *
  * Runs on Node's built-in TypeScript support (type stripping), so a policy file is
  * imported as written. Paths in the policy's `output` are relative to the policy file.
@@ -15,6 +15,9 @@ import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
+import { applyAllow, exitCode, formatLint, type LintFinding, sortFindings } from "./lint/finding.ts";
+import { findSyncConfig, lintSyncConfig, MIGRATIONS_DIR, RULE_NAMES, SYNC_CONFIG_FILES } from "./lint/lint.ts";
+import { type Migrations, readMigrations } from "./lint/migrations.ts";
 import { loadPolicy, POLICY_FILES, resolvePolicyPath, tsIsModule } from "./load.ts";
 import type { Policy } from "./policy.ts";
 import type { SchemaInfo } from "./schema.ts";
@@ -30,12 +33,22 @@ Commands:
   check      regenerate from the saved schema snapshot and fail if anything on disk differs
   doctor     check the local database against the policy (RLS, publication, hook, replication lag)
   explain    print who can read and write what, in plain words, from the saved schema snapshot
+  lint [file ...]
+             check PowerSync sync configs for known leak patterns, reading the files only
+             (default: sync-config.yaml or sync-rules.yaml, here or under powersync/)
 
 Options:
   --policy <file>   policy file (default: samesight.policy.ts, or samesight.policy.mts)
   --db <url>        local database URL (default: $SAMESIGHT_DB_URL, else the [db] port in
                     supabase/config.toml, else 54322)
   --table <name>    explain: one table only
+  --migrations <dir>
+                    lint: the SQL migrations to read RLS from (default: supabase/migrations)
+  --allow <rule>[:<name>]
+                    lint: accept a rule's findings, all of them or those about one stream,
+                    bucket, table or policy; repeatable
+  --format <text|json>
+                    lint: text (default) or one JSON object on stdout, notes on stderr
   -v, --version     print the version
   -h, --help        print this help
 
@@ -50,6 +63,9 @@ async function main(argv: string[]): Promise<number> {
       policy: { type: "string" },
       db: { type: "string" },
       table: { type: "string" },
+      migrations: { type: "string" },
+      allow: { type: "string", multiple: true },
+      format: { type: "string" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
     },
@@ -63,6 +79,8 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return command || values.help ? 0 : 1;
   }
+  // Lint needs no policy: it is for any PowerSync project.
+  if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);
@@ -130,6 +148,59 @@ async function main(argv: string[]): Promise<number> {
       console.error(`Unknown command "${command}".\n\n${USAGE}`);
       return 1;
   }
+}
+
+/** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read. */
+function lint(given: string[], migrationsDir: string | undefined, allow: string[], format: string): number {
+  if (format !== "text" && format !== "json") {
+    console.error(`--format must be text or json, not "${format}"`);
+    return 2;
+  }
+  // A misspelt rule would allow nothing and look like it worked.
+  const unknown = allow.map((a) => a.split(":")[0] as string).filter((r) => !RULE_NAMES.includes(r));
+  if (unknown.length) {
+    console.error(`--allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
+    return 2;
+  }
+  const found = given.length ? given : [findSyncConfig(process.cwd())].filter((f): f is string => f !== undefined);
+  if (found.length === 0) {
+    console.error(`No sync config found (tried ${SYNC_CONFIG_FILES.join(", ")}); name one: samesight lint <file>`);
+    return 2;
+  }
+  const dir = migrationsDir ?? (existsSync(MIGRATIONS_DIR) ? MIGRATIONS_DIR : undefined);
+  let migrations: Migrations | undefined;
+  if (dir) {
+    try {
+      migrations = readMigrations(dir);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      console.error(code === "ENOENT" ? `No migrations directory at ${dir}.` : code === "ENOTDIR" ? `${dir} is not a directory${migrationsDir ? "; --migrations takes the directory that holds the .sql files" : ""}.` : `Cannot read the migrations in ${dir}: ${(e as Error).message}`);
+      return 2;
+    }
+  } else console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run; pass --migrations <dir> to check them`);
+  const findings: LintFinding[] = [];
+  const unreadable: { file: string; error: string }[] = [];
+  for (const file of found) {
+    try {
+      findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file, undefined, migrations));
+    } catch (e) {
+      console.error(`${file}: cannot be read as a sync config: ${(e as Error).message}`);
+      unreadable.push({ file, error: (e as Error).message });
+    }
+  }
+  const { kept, allowed } = applyAllow(findings, allow);
+  const code = unreadable.length ? 2 : exitCode(kept);
+  if (format === "json") {
+    const count = (level: string) => kept.filter((f) => f.level === level).length;
+    const report = { files: found, rlsChecked: migrations !== undefined, findings: sortFindings(kept), allowed: sortFindings(allowed), unreadable, errors: count("error"), warnings: count("warning"), notes: count("info"), exitCode: code };
+    console.log(JSON.stringify(report, null, 2));
+    return code;
+  }
+  // "No problems found" would be false for a file that was never checked.
+  if (kept.length || !unreadable.length) console.log(formatLint(kept));
+  if (allowed.length) console.log(`${allowed.length} finding${allowed.length === 1 ? "" : "s"} allowed by --allow`);
+  if (unreadable.length) console.error(`${unreadable.length} of ${found.length} file(s) could not be read, so nothing in them was checked.`);
+  return code;
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {

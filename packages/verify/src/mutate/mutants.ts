@@ -17,11 +17,9 @@
  * instead of being run.
  */
 
-import { emitMigration, ident, type IR, type IRTable, type Rule } from "samesight/compiler";
+import { emitMigration, ident, type IR, type IRTable, parseQuery, type Rule, type Stream, sqlText, tokenize } from "samesight/compiler";
 import { stringify } from "yaml";
 import { splitSqlStatements } from "../sql.ts";
-import { parseQuery, sqlText, tokenize } from "../static/stream-sql.ts";
-import type { Stream } from "../static/streams.ts";
 
 export interface SyncMutant {
   name: string;

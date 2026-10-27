@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import fc from "fast-check";
-import { buildIR, introspect, loadPolicy, outputPaths, PUBLICATION, plan, resolvePolicyPath, type SchemaInfo } from "samesight/compiler";
+import { buildIR, introspect, loadPolicy, outputPaths, PUBLICATION, parseStreams, plan, resolvePolicyPath, type SchemaInfo } from "samesight/compiler";
 import { audit } from "./audit/run.ts";
 import { connectLocal } from "./db.ts";
 import { differential, setUp, tearDown } from "./differential/run.ts";
@@ -33,7 +33,7 @@ import { checkCatalogParity } from "./static/catalog-parity.ts";
 import { checkCatalog } from "./static/catalog.ts";
 import { checkClientSchema } from "./static/client-schema.ts";
 import { checkManifest, type Manifest } from "./static/manifest.ts";
-import { checkStreams, parseStreams } from "./static/streams.ts";
+import { checkStreams } from "./static/streams.ts";
 import { checkVersionFloor } from "./static/version-floor.ts";
 import { checkWritePath } from "./writepath.ts";
 

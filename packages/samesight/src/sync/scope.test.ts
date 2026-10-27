@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseStreams } from "../static/streams.ts";
+import { parseStreams } from "./streams.ts";
 import { auditScope, outputTable, tablesNamed } from "./scope.ts";
 
 const config = (streams: string[]) => ["config:", "  edition: 3", "streams:", ...streams, ""].join("\n");

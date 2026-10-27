@@ -14,8 +14,8 @@ import { worldArbitrary } from "../differential/world.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
-import { auditScope } from "./scope.ts";
-import { parseSyncConfig } from "./sync-config.ts";
+import { auditScope } from "samesight/compiler";
+import { parseSyncConfig } from "samesight/compiler";
 import { checkWriteEscape } from "./writes.ts";
 
 export interface AuditOptions {

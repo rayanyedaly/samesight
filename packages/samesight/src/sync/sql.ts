@@ -1,4 +1,4 @@
-import { ident } from "samesight/compiler";
+import { ident } from "../emit/expr.ts";
 
 /**
  * Just enough of the stream SQL dialect to check gates: a tokenizer, the projection,

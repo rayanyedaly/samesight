@@ -1,8 +1,8 @@
 import { col, definePolicy, table } from "samesight";
-import { buildIR, emitSyncConfig } from "samesight/compiler";
+import { buildIR, emitSyncConfig, parseStreams } from "samesight/compiler";
 import { describe, expect, it } from "vitest";
 import { ir, policy, schema, syncConfig } from "../fixtures/fieldbook.ts";
-import { checkStreams, parseStreams } from "./streams.ts";
+import { checkStreams } from "./streams.ts";
 
 const check = (yaml: string, against = ir) => checkStreams(against, parseStreams(yaml));
 const fails = (yaml: string, against = ir) => check(yaml, against).filter((f) => f.status === "fail").map((f) => f.detail);
@@ -132,23 +132,6 @@ describe("checkStreams on Fieldbook", () => {
     const empty = check("config:\n  edition: 3\nstreams: {}\n");
     expect(empty.filter((f) => f.status === "fail")).toEqual([]);
     expect(empty.filter((f) => f.status === "warn")).toHaveLength([...ir.tables].reduce((n, t) => n + t.read.size, 0));
-  });
-});
-
-describe("parseStreams", () => {
-  it("refuses sections and keys it does not read, instead of skipping them", () => {
-    expect(() => parseStreams(`${syncConfig}bucket_definitions:\n  leak:\n    data:\n      - SELECT * FROM "Inspection"\n`)).toThrow(
-      "the sync config has bucket_definitions, which this check does not read; only streams are supported",
-    );
-    expect(() => parseStreams("streams:\n  s:\n    data:\n      - SELECT 1\n")).toThrow("stream s has data, which this check does not read");
-    expect(() => parseStreams("config:\n  edition: 3\n")).toThrow("no streams: section");
-  });
-
-  it("refuses malformed queries, and labels a single query by its key", () => {
-    expect(() => parseStreams("streams:\n  s:\n    queries: SELECT 1\n")).toThrow("queries must be a list of SQL strings");
-    expect(() => parseStreams("streams:\n  s:\n    query: [a]\n")).toThrow("query must be a SQL string");
-    expect(() => parseStreams("streams:\n  s:\n    with:\n      c: [a]\n")).toThrow("with must map names to SQL strings");
-    expect(parseStreams("streams:\n  s:\n    query: SELECT 1\n")[0]?.queries).toEqual([{ label: "query", sql: "SELECT 1" }]);
   });
 });
 
