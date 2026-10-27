@@ -23,6 +23,36 @@ describe("Teardown", () => {
   });
 });
 
+describe("Teardown.step", () => {
+  it("makes a teardown begun mid-step wait for it, and refuses the steps after", async () => {
+    const events: string[] = [];
+    const t = new Teardown(() => {});
+    t.add("container", async () => {
+      events.push("removed");
+    });
+    let finish: () => void = () => {};
+    const step = t.step(
+      () =>
+        new Promise<void>((r) => {
+          finish = () => {
+            events.push("created");
+            r();
+          };
+        }),
+    );
+    const done = t.run();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(events).toEqual([]);
+    finish();
+    await step;
+    await done;
+    expect(events).toEqual(["created", "removed"]);
+    expect(t.started).toBe(true);
+    await expect(t.step(async () => events.push("too late"))).rejects.toThrow(/stopped/);
+    expect(events).toEqual(["created", "removed"]);
+  });
+});
+
 /** A process stand-in: emits signals, records exits in `events`, and resolves `exited` on the first. */
 function proc(events: string[] = []) {
   const emitter = new EventEmitter();

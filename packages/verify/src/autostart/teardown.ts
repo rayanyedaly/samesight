@@ -11,6 +11,7 @@
 export class Teardown {
   private readonly steps: { what: string; fn: () => Promise<void> }[] = [];
   private done: Promise<string[]> | undefined;
+  private pending: Promise<unknown> = Promise.resolve();
   private readonly log: (line: string) => void;
 
   constructor(log: (line: string) => void) {
@@ -21,9 +22,26 @@ export class Teardown {
     this.steps.push({ what, fn });
   }
 
+  /** Whether the teardown has begun: a run still starting stops at its next step. */
+  get started(): boolean {
+    return this.done !== undefined;
+  }
+
+  /**
+   * Runs a step of the start, unless the teardown has begun; a teardown begun meanwhile
+   * (Ctrl+C) waits for it to settle, so nothing is made after it was removed.
+   */
+  step<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.started) return Promise.reject(new Error("stopped"));
+    const p = fn();
+    this.pending = p.catch(() => {});
+    return p;
+  }
+
   /** Runs every step, last added first; resolves with what could not be removed. */
   run(): Promise<string[]> {
     this.done ??= (async () => {
+      await this.pending;
       const failed: string[] = [];
       for (const step of [...this.steps].reverse()) {
         try {
@@ -55,7 +73,12 @@ export interface Signals {
  */
 export function onSignals(teardown: Teardown, log: (line: string) => void, proc: Signals = process): () => void {
   const handle = (signal: Signal, code: number) => () => {
-    log(`${signal}: removing what this run started (Ctrl+C again to leave it for the next run to remove)`);
+    // A closed terminal, or a pipe whose reader has gone (| tee), makes every later write
+    // fail with EPIPE; unhandled, that would end the process before the teardown runs.
+    for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
+    try {
+      log(`${signal}: removing what this run started (Ctrl+C again to leave it for the next run to remove)`);
+    } catch {}
     proc.once("SIGINT", () => proc.exit(code));
     void teardown.run().then(() => proc.exit(code));
   };

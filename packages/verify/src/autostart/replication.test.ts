@@ -56,11 +56,20 @@ describe("tearDownReplication", () => {
     expect(c.sql.filter((s) => !s.startsWith("select exists"))).toEqual([
       "select pg_terminate_backend(active_pid, 5000) from pg_replication_slots where active and starts_with(slot_name, $1)",
       "select pg_drop_replication_slot(slot_name) from pg_replication_slots where not active and starts_with(slot_name, $1)",
+      "select slot_name as slot from pg_replication_slots where starts_with(slot_name, $1)",
       "select pg_terminate_backend(pid, 5000) from pg_stat_activity where usename = $1",
       'revoke all on all tables in schema public from "samesight_audit_a1b2c3d4"',
       'revoke all on schema public from "samesight_audit_a1b2c3d4"',
       'drop role "samesight_audit_a1b2c3d4"',
     ]);
+  });
+
+  it("keeps the role, and says so, while a slot is still in use", async () => {
+    const c = client({});
+    const query = c.query as unknown as (text: string) => Promise<{ rows: unknown[] }>;
+    c.query = (async (text: string) => (/as slot from/.test(text) ? (c.sql.push(text), { rows: [{ slot: "samesight_audit_a1b2c3d4_1_ab" }] }) : query(text))) as never;
+    await expect(tearDownReplication(c, r)).rejects.toThrow(/samesight_audit_a1b2c3d4_1_ab is still in use/);
+    expect(c.sql.some((s) => /drop role/.test(s))).toBe(false);
   });
 
   it("skips a role already gone", async () => {

@@ -38,7 +38,7 @@ const supabase = (name: string, image: string) => ({
 });
 
 /** A fake Docker with the demo's Supabase stack, optionally a kept run, recording calls. */
-function docker(o: { kept?: string; failOn?: RegExp } = {}) {
+function docker(o: { kept?: string; keptFingerprint?: string; failOn?: RegExp; failure?: string; systemId?: string } = {}) {
   const calls: string[][] = [];
   const containers: Record<string, unknown> = {
     supabase_db_todo: supabase("supabase_db_todo", "supabase/postgres:17"),
@@ -47,11 +47,14 @@ function docker(o: { kept?: string; failOn?: RegExp } = {}) {
   const exec: Exec = async (args) => {
     calls.push(args);
     const line = args.join(" ");
-    if (o.failOn?.test(line)) throw Object.assign(new Error("failed"), { stderr: "Error: no space left on device" });
+    if (o.failOn?.test(line)) throw Object.assign(new Error("failed"), { stderr: o.failure ?? "Error: no space left on device" });
     const out = (stdout: string) => ({ stdout, stderr: "" });
     if (args[0] === "ps") {
       if (line.includes("label=com.supabase.cli.project")) return out("supabase_db_todo\nsupabase_kong_todo");
-      if (o.kept && line.includes(KEEP_LABEL)) return out(`samesight-audit-${o.kept}-powersync`);
+      if (line.includes(KEEP_LABEL)) {
+        const match = o.kept && line.includes("label=dev.samesight.audit.project=todo") && line.includes(`label=${KEEP_LABEL}=${o.keptFingerprint}`);
+        return out(match ? `samesight-audit-${o.kept}-powersync` : "");
+      }
       if (o.kept && line.includes(`name=^samesight-audit-${o.kept}-storage$`)) return out(`samesight-audit-${o.kept}-storage`);
       if (o.kept && line.includes("label=dev.samesight.audit.project=todo")) return out(`samesight-audit-${o.kept}-powersync\nsamesight-audit-${o.kept}-storage`);
       return out("");
@@ -64,6 +67,7 @@ function docker(o: { kept?: string; failOn?: RegExp } = {}) {
       throw Object.assign(new Error("failed"), { stderr: `Error: No such container: ${name}` });
     }
     if (args[0] === "image") return out(JSON.stringify([{ Id: "sha256:1" }]));
+    if (args[0] === "exec" && args.includes("psql")) return out(o.systemId ?? "7700833229969797152");
     if (args[0] === "port") return out(url.replace("http://", ""));
     if (args[0] === "logs") return out("the last words");
     return out("");
@@ -81,11 +85,20 @@ function db(o: { locked?: boolean; keptAlive?: boolean } = {}) {
     query: (async (text: string) => {
       sql.push(text);
       if (/pg_try_advisory_lock/.test(text)) return { rows: [{ ok: !o.locked }] };
+      if (/system_identifier/.test(text)) return { rows: [{ id: "7700833229969797152" }] };
       if (/as ok/.test(text)) return { rows: [{ ok: o.keptAlive ?? false }] };
       if (/exists \(select from pg_roles/.test(text)) return { rows: [{ exists: true }] };
       return { rows: [] };
     }) as never,
   };
+}
+
+/** The fingerprint a kept run of these options carries, as autoStart labels it. */
+async function fingerprint(o: Partial<ReturnType<typeof options>> = {}): Promise<string> {
+  const d = docker();
+  await autoStart({ ...options(d.docker, db(), proc(), true), ...o, docker: d.docker });
+  const label = d.calls.flat().find((a) => a.startsWith(`${KEEP_LABEL}=`)) ?? "";
+  return label.slice(KEEP_LABEL.length + 1);
 }
 
 /** A process stand-in that only counts signal listeners. */
@@ -116,6 +129,7 @@ describe("autoStart", () => {
     const started = await autoStart(options(d.docker, c, p));
     expect(started).toMatchObject({ url, version: "1.27.2", reused: false, slotPrefix: expect.stringMatching(/^samesight_audit_[0-9a-f]{8}_$/) });
     expect(d.ran()).toEqual([expect.stringMatching(/-storage$/), expect.stringMatching(/-powersync$/)]);
+    expect(d.calls.flat().some((a) => a.startsWith(KEEP_LABEL))).toBe(false);
     expect(listening(p)).toBe(3);
     const logs: string[] = [];
     expect(await started.stop({ logs: (t) => logs.push(t) })).toEqual([]);
@@ -137,12 +151,26 @@ describe("autoStart", () => {
     expect(listening(p)).toBe(0);
   });
 
-  it("refuses to start while another audit holds the database, creating nothing", async () => {
-    const d = docker();
+  it("refuses a Docker whose database is not the one the audit connects to", async () => {
+    const d = docker({ systemId: "1234" });
+    await expect(autoStart(options(d.docker, db(), proc()))).rejects.toThrow(/supabase_db_todo is not the database the audit connects to/);
+    expect(d.ran()).toEqual([]);
+  });
+
+  it("keeps the run's secrets out of the error it throws", async () => {
+    const d = docker({ failOn: /^run .*-powersync/, failure: "Error: bad config: super-secret-jwt-token-with-at-least-32-characters-long" });
+    const e = await autoStart(options(d.docker, db(), proc())).catch((e: Error) => e);
+    expect(e).toBeInstanceOf(Error);
+    expect((e as Error).message).toMatch(/bad config: \*\*\*/);
+  });
+
+  it("refuses to start while another audit holds the database, before sweeping that audit's containers", async () => {
+    const d = docker({ kept: "0a0b0c0d" });
     const c = db({ locked: true });
     await expect(autoStart(options(d.docker, c, proc()))).rejects.toThrow(/another samesight-verify audit is running PowerSync/);
     expect(d.ran()).toEqual([]);
-    expect(c.sql.some((s) => /create role|drop role/.test(s))).toBe(false);
+    expect(d.calls.some((c) => c[0] === "rm")).toBe(false);
+    expect(c.sql.some((s) => /create role|drop role|pg_drop_replication_slot|pg_terminate_backend/.test(s))).toBe(false);
   });
 
   it("with keep, labels the service and leaves it up, letting go of the lock and the signals", async () => {
@@ -160,7 +188,7 @@ describe("autoStart", () => {
   });
 
   it("reuses a kept service whose replication is alive, and removes it at the end of a run without keep", async () => {
-    const d = docker({ kept: "0a0b0c0d" });
+    const d = docker({ kept: "0a0b0c0d", keptFingerprint: await fingerprint() });
     const c = db({ keptAlive: true });
     const started = await autoStart(options(d.docker, c, proc()));
     expect(started).toMatchObject({ url, reused: true, slotPrefix: "samesight_audit_0a0b0c0d_" });
@@ -170,8 +198,31 @@ describe("autoStart", () => {
     expect(c.sql).toContain('drop role "samesight_audit_0a0b0c0d"');
   });
 
+  it("keeps a reused service kept with keep, letting go of the lock and the signals", async () => {
+    const d = docker({ kept: "0a0b0c0d", keptFingerprint: await fingerprint() });
+    const c = db({ keptAlive: true });
+    const p = proc();
+    const started = await autoStart(options(d.docker, c, p, true));
+    expect(started.reused).toBe(true);
+    expect(listening(p)).toBe(0);
+    expect(await started.stop()).toEqual([]);
+    expect(d.calls.some((c) => c[0] === "rm")).toBe(false);
+    expect(c.sql.some((s) => /drop role/.test(s))).toBe(false);
+    expect(c.sql.at(-1)).toBe("select pg_advisory_unlock($1)");
+  });
+
+  it("does not reuse a service kept for another sync config or token check, and sweeps it", async () => {
+    for (const other of [{ syncConfig: "streams: { other: {} }" }, { jwtSecret: "another-secret-another-secret-another-secret" }]) {
+      const d = docker({ kept: "0a0b0c0d", keptFingerprint: await fingerprint(other) });
+      const started = await autoStart(options(d.docker, db({ keptAlive: true }), proc()));
+      expect(started.reused).toBe(false);
+      expect(d.calls.find((c) => c[0] === "rm")).toEqual(["rm", "--force", "--volumes", "samesight-audit-0a0b0c0d-powersync", "samesight-audit-0a0b0c0d-storage"]);
+      await started.stop();
+    }
+  });
+
   it("sweeps a kept service whose database was reset, and starts afresh", async () => {
-    const d = docker({ kept: "0a0b0c0d" });
+    const d = docker({ kept: "0a0b0c0d", keptFingerprint: await fingerprint() });
     const started = await autoStart(options(d.docker, db({ keptAlive: false }), proc()));
     expect(started.reused).toBe(false);
     expect(d.calls.find((c) => c[0] === "rm")).toEqual(["rm", "--force", "--volumes", "samesight-audit-0a0b0c0d-powersync", "samesight-audit-0a0b0c0d-storage"]);

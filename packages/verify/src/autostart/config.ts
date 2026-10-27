@@ -25,7 +25,7 @@ export function serviceConfig(o: ServiceConfigOptions): string {
   const jwksUri = "jwksUri" in o.auth ? o.auth.jwksUri : "unused";
   // !env reads a variable in PowerSync; here the values are written in, as plain strings.
   const doc = parseDocument(emitServiceConfig({ syncConfigPath: "unused", jwksUri }), { customTags: [{ tag: "!env", resolve: (v: string) => v }] });
-  doc.commentBefore = " Written by samesight-verify audit for one run, then removed with its container.";
+  doc.commentBefore = " Written by samesight-verify audit for one run; removed with its container when the run ends.";
   doc.setIn(["replication", "connections", 0, "uri"], doc.createNode(o.dataSource));
   doc.setIn(["replication", "connections", 0, "slot_name_prefix"], o.slotPrefix);
   doc.setIn(["storage", "uri"], doc.createNode(o.storage));

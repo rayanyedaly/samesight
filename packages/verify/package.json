@@ -63,6 +63,7 @@
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
     "!src/fixtures",
+    "!src/**/node_modules",
     "!src/**/__golden__",
     "!src/**/__snapshots__"
   ],

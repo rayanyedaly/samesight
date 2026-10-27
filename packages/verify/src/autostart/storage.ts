@@ -27,8 +27,15 @@ export interface Storage {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Starts the storage container and waits until it accepts connections over TCP. */
-export async function startStorage(docker: Docker, run: string, project: string, network: string, timeoutMs = 60_000): Promise<Storage> {
+/** Starts the storage container and waits until it accepts connections over TCP, or until `aborted`. */
+export async function startStorage(
+  docker: Docker,
+  run: string,
+  project: string,
+  network: string,
+  timeoutMs = 60_000,
+  aborted: () => boolean = () => false,
+): Promise<Storage> {
   const container = containerName(run, "storage");
   const password = randomBytes(24).toString("hex");
   await docker.run([
@@ -57,8 +64,9 @@ export async function startStorage(docker: Docker, run: string, project: string,
       await docker.run(["exec", container, "pg_isready", "--quiet", "--host", "127.0.0.1", "--username", "powersync_storage", "--dbname", "powersync_storage"]);
       break;
     } catch (e) {
+      if (aborted()) throw new Error("stopped while the storage started");
       if (Date.now() > deadline) {
-        const logs = await docker.run(["logs", "--tail", "20", container]).catch(() => "");
+        const logs = await docker.logs(container, 20).catch(() => "");
         throw new Error(`the storage container ${container} did not start within ${timeoutMs / 1000}s${logs ? `:\n${logs}` : ` (${(e as Error).message})`}`);
       }
       await sleep(500);
@@ -67,10 +75,19 @@ export async function startStorage(docker: Docker, run: string, project: string,
   return { container, uri: `postgresql://powersync_storage:${password}@${container}:5432/powersync_storage` };
 }
 
-/** Removes containers and their anonymous volumes; ones already gone are no error. */
+/**
+ * Removes containers and their anonymous volumes; ones already gone are no error, and
+ * one another process is already removing is waited for (up to 30s).
+ */
 export async function removeContainers(docker: Docker, names: string[]): Promise<void> {
   if (!names.length) return;
-  await docker.run(["rm", "--force", "--volumes", ...names]).catch((e: Error) => {
-    if (!/no such container/i.test(e.message)) throw e;
+  await docker.run(["rm", "--force", "--volumes", ...names]).catch(async (e: Error) => {
+    if (/no such container/i.test(e.message)) return;
+    if (!/already in progress/i.test(e.message)) throw e;
+    const deadline = Date.now() + 30_000;
+    while ((await docker.containers(names.map((n) => `name=^${n}$`))).length) {
+      if (Date.now() > deadline) throw e;
+      await sleep(500);
+    }
   });
 }

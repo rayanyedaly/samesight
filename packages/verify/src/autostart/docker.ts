@@ -65,6 +65,16 @@ export class Docker {
     }
   }
 
+  /** A container's last log lines, from its stdout and stderr both. */
+  async logs(container: string, tail: number): Promise<string> {
+    try {
+      const { stdout, stderr } = await this.exec(["logs", "--tail", String(tail), container]);
+      return `${stdout}${stderr}`.trim();
+    } catch (e) {
+      throw explain(["logs"], e);
+    }
+  }
+
   /** Throws unless the Docker CLI is installed and its daemon answers. */
   async check(): Promise<void> {
     await this.run(["version", "--format", "{{.Server.Version}}"]);

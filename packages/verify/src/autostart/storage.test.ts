@@ -65,3 +65,16 @@ describe("removeContainers", () => {
     await expect(removeContainers(fake(0, "Error response from daemon: dial unix /var/run/docker.sock: connect: no such file").docker, ["a"])).rejects.toThrow(/docker rm failed/);
   });
 });
+
+describe("removeContainers, while another process removes them", () => {
+  it("waits until they are gone", async () => {
+    let listed = 2;
+    const exec: Exec = async (args) => {
+      if (args[0] === "rm") throw Object.assign(new Error("failed"), { stderr: "Error response from daemon: removal of container x is already in progress" });
+      if (args[0] === "ps") return { stdout: listed-- > 0 ? "x" : "", stderr: "" };
+      return { stdout: "", stderr: "" };
+    };
+    await removeContainers(new Docker(exec), ["x"]);
+    expect(listed).toBe(-1);
+  });
+});

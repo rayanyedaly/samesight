@@ -49,10 +49,15 @@ beforeAll(async () => {
   s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name })), synced: SYNCED });
 }, 180_000);
 afterAll(async () => {
-  if (s) await tearDown(s);
-  expect((await started?.stop()) ?? []).toEqual([]);
-  await own?.end();
-  await client?.end();
+  let left: string[] = [];
+  try {
+    if (s) await tearDown(s);
+  } finally {
+    left = (await started?.stop()) ?? [];
+    await own?.end();
+    await client?.end();
+  }
+  expect(left).toEqual([]);
 });
 
 const world = () => fc.sample(worldArbitrary(s.tables, { minRows: 4, maxRows: 8 }), { numRuns: 1, seed: 11 })[0] ?? {};

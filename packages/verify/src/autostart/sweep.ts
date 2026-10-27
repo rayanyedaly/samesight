@@ -25,8 +25,8 @@ export async function sweep(docker: Docker, client: Client, project: string): Pr
   }
   const { rows: roles } = await client.query<{ role: string }>("select rolname as role from pg_roles where starts_with(rolname, $1)", [PREFIX]);
   for (const { role } of roles) {
-    await tearDownReplication(client, { role, slotPrefix: `${role}_` });
-    removed.push(role);
+    // A slot still held keeps its role for the next sweep; the run goes on without it.
+    if (await tearDownReplication(client, { role, slotPrefix: `${role}_` }).then(() => true, () => false)) removed.push(role);
   }
   const { rows: slots } = await client.query<{ slot: string }>(
     "select slot_name as slot from pg_replication_slots where not active and starts_with(slot_name, $1)",
