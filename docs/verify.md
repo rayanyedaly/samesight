@@ -70,15 +70,14 @@ The exit code is 0 when nothing failed, 1 otherwise. Warnings do not fail a run.
 
 ## Audit mode
 
-`samesight-verify audit` runs the same differential on a project that has no Samesight policy: its own RLS (whatever `pg_policies` says) against its own sync config. It is the quickest way to find out whether an existing Supabase and PowerSync app leaks.
+`samesight-verify audit` runs the same differential on a project that has no Samesight policy: its own RLS (whatever `pg_policies` says) against its own sync config. It is the quickest way to find out whether an existing Supabase and PowerSync app leaks, and it needs only the project's local Supabase stack and Docker:
 
 ```bash
-npx @samesight/verify audit \
-  --project . \
-  --sync-config powersync/sync-config.yaml \
-  --powersync http://127.0.0.1:8080 \
-  --compose docker-compose.yml
+npx supabase start
+npx @samesight/verify audit --sync-config powersync/sync-config.yaml
 ```
+
+You do not need to run PowerSync yourself, or have run it locally before: audit starts one for the run on the sync config you give it, and removes it at the end (see [what audit starts and removes](#what-audit-starts-and-removes)). To audit a PowerSync service you run yourself, pass `--powersync <url>`.
 
 What it checks:
 
@@ -94,11 +93,25 @@ The mutation test needs a policy to mutate, so audit mode does not run it.
 | `--sync-config <file>` | `sync-config.yaml` | The PowerSync sync config. |
 | `--project <dir>` | `.` | The directory holding `supabase/`. |
 | `--publication <name>` | `powersync` | The publication PowerSync replicates. |
-| `--powersync <url>` | `http://127.0.0.1:8080` | Check the port. |
-| `--compose <file>` | | Checks the PowerSync version floor. |
-| `--static`, `--runs`, `--seed`, `--time-limit` | | As above. |
+| `--powersync <url>` | | Audit a PowerSync service you run yourself, instead of starting one. |
+| `--keep-powersync` | | Leave the service audit started up; the next audit of the project reuses it if the sync config is the same. |
+| `--compose <file>` | | With `--powersync`: checks the version floor of the service it runs. |
+| `--static`, `--runs`, `--seed`, `--time-limit` | | As above. `--static` starts no PowerSync. |
 
 Audit mode reads both forms of sync config: Edition 3 sync streams (`streams:`) and the earlier sync rules (`bucket_definitions:`). A bucket definition's parameter queries are read like a stream's CTEs and its data queries like stream queries. A stream or definition that reads client parameters (`request.parameters()`, `subscription.parameter()`, `connection.parameter()`) gets a warning: those values come from the client, so a device can ask for anything, and the run does not try what it could ask for. Streams that are not `auto_subscribe` are skipped with a warning, since no device here subscribes to them.
+
+### What audit starts and removes
+
+Without `--powersync`, audit finds the project's running Supabase containers by the labels the Supabase CLI puts on them, and, for this run only:
+
+1. creates a login role `samesight_audit_<run>` with `REPLICATION` and `BYPASSRLS` (PowerSync's first snapshot reads the tables under RLS), a random password, and `SELECT` on the tables the sync config reads, nothing else;
+2. uses the project's `powersync` publication if it has one, or creates one for those tables, marked as the run's;
+3. starts a throwaway Postgres container for PowerSync's storage, on a tmpfs, so it leaves no volume;
+4. starts the PowerSync service ([`journeyapps/powersync-service`](https://hub.docker.com/r/journeyapps/powersync-service) 1.27.2, pinned by digest) on the Supabase network, its port published on 127.0.0.1 only. Tokens are checked against the project's JWKS when Auth has a signing key, or with its shared HS256 secret otherwise. Its replication slots are named `samesight_audit_<run>_...`, so nothing of a PowerSync you run yourself is touched.
+
+When the run ends, by passing, failing, an error, Ctrl+C or SIGTERM, it removes both containers, the replication slots, the publication if it created it, and the role. A run killed outright (SIGKILL, a crash) cannot clean up; the next audit of the project removes what it left before it starts. Passwords travel to the containers through Docker's environment, never on a command line. Two audits of one project at once are not supported.
+
+The PowerSync service is source-available under the [FSL-1.1-ALv2](https://github.com/powersync-ja/powersync-service/blob/main/LICENSE) license. Audit pulls the official image from Docker Hub the first time (it says so) and runs it on your machine; Samesight never bundles or redistributes it.
 
 [examples/audit-todolist](../examples/audit-todolist) runs audit mode on PowerSync's own Supabase to-do list demo: it passes as published, and `verify:planted` shows it failing once the lists query loses its owner filter. `verify:rules` does the same with the demo's rules written as sync rules.
 

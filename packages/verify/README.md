@@ -17,7 +17,7 @@ PowerSync replicates with a role that bypasses RLS, so the sync config is the on
 4. **Write path**: forged upload batches (other tenants, forged authors, append-only edits, protected columns, replays, self-promotion) must be refused.
 5. **Mutation test** (`--mutate`): each rule in the RLS and the sync config is weakened in turn, and the differential must catch every one.
 
-**Audit mode** (`samesight-verify audit`) runs the catalog checks, the differential and a write check on any Supabase + PowerSync project, with no Samesight policy. It reads Edition 3 sync streams and legacy sync rules (`bucket_definitions`).
+**Audit mode** (`samesight-verify audit`) runs the catalog checks, the differential and a write check on any Supabase + PowerSync project, with no Samesight policy. It reads Edition 3 sync streams and legacy sync rules (`bucket_definitions`). It needs only `supabase start` and Docker: unless given `--powersync`, it starts a PowerSync service of its own for the run (the official FSL-licensed image, pulled once, never redistributed) and removes it, and everything it made, at the end.
 
 It refuses to run against anything but this machine: every address must be local, `NODE_ENV` must be `development` or `test`, and hosting platform variables must be absent. It reads addresses and keys from `supabase status`, using the Supabase CLI in `node_modules/.bin` or on your PATH. Needs Node 22.18 or newer and Docker.
 

@@ -132,7 +132,7 @@ samesight-verify [--policy <file>] [--powersync <url>] [--compose <file>]
                  [--static] [--runs <n>] [--seed <n>] [--time-limit <s>]
                  [--mutate] [--mutate-datasets <n>] [--restart <command>]
 samesight-verify audit [--sync-config <file>] [--project <dir>] [--publication <name>]
-                       [--powersync <url>] [--compose <file>]
+                       [--powersync <url> [--compose <file>] | --keep-powersync]
                        [--static] [--runs <n>] [--seed <n>] [--time-limit <s>]
 ```
 
