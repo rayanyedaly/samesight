@@ -99,22 +99,31 @@ export async function setUp(client: pg.Client, stack: Stack, ir: IR): Promise<Se
 /** Users a run without a policy signs up. */
 export const AUDIT_USERS = 4;
 
+/** The metadata audit gives each run user, and the claim paths to label users by. */
+export interface UserClaims {
+  /** Per user, by index; the number of users. */
+  metadata: Partial<Record<"app_metadata" | "user_metadata", Record<string, unknown>>>[];
+  paths: string[][];
+}
+
 /**
- * A run without a policy (audit mode): plain signed-up users, no tenants, roles or token
- * hook. Rows belong to users through their foreign keys to auth.users, and what a device
- * may hold is whatever RLS lets its user read.
+ * A run without a policy (audit mode): signed-up users with no tenants, holding the
+ * metadata `claims` gives them, if any. Rows belong to users through their foreign keys to
+ * auth.users, and what a device may hold is whatever RLS lets its user read. A user is
+ * labelled by the values its token carries at the claim paths: u2 (app_metadata.role=editor).
  */
-export async function setUpUsers(client: pg.Client, stack: Stack, scope: { tables: ScopeTable[]; synced: string[] }, count = AUDIT_USERS): Promise<Run> {
+export async function setUpUsers(client: pg.Client, stack: Stack, scope: { tables: ScopeTable[]; synced: string[] }, claims?: UserClaims): Promise<Run> {
+  const count = claims?.metadata.length || AUDIT_USERS;
   return exclusive(client, stack, scope.tables, async () => {
     const model = insertOrder(await readModel(client, scope.tables));
     // Without tenants, the run finds its rows again only by the prefix it gives uuid keys.
     const refused = auditRefusals(model, scope.synced);
     if (refused.length) throw new Error(`audit mode cannot run on these tables: ${refused.join("; ")}`);
     await cleanup(client, stack, model);
-    const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36));
-    const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: `u${i}` }));
+    const { users, password } = await createUsers(stack, count, PREFIX.slice(0, 4) + Date.now().toString(36), claims?.metadata);
     const sessions = new Map<string, Session>();
-    for (const u of members) sessions.set(u.id, await signIn(stack, u.email, password));
+    for (const u of users) sessions.set(u.id, await signIn(stack, u.email, password));
+    const members: Member[] = users.map((u, i) => ({ ...u, tenant: null, role: null, label: claimLabel(`u${i}`, sessions.get(u.id)?.claims ?? {}, claims?.paths ?? []) }));
     return {
       client,
       stack,
@@ -128,6 +137,16 @@ export async function setUpUsers(client: pg.Client, stack: Stack, scope: { table
       gaps: "warn",
     };
   });
+}
+
+/** u2 (app_metadata.role=editor), from what the token carries at each path; bare when it carries none. */
+export function claimLabel(name: string, claims: Record<string, unknown>, paths: string[][]): string {
+  const held = paths.flatMap((path) => {
+    let v: unknown = claims;
+    for (const k of path) v = v !== null && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined;
+    return v === undefined || v === null ? [] : [`${path.join(".")}=${typeof v === "string" ? v : JSON.stringify(v)}`];
+  });
+  return held.length ? `${name} (${held.join(", ")})` : name;
 }
 
 /**

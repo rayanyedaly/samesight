@@ -9,8 +9,9 @@ import fc from "fast-check";
 import type pg from "pg";
 import { rows } from "../db.ts";
 import { sqlHints } from "../differential/model.ts";
-import { differential, type Run, setUpUsers, tearDown } from "../differential/run.ts";
-import { worldArbitrary } from "../differential/world.ts";
+import { differential, PREFIX, type Run, setUpUsers, tearDown } from "../differential/run.ts";
+import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
+import { assignClaims, metadataOf } from "./assign.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
 import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
@@ -110,8 +111,10 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   // The claims the rules read: shown now when no user will sign in, else once users have.
   const claims = planClaims([...(await policyRules(client)), ...streamSql], await policyFunctions(client));
   const hook = o.projectDir === undefined ? undefined : accessTokenHook(o.projectDir);
+  // The metadata values each run user holds: a uuid none of the rules name is one of the run's own.
+  const assignment = assignClaims(claims, () => prefixedUuid(PREFIX));
   if (o.staticOnly || failed(findings)) {
-    section("Claims", claimFindings(claims, hook));
+    section("Claims", claimFindings(claims, hook, undefined, assignment));
     if (!o.staticOnly) o.log("skipping the differential: fix the failures above first");
     return findings;
   }
@@ -127,15 +130,20 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
   const userColumns = new Set([...users, ...claims.identityColumns]);
   let s: Run;
   try {
-    s = await setUpUsers(client, stack, { tables: tables.map((name) => ({ name, hints, userColumns })), synced: scope.synced });
+    s = await setUpUsers(
+      client,
+      stack,
+      { tables: tables.map((name) => ({ name, hints, userColumns })), synced: scope.synced },
+      { metadata: assignment.users.map((values) => metadataOf(assignment.paths, values)), paths: assignment.paths.map((p) => p.path) },
+    );
   } catch (e) {
     // Users could not sign in (a rate limit, say): the claims are still worth showing.
-    section("Claims", claimFindings(claims, hook));
+    section("Claims", claimFindings(claims, hook, undefined, assignment));
     throw e;
   }
   try {
     const tokens = new Map(s.fixed.users.map((u) => [u.label.split(" ")[0] as string, s.sessions.get(u.id)?.claims ?? {}]));
-    section("Claims", claimFindings(claims, hook, tokens));
+    section("Claims", claimFindings(claims, hook, tokens, assignment));
     o.log("generating datasets for the differential");
     const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
     section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, result.findings);
