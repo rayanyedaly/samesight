@@ -388,6 +388,26 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
     }
   }
 
+  // Claims the access token hook adds, compared with a column: generated rows draw the values
+  // the hook can give (a CHECK list's lead and member, the rules' literals), as for metadata.
+  // Keys, user columns and the hook's own per-user tables are left alone.
+  const hookOptions = dims.flatMap((d) => (d.column !== null && !d.parent ? d.options : [])) as ClaimValue[];
+  const perUser = new Set(dims.map((d) => d.table));
+  for (const u of plan.uses.filter((x) => x.cls === "hook" && x.columns.length > 0 && x.other.length === 0)) {
+    const families = new Set(u.casts.map(castFamily));
+    const family = families.size === 1 && !families.has("unknown") ? [...families][0] : undefined;
+    const same = valueKeyFor(u.numeric);
+    const values = [...u.values.filter((v) => v !== null), ...hookOptions].filter((v, i, all) => all.findIndex((w) => same(w) === same(v)) === i);
+    for (const x of targetsOf(u.columns, u.columnTables, family, model).targets) {
+      if (x.key || x.users || perUser.has(x.table)) continue;
+      const fits = values.filter((v) => fitsType(v, x.type) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || jsPattern(x.pattern)?.test(String(v)) === true));
+      if (!fits.length) continue;
+      const columns = claimValues.get(x.table) ?? new Map<string, unknown[]>();
+      claimValues.set(x.table, columns);
+      columns.set(x.column, [...new Set([...(columns.get(x.column) ?? []), ...fits])]);
+    }
+  }
+
   // Metadata values and the access token hook's rows are picked together: a role with a team.
   const sizes = [...paths.map((p) => p.pool.length), ...dims.map((d) => d.options.length)];
   const combos = sizes.reduce((a, b) => a * b, 1);
