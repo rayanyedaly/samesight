@@ -250,9 +250,11 @@ export function callsIn(body: string): string[] {
   const part = String.raw`("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
   const unquote = (x: string) => (x.startsWith('"') ? x.slice(1, -1).replace(/""/g, '"') : x.toLowerCase());
   for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_$".])${part}(?:\\s*\\.\\s*${part})?\\s*\\(`, "g"))) {
+    // A keyword before a parenthesis is no call; a quoted name ("if") is one.
+    if (m[2] === undefined && !(m[1] as string).startsWith('"') && NOT_CALLS.has((m[1] as string).toLowerCase())) continue;
     out.add(m[2] === undefined ? unquote(m[1] as string) : `${unquote(m[1] as string)}.${unquote(m[2])}`);
   }
-  return [...out].filter((c) => !NOT_CALLS.has(c));
+  return [...out];
 }
 
 
@@ -279,10 +281,17 @@ function codeOnly(body: string): string {
       i = end === -1 ? body.length : end + 2;
       out += " ";
     } else if (/^[eE]'/.test(rest) && !/[A-Za-z0-9_$]/.test(body[i - 1] ?? "")) {
+      // E'...': a backslash escapes the next character, and '' is a quote too.
       let j = i + 2;
-      while (j < body.length && body[j] !== "'") j += body[j] === "\\" ? 2 : body[j + 1] === "'" && body[j] === "'" ? 2 : 1;
+      while (j < body.length && !(body[j] === "'" && body[j + 1] !== "'")) j += body[j] === "\\" || body[j] === "'" ? 2 : 1;
       i = j + 1;
       out += "''";
+    } else if (rest.startsWith('"')) {
+      // A quoted name stays as written ("getOrg"), and a quote or -- inside it starts nothing.
+      let j = i + 1;
+      while (j < body.length && !(body[j] === '"' && body[j + 1] !== '"')) j += body[j] === '"' ? 2 : 1;
+      out += body.slice(i, j + 1);
+      i = j + 1;
     } else if (rest.startsWith("'")) {
       let j = i + 1;
       while (j < body.length && !(body[j] === "'" && body[j + 1] !== "'")) j += body[j] === "'" ? 2 : 1;
@@ -726,7 +735,8 @@ function negatedAround(t: Token[], from: number, to: number): boolean {
     const before = t[a - 1];
     const lhs = t[a - 2];
     // false = (read = 'x'): the boolean on the left.
-    if (before?.kind === "symbol" && ["=", "<>", "!="].includes(before.text) && (word(lhs, "true") || word(lhs, "false")) && !sym(t[a - 3], ".")) {
+    // Not x IS false = (...), which compares (x IS FALSE) with the condition.
+    if (before?.kind === "symbol" && ["=", "<>", "!="].includes(before.text) && (word(lhs, "true") || word(lhs, "false")) && !sym(t[a - 3], ".") && !word(t[a - 3], "is") && !word(t[a - 3], "not")) {
       if ((before.text === "=") === word(lhs, "false")) negated = !negated;
       a -= 2;
       grouped = false;

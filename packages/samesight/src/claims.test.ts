@@ -424,3 +424,17 @@ describe("review fixes to negation, cast lists, calls and overloads", () => {
     expect(claimReads("m(owner_id)", "postgres", { functions })).toMatchObject({ reads: [{ path: ["sub"] }], unreadable: [] });
   });
 });
+
+describe("callsIn's plpgsql scan, second review", () => {
+  it("reads E'' strings with doubled and escaped quotes, and skips quoted names whole", () => {
+    expect(callsIn("begin x := E'a''b\\'c'; perform secret(); end")).toEqual(["secret"]);
+    expect(callsIn('begin x := "it\'s"; perform f(); end')).toEqual(["f"]);
+    expect(callsIn('begin x := "a--b"; perform f(); end')).toEqual(["f"]);
+    expect(callsIn('begin v := "if"(2); if (v) then perform g(); end if; end').sort()).toEqual(["g", "if"]);
+  });
+
+  it("does not take x IS false = (cond) for a negation of the condition", () => {
+    const role = "((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text)";
+    expect(reads(`(x IS false = (${role} = 'a'::text))`, "postgres")[0]?.compared).toEqual(lit(["a"]));
+  });
+});

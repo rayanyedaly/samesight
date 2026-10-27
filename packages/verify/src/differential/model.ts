@@ -97,6 +97,19 @@ export interface TableModel {
 
 const literal = (s: string) => s.replace(/''/g, "'");
 
+/**
+ * A CHECK pattern as a JavaScript RegExp, or undefined when it uses Postgres-only syntax that
+ * JavaScript reads differently ([[:alpha:]], \\m, \\y, embedded options) or cannot run at all.
+ */
+export function jsPattern(pattern: string): RegExp | undefined {
+  if (/\[\[:|\\[mMyYAZ]|\(\?|^\*\*\*/.test(pattern)) return undefined;
+  try {
+    return new RegExp(pattern);
+  } catch {
+    return undefined;
+  }
+}
+
 /** The value list or pattern of a single-column check constraint, if it is one this reads. */
 export function parseCheck(def: string): { values?: string[]; pattern?: string } {
   const list = /^CHECK \(\(\(?"?[^"]+"?\)? = ANY \(\(?ARRAY\[(.+)\]\)?(?:::[\w\s[\]]+)?\)\)\)$/.exec(def);

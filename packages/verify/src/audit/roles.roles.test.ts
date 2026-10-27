@@ -161,7 +161,7 @@ describe("what Supabase Auth puts in run users' tokens about the sign-in", () =>
       if (f.kind === "absent") expect(values.every((v) => v === undefined), key).toBe(true);
       else expect(values.every((v) => v !== undefined), key).toBe(true);
       // Equal for alike claims; for set ones (times), only present and of one type: two sign-ins can straddle a second.
-      if (f.kind === "alike") expect(new Set(values.map((v) => JSON.stringify(v))).size, key).toBe(1);
+      if (f.kind === "alike") expect(values.every((v) => JSON.stringify(v) === JSON.stringify(f.value)), key).toBe(true);
       if (f.kind === "set") expect(new Set(values.map((v) => typeof v)).size, key).toBe(1);
       if (f.kind === "own") expect(new Set(values.map((v) => JSON.stringify(v))).size, key).toBe(tokens.length);
     }

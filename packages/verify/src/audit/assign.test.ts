@@ -403,4 +403,24 @@ describe("claims compared with columns", () => {
     ]);
     expect(claimFindings(plan, undefined, tokens, a)[0]?.detail).toMatch(/; held: u0's id u0, u1's id u1, none u2; generated rows take them in documents\.owner_id$/);
   });
+
+  it("keeps decimals out of floats that cannot hold them, and out of negative-scale numerics", () => {
+    expect([fitsType(0.5, "real"), fitsType(0.1, "real"), fitsType(16777217, "real"), fitsType(0.1, "double precision"), fitsType("0.10", "double precision"), fitsType(101, "numeric(5,-2)")]).toEqual([true, false, false, true, false, false]);
+  });
+
+  it("treats a pattern with Postgres-only syntax as one audit cannot read", () => {
+    for (const pattern of ["^[[:alpha:]-]+$", "\\mss", "^ss\\y", "(?i)ss"]) {
+      const t: TableModel[] = [{ name: "tags", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("slug", "text", { pattern })], foreignKeys: [] }];
+      expect(assignClaims(planClaims([on("tags", `(slug = ${read("tag")})`)]), fresh, t).notSet.get("app_metadata.tag"), pattern).toMatch(/tags\.slug \(a CHECK pattern audit cannot read\)/);
+    }
+  });
+
+  it("chooses the pool's type after leaving out keys that cannot take it", () => {
+    const t: TableModel[] = [
+      { name: "roles", primaryKey: ["code"], unique: ["code"], columns: [col("code", "text")], foreignKeys: [] },
+      { name: "items", primaryKey: ["id"], unique: ["id"], columns: [col("id", "uuid"), col("code", "integer")], foreignKeys: [] },
+    ];
+    const [path] = assignClaims(planClaims([on("roles", `(code = ${read("c")})`), on("items", `(code = ${read("c")})`)]), fresh, t).paths;
+    expect(path).toMatchObject({ pool: [101, 102], columns: ["items.code"], skipped: ["roles.code (a text key: keys take only fresh run uuids)"] });
+  });
 });

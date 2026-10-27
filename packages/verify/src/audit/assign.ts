@@ -15,7 +15,7 @@
  */
 
 import type { ClaimValue } from "samesight/compiler";
-import type { TableModel } from "../differential/model.ts";
+import { jsPattern, type TableModel } from "../differential/model.ts";
 import type { Finding } from "../report.ts";
 import type { ClaimsPlan } from "./claims.ts";
 
@@ -114,7 +114,7 @@ function targetsOf(columns: string[], columnTables: Record<string, string[]>, fa
         if (known) targets.push({ table: t.name, column: name, key: true, type: col.type });
         else keysOf.push(t.name);
       } else {
-        if (col.pattern !== undefined && !compiles(col.pattern)) {
+        if (col.pattern !== undefined && !jsPattern(col.pattern)) {
           skipped.push(`${t.name}.${name} (a CHECK pattern audit cannot read)`);
           continue;
         }
@@ -133,16 +133,6 @@ function targetsOf(columns: string[], columnTables: Record<string, string[]>, fa
   }
   const seen = new Set<string>();
   return { targets: targets.filter((x) => !seen.has(`${x.table}.${x.column}`) && seen.add(`${x.table}.${x.column}`)), skipped, unkeyed };
-}
-
-/** Whether JavaScript can run a Postgres CHECK pattern as written. */
-function compiles(pattern: string): boolean {
-  try {
-    new RegExp(pattern);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Integer types and the values they hold. */
@@ -166,6 +156,11 @@ function fitsNumber(v: ClaimValue, type: string): boolean {
     const n = BigInt(text);
     return n >= range[0] && n <= range[1];
   }
+  // A float stores a decimal exactly only when it round-trips: 0.1 in a real column is not 0.1.
+  if (/^(real|float4)$/.test(type)) return Math.fround(Number(text)) === Number(text) && String(Number(text)) === text;
+  if (/^(double precision|float8)$/.test(type)) return String(Number(text)) === text;
+  // A negative scale rounds to tens or hundreds: no claim value is kept exactly there.
+  if (/^(?:numeric|decimal)\(\d+,\s*-\d+\)$/.test(type)) return false;
   const ps = /^(?:numeric|decimal)\((\d+)(?:,\s*(\d+))?\)$/.exec(type);
   if (ps) {
     const [whole = "", fraction = ""] = text.replace(/^-/, "").split(".");
@@ -264,16 +259,20 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
       const family = families.size === 1 && !families.has("unknown") ? [...families][0] : undefined;
       const found = targetsOf(u.columns, u.columnTables, family, model);
       const skipped = found.skipped;
-      // Without a cast, the pool follows the first column's type; columns of another type get none.
-      const lead = family ?? (found.targets[0] ? castFamily(found.targets[0].type) : undefined);
-      const targets = found.targets.filter((x) => {
+      const usable = found.targets.filter((x) => {
         if (x.key && castFamily(x.type) !== "uuid") {
           // A key takes only fresh run uuids (cleanup finds its rows by them): a text or number key takes none.
           skipped.push(`${x.table}.${x.column} (a ${x.type} key: keys take only fresh run uuids)`);
           return false;
         }
-        if (family !== undefined || castFamily(x.type) === lead || x.values?.length) return true;
-        skipped.push(`${x.table}.${x.column} (${x.type}, unlike ${found.targets[0]?.table}.${found.targets[0]?.column})`);
+        return true;
+      });
+      // Without a cast, the pool follows the first usable column's type; columns of another type get none.
+      const first = usable.find((x) => !x.users) ?? usable[0];
+      const lead = family ?? (first ? castFamily(first.type) : undefined);
+      const targets = usable.filter((x) => {
+        if (family !== undefined || x.users || castFamily(x.type) === lead || x.values?.length) return true;
+        skipped.push(`${x.table}.${x.column} (${x.type}, unlike ${first?.table}.${first?.column})`);
         return false;
       });
       // A user with no claims shows null (IS NULL): the pool holds values.
@@ -307,7 +306,7 @@ export function assignClaims(plan: ClaimsPlan, mintKey: () => string, model: Tab
           continue;
         }
         // Only values the column takes: its type, its length, its CHECK or enum list.
-        const fits = pool.filter((v) => fitsType(v, x.type) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || new RegExp(x.pattern).test(String(v))));
+        const fits = pool.filter((v) => fitsType(v, x.type) && (!x.values || x.values.includes(String(v))) && (x.pattern === undefined || jsPattern(x.pattern)?.test(String(v)) === true));
         if (!fits.length) {
           skipped.push(`${x.table}.${x.column} (${x.values ? "its CHECK or enum list allows" : x.pattern !== undefined ? "its CHECK pattern takes" : `${x.type} takes`} none of the values)`);
           continue;
