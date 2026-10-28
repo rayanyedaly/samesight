@@ -172,7 +172,7 @@ Runs `samesight-verify audit` with the arguments after `audit`: the project's ow
 
 `audit` must be the first argument: `samesight audit --sync-config ...`, not `samesight --sync-config ... audit`.
 
-It needs `@samesight/verify`, which `samesight` does not install (`npm install -D @samesight/verify`). It looks for it in the current directory's project (its `node_modules`, then those of the parent directories), then next to `samesight`, then for `samesight-verify` on the PATH, and when it finds none it says so and exits 2. `--project` does not change where it looks, so run `samesight audit` from the directory where `@samesight/verify` is installed. `npx @samesight/verify audit` runs it without installing anything.
+It needs `@samesight/verify`, which `samesight` does not install (`npm install -D @samesight/verify`). It looks for it in the current directory's project (its `node_modules`, then those of the parent directories), then next to `samesight`, then for `samesight-verify` on the PATH, and when it finds none it says so and exits 2. `--project` does not change where it looks, so run `samesight audit` from the directory where `@samesight/verify` is installed. `npx @samesight/verify audit` runs it without installing it, though audit still needs the Supabase CLI in the project or on the PATH.
 
 ## `samesight-verify`
 

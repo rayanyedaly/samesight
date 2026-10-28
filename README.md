@@ -18,10 +18,10 @@ Lint the sync config and the SQL migrations for known leak patterns. It reads fi
 npx samesight lint sync-config.yaml --migrations supabase/migrations
 ```
 
-Then audit the rows themselves. Audit signs up test users, generates rows, syncs a real PowerSync device per user and compares every row each device got with what RLS returns for the same user. It needs the project's local Supabase stack and Docker (it starts a PowerSync service of its own for the run and removes it afterwards), and `@samesight/verify` installed next to `samesight`:
+Then audit the rows themselves. Audit signs up test users, generates rows, syncs a real PowerSync device per user and compares every row each device got with what RLS returns for the same user. It needs the project's local Supabase stack and Docker (it starts a PowerSync service of its own for the run and removes it afterwards), and `@samesight/verify` installed next to `samesight`, with the Supabase CLI in the project or on your PATH:
 
 ```bash
-npm install -D samesight @samesight/verify
+npm install -D samesight @samesight/verify supabase
 npx supabase start
 npx samesight audit --project . --sync-config sync-config.yaml
 ```
@@ -105,14 +105,14 @@ Inspection (tenant column tenantId)
 
 ### Get started with a policy
 
-You need Node 22.18 or newer, the Supabase CLI with a local stack (`supabase start`), and Docker for the PowerSync service.
+You need Node 22.18 or newer, the Supabase CLI in the project (the `npm install -D` line below adds it) with a local stack (`npx supabase start`), and Docker for the PowerSync service.
 
 ```bash
 npm install samesight @samesight/supabase
-npm install -D @samesight/verify
+npm install -D @samesight/verify supabase
 
 npx samesight init         # drafts samesight.policy.ts from your local database
-supabase gen types typescript --local --schema public > supabase/types.ts
+npx supabase gen types typescript --local --schema public > supabase/types.ts
 npx samesight generate     # migration, sync streams, client schema
 npx samesight explain      # who can do what, in plain words
 npx samesight-verify       # prove devices and RLS agree, against the local stack
@@ -164,8 +164,8 @@ pnpm smoke                                   # pack, install with npm, use as a 
 pnpm --filter fieldbook stack:up             # Supabase + PowerSync for the stack tests
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout, the test tiers and how releases are cut.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout, the test tiers and how releases are cut, and [SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 
-MIT. The PowerSync service image (FSL-1.1-ALv2) is never bundled or redistributed: the examples run it for local development and CI, and `samesight-verify audit` pulls the official image and runs it on your machine.
+MIT, except the third-party sync configs in `corpus/`, which keep their own licenses (CC0 1.0 or Apache 2.0, as [`corpus/SOURCES.md`](corpus/SOURCES.md) lists). The PowerSync service image (FSL-1.1-ALv2) is never bundled or redistributed: the examples run it for local development and CI, and `samesight-verify audit` pulls the official image and runs it on your machine.
