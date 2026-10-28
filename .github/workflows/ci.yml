@@ -39,6 +39,13 @@ jobs:
       # Generated access files (migration, sync config, client schema) match the policy.
       - run: pnpm --filter fieldbook policy:check
       - run: pnpm --filter quickstart policy:check
+      # The leak guide's blocks match the built tools: lint's output on the planted corpus
+      # configs, what audit prints before it reads the database (verify's checkSyncConfig,
+      # which audit runs), and the excerpt of the recorded audit run in docs/assets.
+      - run: pnpm build:packages
+      - run: node scripts/docs/leaks.mjs --check
+      # The terminal capture's SVGs are what scripts/demo/render.mjs makes of its transcript.
+      - run: node scripts/demo/render.mjs --check
 
   package:
     name: packed packages (${{ matrix.os }})
@@ -77,8 +84,9 @@ jobs:
       - run: pnpm --filter fieldbook seed
       - run: pnpm --filter fieldbook test:db
       # Catalog tamper cases, the differential and the write path (rolled back, or cleaned up),
-      # and a --mutate run stopped by Ctrl+C, which restarts PowerSync on the original sync
-      # config and waits for it to catch up before the gate below.
+      # a --mutate run stopped by Ctrl+C, which restarts PowerSync on the original sync config
+      # and waits for it to catch up before the gate below, and a run with no PowerSync, which
+      # exits 2 before creating any user.
       - run: pnpm --filter @samesight/verify test:stack
         timeout-minutes: 25
       # The gate: static, catalog, differential, write path and every mutant caught, in under 5 minutes.

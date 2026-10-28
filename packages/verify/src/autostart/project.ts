@@ -63,7 +63,7 @@ export async function findSupabase(docker: Docker, projectDir: string, dbPort?: 
   const configPath = join(projectDir, "supabase", "config.toml");
   if (!existsSync(configPath)) throw new Error(`no supabase/config.toml in ${resolve(projectDir)}; pass --project with the directory that holds supabase/`);
   const project = projectId(readFileSync(configPath, "utf8"));
-  if (!project) throw new Error(`${configPath} has no project_id`);
+  if (!project) throw new Error(`${configPath} has no project_id; add project_id = "..." at the top of supabase/config.toml (supabase init writes it)`);
 
   const names = await docker.containers([`label=${PROJECT}`]);
   const all = (await Promise.all(names.map((n) => docker.inspect<ContainerInfo>("container", n)))).filter((c): c is ContainerInfo => c !== null);

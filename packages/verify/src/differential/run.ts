@@ -401,7 +401,7 @@ export function auditRefusals(model: TableModel[], synced: string[]): string[] {
 /** Holds the run's lock while `prepare` sets the run up; on failure, removes what it made and lets go. */
 async function exclusive<T extends Run>(client: pg.Client, stack: Stack, tables: ScopeTable[], prepare: () => Promise<T>, outside: string[] = []): Promise<T> {
   const [{ locked } = { locked: false }] = await rows<{ locked: boolean }>(client, "select pg_try_advisory_lock($1) as locked", [LOCK]);
-  if (!locked) throw new Error("another samesight verify run is using this database; wait for it to finish");
+  if (!locked) throw new Error("another samesight-verify run is using this database; wait for it to finish");
   holdingLock.add(client);
   try {
     return await prepare();

@@ -1,7 +1,7 @@
 {
   "name": "@samesight/verify",
   "version": "0.1.0",
-  "description": "Checks that PowerSync sync config never sends a device a row Supabase RLS would refuse",
+  "description": "Catches PowerSync sync configs that send devices rows Supabase RLS refuses, by syncing headless devices on your local stack: audit and policy verification",
   "license": "MIT",
   "author": "Rayan Yedaly",
   "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme",
@@ -34,7 +34,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./schema/report.schema.json": "./schema/report.schema.json"
+    "./schema/report.schema.json": "./schema/report.schema.json",
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",

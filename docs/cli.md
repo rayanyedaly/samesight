@@ -14,6 +14,7 @@ From the `samesight` package.
 | `samesight doctor` | required | Checks the running database against the policy. |
 | `samesight explain` | no | Prints who can read and write what, in plain words, from the saved snapshot. |
 | `samesight lint [file ...]` | no | Checks PowerSync sync configs for known leak patterns, reading files only. Needs no policy. |
+| `samesight audit` | required | Runs `samesight-verify audit`, which tests the rows: needs `@samesight/verify`. Needs no policy. |
 
 Every command exits 0 when it passes, 1 when it found something (a stale file, a failing doctor check, a lint error, a policy that does not compile), and 2 when it could not run: no command or an unknown one, a flag it cannot read, a policy, snapshot or file it cannot find, an existing policy `init` would overwrite, or a database it cannot reach.
 
@@ -160,6 +161,18 @@ A synced table whose migrations never enable row level security, which leaves it
 Level: warning.
 
 A permissive policy on a synced table that lets `anon`, `authenticated` or `public` through with `using (true)` or `with check (true)`. Needs migrations.
+
+### `audit`
+
+```console
+$ npx samesight audit --sync-config powersync/sync-config.yaml
+```
+
+Runs `samesight-verify audit` with the arguments after `audit`: the project's own RLS against its own sync config, on the local stack, with generated data, real users and headless devices. Where lint reads the files, audit tests the rows. Every flag is `samesight-verify audit`'s (`samesight audit --help` lists them), and so are the exit codes; a run stopped by a signal exits 128 plus its number (130 for Ctrl+C). A SIGINT, SIGTERM or SIGHUP sent to `samesight` alone is passed on to the audit (not on Windows, where the console's Ctrl+C, Ctrl+Break and close reach both processes). When `@samesight/verify` cannot be found or cannot be started it exits 2 with the install command, and with `--json` it also writes a short document saying so on stdout: samesight's own (`tool`, `version`, `mode`, `result`, `exitCode`, `durationMs`, `sections`, `error`), which does not follow `report.schema.json`. See [the verifier](verify.md) for what it checks and what it needs.
+
+`audit` must be the first argument: `samesight audit --sync-config ...`, not `samesight --sync-config ... audit`.
+
+It needs `@samesight/verify`, which `samesight` does not install (`npm install -D @samesight/verify`). It looks for it in the current directory's project (its `node_modules`, then those of the parent directories), then next to `samesight`, then for `samesight-verify` on the PATH, and when it finds none it says so and exits 2. `--project` does not change where it looks, so run `samesight audit` from the directory where `@samesight/verify` is installed. `npx @samesight/verify audit` runs it without installing anything.
 
 ## `samesight-verify`
 

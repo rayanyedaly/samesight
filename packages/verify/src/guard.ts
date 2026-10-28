@@ -58,12 +58,14 @@ export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = pr
     else if (!LOCAL_HOSTS.has(parsed.hostname)) problems.push(`${name}: ${parsed.hostname} is not this machine`);
   }
   const nodeEnv = env.NODE_ENV ?? "development";
-  if (nodeEnv !== "development" && nodeEnv !== "test") problems.push(`NODE_ENV is "${nodeEnv}"; the verifier runs only in development or test`);
-  for (const name of DEPLOYED) if (env[name]) problems.push(`${name} is set, so this looks like a deployed environment`);
+  if (nodeEnv !== "development" && nodeEnv !== "test") {
+    problems.push(`NODE_ENV is "${nodeEnv}"; the verifier runs only in development or test: unset NODE_ENV, or set it to development or test`);
+  }
+  for (const name of DEPLOYED) if (env[name]) problems.push(`${name} is set, so this looks like a deployment; run it on a developer machine or in CI`);
 
   if (problems.length) {
     throw new Error(
-      `samesight verify refuses to run:\n  - ${problems.join("\n  - ")}\n` +
+      `refuses to run:\n  - ${problems.join("\n  - ")}\n` +
         "It creates users, writes rows, restarts PowerSync and (audit) starts containers and a replication role, so it only runs against a local stack.",
     );
   }

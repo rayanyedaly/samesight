@@ -28,21 +28,21 @@ export function assertLocal(url: string): void {
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error("The database URL is not a valid postgres:// URL");
+    throw new Error("the database URL is not a valid postgres:// URL");
   }
   if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
-    throw new Error("The database URL must start with postgres:// or postgresql://");
+    throw new Error("the database URL must start with postgres:// or postgresql://");
   }
   // pg lets query parameters override the host (?host=), so none may name one.
   for (const key of parsed.searchParams.keys()) {
-    if (key === "host" || key === "hostaddr") throw new Error(`The database URL cannot set ${key} in its query`);
+    if (key === "host" || key === "hostaddr") throw new Error(`the database URL cannot set ${key} in its query`);
   }
   assertLocalHost(parsed.hostname);
 }
 
 function assertLocalHost(host: string): void {
   if (!LOCAL_HOSTS.has(host)) {
-    throw new Error(`Samesight only connects to a local database (localhost, 127.0.0.1 or ::1), not ${host || "an empty host"}`);
+    throw new Error(`samesight only connects to a local database (localhost, 127.0.0.1 or ::1), not ${host || "an empty host"}`);
   }
 }
 
@@ -51,7 +51,15 @@ export async function withLocalClient<T>(url: string, fn: (client: pg.Client) =>
   const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 5000 });
   // And the host pg actually resolved (URL, query parameters, PGHOST), in case they differ.
   assertLocalHost(client.host);
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ECONNREFUSED" || code === "ENOTFOUND") {
+      throw new Error(`cannot reach the local database at ${client.host}:${client.port}; start it with supabase start (or pass --db)`);
+    }
+    throw e;
+  }
   try {
     await client.query("begin transaction read only");
     const result = await fn(client);

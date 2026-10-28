@@ -20,7 +20,7 @@ export default definePolicy<Database>({
 When the compiler refuses something, it names the rule and the reason, and lists every problem at once:
 
 ```text
-The policy does not compile:
+samesight: the policy does not compile:
   - Inspection.read.VIEWER: true does not fit "archived" (boolean); it takes nothing in a read rule (PowerSync syncs booleans as 0/1; use raw)
   - Finding.read.INSPECTOR: via must stand alone or be a term of a top-level and(); sync streams cannot put it under or() (rules for "*" and for a role are ORed together)
 ```

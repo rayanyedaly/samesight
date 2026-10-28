@@ -56,7 +56,7 @@ export interface IR {
 export class CompileError extends Error {
   readonly problems: string[];
   constructor(problems: string[]) {
-    super(`The policy does not compile:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+    super(`the policy does not compile:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
     this.name = "CompileError";
     this.problems = problems;
   }
