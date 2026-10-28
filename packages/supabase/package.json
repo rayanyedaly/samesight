@@ -1,7 +1,7 @@
 {
   "name": "@samesight/supabase",
   "version": "0.1.0",
-  "description": "PowerSync connector for Supabase with atomic uploads and a dead-letter queue",
+  "description": "PowerSync connector for Supabase that does not lose writes: one atomic apply_batch call per transaction, and refused writes kept",
   "license": "MIT",
   "author": "Rayan Yedaly",
   "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/supabase#readme",

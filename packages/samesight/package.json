@@ -1,7 +1,7 @@
 {
   "name": "samesight",
   "version": "0.1.0",
-  "description": "One access policy for Supabase RLS and PowerSync sync config: policy language, compiler and CLI",
+  "description": "Catches PowerSync sync configs that send devices rows Supabase RLS refuses: lint, audit, and one policy for both",
   "license": "MIT",
   "author": "Rayan Yedaly",
   "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/samesight#readme",
@@ -23,7 +23,11 @@
     "policy",
     "access-control",
     "codegen",
-    "cli"
+    "cli",
+    "audit",
+    "lint",
+    "security",
+    "sarif"
   ],
   "engines": {
     "node": ">=22.18"
