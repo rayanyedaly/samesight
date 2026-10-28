@@ -259,12 +259,12 @@ if (win) {
   step(throughCmd, () => {
     // As pnpm, yarn and volta install globally: a shim with no node_modules beside it, which
     // samesight runs through cmd.exe. Its directory's spaces and parentheses, and the
-    // argument's & % ( ), must reach samesight-verify as they are.
+    // argument's & % ( ) and a %OS% cmd.exe must not expand, must reach samesight-verify as they are.
     const dir = join(work, "shim dir (x86)");
     mkdirSync(dir);
     const script = join(cli, "node_modules", "@samesight", "verify", "dist", "cli.js");
     writeFileSync(join(dir, "samesight-verify.cmd"), `@"${process.execPath}" "${script}" %*\r\n`);
-    const name = "nowhere & 100% (x).yaml";
+    const name = "nowhere & 100% %OS% (x).yaml";
     try {
       const out = samesightAlone(lib, dir, "audit", "--json", "--sync-config", name);
       throw new Error(`audit passed with no sync config:\n${out}`);
