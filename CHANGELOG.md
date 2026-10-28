@@ -4,7 +4,7 @@ The four npm packages (`samesight`, `@samesight/verify`, `@samesight/supabase`, 
 
 ## 0.1.0
 
-The first published release.
+The first published release. Each npm package carries the MIT licence (`LICENSE`).
 
 ### samesight
 
