@@ -107,8 +107,14 @@ describe("samesight audit", () => {
       const result = await cli(args);
       expect([result.code, result.stderr]).toEqual([2, message]);
     }
-    // An audit that is another command's argument is that command's business.
+    // An audit that is another command's argument is that command's business, and with no
+    // flag before it, an unknown command is just that.
     const lint = await cli(["lint", "audit", "--bogus"]);
     expect([lint.code, lint.stderr]).toEqual([2, "samesight: unknown option '--bogus'; see samesight --help\n"]);
+    const unknown = await cli(["frob", "audit"]);
+    expect([unknown.code, unknown.stderr]).toEqual([2, expect.stringMatching(/^samesight: unknown command "frob"/)]);
+    // --help before audit still prints the help.
+    const help = await cli(["--help", "audit"]);
+    expect([help.code, help.stdout]).toEqual([0, expect.stringContaining("Usage")]);
   });
 });

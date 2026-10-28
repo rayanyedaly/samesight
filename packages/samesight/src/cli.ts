@@ -181,8 +181,11 @@ const OPTIONS = {
  * an audit flag samesight does not know still gets this answer, not "unknown option".
  */
 function auditAfterFlags(argv: string[]): boolean {
-  if (!argv.includes("audit")) return false;
-  const { positionals } = parseArgs({ args: argv, allowPositionals: true, strict: false, options: OPTIONS });
+  const at = argv.indexOf("audit");
+  if (at < 0 || !argv.slice(0, at).some((a) => a.startsWith("-"))) return false;
+  const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, strict: false, options: OPTIONS });
+  // --help and --version answer as they do anywhere.
+  if (values.help || values.version) return false;
   const first = positionals.findIndex((p) => p === "audit" || COMMANDS.includes(p));
   return first >= 0 && positionals[first] === "audit";
 }
