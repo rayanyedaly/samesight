@@ -143,7 +143,7 @@ function checkThemeLinks(outDir: string, theme: DefaultTheme.Config): void {
   };
   walk(theme.nav);
   walk(theme.sidebar);
-  for (const [, link] of readFileSync(resolve(docsDir, "index.md"), "utf8").matchAll(/^\s*link:\s*(\S+)\s*$/gm)) links.push(link as string);
+  for (const [, link] of readFileSync(resolve(docsDir, "index.md"), "utf8").matchAll(/^\s*(?:-\s*)?link:\s*["']?([^"'\s#]+)/gm)) links.push(link as string);
   for (const link of links.filter((l) => l.startsWith("/"))) {
     if (!servedAt(outDir, `${BASE}${link.slice(1)}`)) throw new Error(`the nav, sidebar or home page links to ${link}, which is not a page of the site`);
   }
@@ -245,6 +245,6 @@ export default defineConfig({
       pattern: `${REPO}/edit/main/docs/:path`,
       text: "Edit this page on GitHub",
     },
-    footer: { message: "MIT licensed" },
+    footer: { message: "Samesight is MIT licensed. The sync configs quoted from PowerSync's demos keep their own licenses." },
   },
 });
