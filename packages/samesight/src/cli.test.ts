@@ -4,14 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { NOT_FOUND } from "./forward.ts";
 
 const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
-/** Runs the CLI; resolves with its exit code and stderr. */
-const cli = (args: string[], cwd?: string) =>
-  new Promise<{ code: number | string; stderr: string }>((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { timeout: 15_000, ...(cwd ? { cwd } : {}) }, (e, _stdout, stderr) =>
-      resolve({ code: e ? (typeof e.code === "number" ? e.code : `killed (${e.signal}): timed out?`) : 0, stderr }),
+/** Runs the CLI; resolves with its exit code, stderr and stdout. */
+const cli = (args: string[], cwd?: string, env?: NodeJS.ProcessEnv) =>
+  new Promise<{ code: number | string; stderr: string; stdout: string }>((resolve) => {
+    execFile(process.execPath, [CLI, ...args], { timeout: 15_000, ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) }, (e, stdout, stderr) =>
+      resolve({ code: e ? (typeof e.code === "number" ? e.code : `killed (${e.signal}): timed out?`) : 0, stderr, stdout }),
     );
   });
 
@@ -30,5 +31,23 @@ describe("samesight exit codes", () => {
     writeFileSync(join(dir, "samesight.policy.ts"), "export default {};\n");
     const existing = await cli(["init", "--policy", join(dir, "samesight.policy.ts")]);
     expect([existing.code, existing.stderr]).toEqual([2, expect.stringMatching(/already exists/)]);
+  });
+});
+
+describe("samesight audit", () => {
+  // An example project that installs @samesight/verify.
+  const project = fileURLToPath(new URL("../../../examples/audit-roles", import.meta.url));
+
+  it("runs samesight-verify audit from the project's install, with its exit code", { timeout: 30_000 }, async () => {
+    const help = await cli(["audit", "--help"], project);
+    expect([help.code, help.stdout]).toEqual([0, expect.stringContaining("samesight-verify audit [audit options]")]);
+    const missing = await cli(["audit", "--sync-config", "nowhere.yaml"], project);
+    expect([missing.code, missing.stderr]).toEqual([2, expect.stringMatching(/no sync config at .*nowhere\.yaml/)]);
+  });
+
+  it("says how to install @samesight/verify when it finds none, and exits 2", { timeout: 30_000 }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "samesight-cli-test-"));
+    const result = await cli(["audit", "--help"], dir, { PATH: "" });
+    expect([result.code, result.stderr, result.stdout]).toEqual([2, `${NOT_FOUND}\n`, ""]);
   });
 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * samesight init | generate | check | doctor | explain | lint
+ * samesight init | generate | check | doctor | explain | lint | audit
  *
  * Runs on Node's built-in TypeScript support (type stripping), so a policy file is
  * imported as written. Paths in the policy's `output` are relative to the policy file.
@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
+import { forwardAudit } from "./forward.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
@@ -38,6 +39,9 @@ Commands:
   lint [file ...]
              check PowerSync sync configs for known leak patterns, reading the files only
              (default: sync-config.yaml or sync-rules.yaml, here or under powersync/)
+  audit [options]
+             run samesight-verify audit: the project's own RLS against its sync config, on
+             the local stack; needs @samesight/verify, and takes its flags (audit --help)
 
 Options:
   --policy <file>   policy file (default: samesight.policy.ts, or samesight.policy.mts)
@@ -59,6 +63,8 @@ Docs: https://github.com/rayanyedaly/samesight#readme
 `;
 
 async function main(argv: string[]): Promise<number> {
+  // Its flags are samesight-verify's, so they are not read here.
+  if (argv[0] === "audit") return forwardAudit(argv.slice(1));
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
