@@ -82,7 +82,7 @@ export async function doctor(url: string, ir: IR, latestVersion: string | null):
 export function replicationRole(r: { replication: boolean; bypassrls: boolean; login: boolean } | undefined): Finding {
   const check = "replication role";
   // The generated migration creates the role; one that already exists it leaves as it is.
-  if (!r) return { status: "fail", check, detail: `${REPLICATION_ROLE} does not exist; run samesight generate, then apply the migration (supabase migration up)` };
+  if (!r) return { status: "fail", check, detail: `${REPLICATION_ROLE} does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset` };
   if (!r.replication || !r.bypassrls) {
     return {
       status: "fail",

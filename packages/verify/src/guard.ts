@@ -43,6 +43,14 @@ export interface Targets {
 /** The fix for an address read from supabase status, which only a stack on this machine changes. */
 const FROM_STATUS = "it comes from supabase status: run the project's local stack on this machine (supabase start)";
 
+/**
+ * A value as a refusal may print it: everything up to its last @, and any query or
+ * fragment, left out, since a value pasted from elsewhere can carry a password or a token.
+ */
+export function shown(value: string): string {
+  return value.replace(/^[\s\S]*@/, "…@").replace(/[?#][\s\S]*$/, "…");
+}
+
 /** Throws, listing every problem, unless each target is local and the environment is not a deployment. */
 export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = process.env): void {
   const problems: string[] = [];
@@ -58,11 +66,10 @@ export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = pr
     try {
       parsed = new URL(url);
     } catch {
-      // Up to its last @ left out: a value pasted from elsewhere can carry a password.
-      problems.push(`${name}: "${url.replace(/^.*@/, "…@")}" is not a URL; ${toUrl}`);
+      problems.push(`${name}: "${shown(url)}" is not a URL; ${toUrl}`);
       continue;
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") problems.push(`${name}: a ${parsed.protocol} URL is not an http(s) URL; ${toUrl}`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") problems.push(`${name}: "${shown(url)}" is not an http(s) URL; ${toUrl}`);
     else if (!LOCAL_HOSTS.has(parsed.hostname)) {
       problems.push(`${name}: ${parsed.hostname} is not this machine; ${flag ? `point ${flag} at localhost or 127.0.0.1` : FROM_STATUS}`);
     }
