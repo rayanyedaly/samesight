@@ -106,10 +106,10 @@ jobs:
 In audit mode the action:
 
 1. installs the Supabase CLI;
-2. runs `supabase start` in `project`, starting only Postgres, Auth, REST and the gateway (`exclude` lists the services it leaves out);
+2. runs `supabase start` in `project` (or uses the stack when one is already running there, and leaves it running), starting only Postgres, Auth, REST and the gateway (`exclude` lists the services it leaves out);
 3. runs `samesight-verify audit`, which starts its own PowerSync service in Docker and removes it at the end;
 4. adds the Markdown report to the job summary;
-5. stops Supabase, whether the audit passed or not.
+5. stops Supabase if it started it, whether the audit passed or not.
 
 The job summary can be read by anyone who can read the workflow run. The report holds the run's generated rows, its flags and local paths; see [`--report`](verify.md#options).
 
@@ -127,7 +127,7 @@ The verifier refuses to run where `NODE_ENV` is set to anything but `development
 | `upload-sarif` | `false` | Lint mode: upload the SARIF file to code scanning. |
 | `sarif-category` | `samesight` | Lint mode: the code scanning category of the upload. Give each job its own when one repository lints more than one sync config. |
 | `args` | | Extra flags for `samesight lint` or `samesight-verify audit`, such as `--allow unscoped-query:customers` or `--runs 4 --seed 7`. |
-| `supabase-version` | | Audit mode: the Supabase CLI version to install. |
+| `supabase-version` | `2.122.0` | Audit mode: the Supabase CLI version to install from npm. |
 | `exclude` | every service but Postgres, Auth, REST and the gateway | Audit mode: the Supabase services `supabase start` does not start (its `-x` list). |
 
 With `version: installed`, install the packages yourself and put their binaries on the PATH first. The versions then come from your lockfile:
