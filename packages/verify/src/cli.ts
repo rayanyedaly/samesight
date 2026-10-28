@@ -21,7 +21,7 @@
 import { Console } from "node:console";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { parseArgs } from "node:util";
+import { type ParseArgsConfig, parseArgs } from "node:util";
 import fc from "fast-check";
 import type pg from "pg";
 import {
@@ -48,7 +48,7 @@ import { toMarkdown } from "./markdown.ts";
 import { mutationTest } from "./mutate/run.ts";
 import { exitCode, failed, type Finding, formatFindings } from "./report.ts";
 import { MAX_SEED, readSeed, replayCommand } from "./replay.ts";
-import { readStack } from "./stack.ts";
+import { assertPowerSync, readStack } from "./stack.ts";
 import { checkCatalogParity } from "./static/catalog-parity.ts";
 import { checkCatalog } from "./static/catalog.ts";
 import { checkClientSchema } from "./static/client-schema.ts";
@@ -112,6 +112,20 @@ its PowerSync service, and audit needs Docker unless given --powersync or --stat
 Docs: https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme
 `;
 
+/**
+ * parseArgs, strictly; a flag it refuses is reported in Node's words, without its hint
+ * about '--', and with the help to see: "unknown option '--x'; see samesight-verify --help".
+ */
+function flags<T extends ParseArgsConfig>(help: string, config: T): ReturnType<typeof parseArgs<T>> {
+  try {
+    return parseArgs(config);
+  } catch (e) {
+    if (!(e instanceof Error) || !(e as NodeJS.ErrnoException).code?.startsWith("ERR_PARSE_ARGS_")) throw e;
+    const message = e.message.replace(/\. To specify a positional argument[\s\S]*$/, "");
+    throw new Error(`${message.charAt(0).toLowerCase()}${message.slice(1)}; see ${help}`);
+  }
+}
+
 /** --seed, checked before anything runs. */
 function seedFlag(v: string): number {
   const n = readSeed(v);
@@ -133,7 +147,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (argv[0] === "audit") return auditMain(argv.slice(1));
-  const { values } = parseArgs({
+  const { values } = flags("samesight-verify --help", {
     args: argv,
     options: {
       policy: { type: "string" },
@@ -239,6 +253,8 @@ async function main(argv: string[]): Promise<number> {
       textOut.write("\nSkipping the differential: fix the failures above first.\n");
       return report(findings, started);
     }
+    // Before any user exists: a service that is not there would fail every dataset, and late.
+    await assertPowerSync(stack.powersync);
 
     // 3. Differential, and 4. mutation.
     const log = (line: string) => textOut.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
@@ -299,7 +315,7 @@ async function main(argv: string[]): Promise<number> {
 }
 
 async function auditMain(argv: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values } = flags("samesight-verify audit --help", {
     args: argv,
     options: {
       "sync-config": { type: "string" },

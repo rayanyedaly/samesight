@@ -101,7 +101,7 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
   // Another run's mutants, or ones an earlier run could not take back: restoring "this"
   // original would put the mutants back for good.
   if (original.startsWith(MUTANT_HEADER)) {
-    throw new Error(`${ps.configPath} holds mutants from another samesight verify --mutate run; wait for it, or restore the file (samesight generate), then retry`);
+    throw new Error(`${ps.configPath} holds mutants from another samesight-verify --mutate run; wait for it, or restore the file (samesight generate), then retry`);
   }
   const dir = mkdtempSync(join(tmpdir(), "samesight-mutate-"));
   const backup = join(dir, "sync-config.yaml");
@@ -114,9 +114,9 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
     const [cmd, ...args] = ps.restart;
     try {
       if (cmd) execFileSync(cmd, args, { cwd: ps.cwd, stdio: "ignore", timeout: 60_000 });
-      process.stderr.write(`\nsamesight verify: restored ${ps.configPath} and restarted PowerSync.\n`);
+      process.stderr.write(`\nsamesight-verify: restored ${ps.configPath} and restarted PowerSync.\n`);
     } catch {
-      process.stderr.write(`\nsamesight verify: restored ${ps.configPath}; restart PowerSync to load it (${ps.restart.join(" ")}).\n`);
+      process.stderr.write(`\nsamesight-verify: restored ${ps.configPath}; restart PowerSync to load it (${ps.restart.join(" ")}).\n`);
     }
     process.exit(({ SIGTERM: 143, SIGHUP: 129, SIGBREAK: 149 } as Record<string, number>)[signal] ?? 130);
   };
@@ -193,7 +193,7 @@ export async function withSyncConfig<T>(client: pg.Client, ps: PowerSyncControl,
       named = true;
       const message = `restored ${ps.configPath} (a copy is at ${backup}), but PowerSync did not reload it and may still serve the mutants: ${(e as Error).message}`;
       if (strict) throw new Error(message);
-      process.stderr.write(`samesight verify: ${message}\n`);
+      process.stderr.write(`samesight-verify: ${message}\n`);
     }
   };
   let result: T;

@@ -35,7 +35,7 @@ export function tsIsModule(dir: string): boolean {
 }
 
 export async function loadPolicy(path: string): Promise<Policy> {
-  if (!existsSync(path)) throw new Error(`No policy file at ${path}; run \`samesight init\`.`);
+  if (!existsSync(path)) throw new Error(`no policy file at ${path}; run samesight init, or pass --policy`);
   if (/\.[cm]?ts$/.test(path) && !(process.features as { typescript?: unknown }).typescript) {
     throw new Error(
       `Node ${process.versions.node} cannot load ${path}: samesight needs Node 22.18 or newer, which runs TypeScript files as they are.`,

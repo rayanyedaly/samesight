@@ -28,8 +28,12 @@ describe("assertLocalTargets", () => {
   });
 
   it("refuses a production NODE_ENV or a hosting platform, and lists every problem", () => {
-    expect(() => assertLocalTargets(local, { NODE_ENV: "production" })).toThrow(/NODE_ENV is "production"/);
-    for (const name of DEPLOYED) expect(() => assertLocalTargets(local, { [name]: "1" }), name).toThrow(`${name} is set`);
+    expect(() => assertLocalTargets(local, { NODE_ENV: "production" })).toThrow(
+      /^refuses to run:\n {2}- NODE_ENV is "production"; the verifier runs only in development or test: unset NODE_ENV, or set it to development or test\n/,
+    );
+    for (const name of DEPLOYED) {
+      expect(() => assertLocalTargets(local, { [name]: "1" }), name).toThrow(`${name} is set, so this looks like a deployment; run it on a developer machine or in CI`);
+    }
     const all = () => assertLocalTargets({ db: "postgresql://u:p@remote/db", http: { supabase: "https://remote" } }, { FLY_APP_NAME: "x" });
     expect(all).toThrow(/database:[\s\S]*supabase:[\s\S]*FLY_APP_NAME/);
   });

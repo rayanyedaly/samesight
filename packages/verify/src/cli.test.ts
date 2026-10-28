@@ -41,13 +41,16 @@ describe("samesight-verify audit flags", () => {
 
   it("exits 2 on a flag it cannot read, and on a policy it cannot find", { timeout: 20_000 }, async () => {
     expect((await cli(["audit", "--runs", "many"])).code).toBe(2);
+    expect(await cli(["--bogus"])).toMatchObject({ code: 2, stderr: "samesight-verify: unknown option '--bogus'; see samesight-verify --help\n" });
     expect((await cli(["--policy", "nowhere.policy.ts"])).code).toBe(2);
   });
 
   it("with --json, writes one document to stdout on exit 2, the message on stderr too", { timeout: 20_000 }, async () => {
     for (const [args, mode, error] of [
       [["audit", "--runs", "many", "--json"], "audit", /--runs must be a whole number/],
-      [["--json", "--bogus"], "policy", /Unknown option '--bogus'/],
+      [["--json", "--bogus"], "policy", /unknown option '--bogus'; see samesight-verify --help$/m],
+      [["audit", "--json", "--bogus"], "audit", /unknown option '--bogus'; see samesight-verify audit --help$/m],
+      [["audit", "--json", "--runs"], "audit", /option '--runs <value>' argument missing; see samesight-verify audit --help$/m],
       [["audit", "--json", "--seed", "3", "--sync-config", "nowhere.yaml"], "audit", /no sync config at .*nowhere\.yaml/],
       // --json=x is refused, and still means a document on stdout.
       [["audit", "--json=x"], "audit", /--json/],

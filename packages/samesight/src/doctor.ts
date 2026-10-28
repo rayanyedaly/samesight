@@ -71,14 +71,26 @@ export async function doctor(url: string, ir: IR, latestVersion: string | null):
       `select rolreplication as replication, rolbypassrls as bypassrls, rolcanlogin as login from pg_roles where rolname = $1`,
       [REPLICATION_ROLE],
     );
-    const r = role.rows[0];
-    if (!r) add("fail", "replication role", `${REPLICATION_ROLE} does not exist`);
-    else if (!r.replication || !r.bypassrls) add("fail", "replication role", `${REPLICATION_ROLE} needs REPLICATION and BYPASSRLS`);
-    else add(r.login ? "ok" : "warn", "replication role", r.login ? `${REPLICATION_ROLE} is ready` : `${REPLICATION_ROLE} cannot log in yet; set its password`);
+    out.push(replicationRole(role.rows[0]));
 
     out.push(...(await replication(client)));
     return out;
   });
+}
+
+/** The replication role, from its pg_roles row (none when it does not exist). */
+export function replicationRole(r: { replication: boolean; bypassrls: boolean; login: boolean } | undefined): Finding {
+  const check = "replication role";
+  // The generated migration creates the role; one that already exists it leaves as it is.
+  if (!r) return { status: "fail", check, detail: `${REPLICATION_ROLE} does not exist; run samesight generate, then apply the migration (supabase migration up)` };
+  if (!r.replication || !r.bypassrls) {
+    return {
+      status: "fail",
+      check,
+      detail: `${REPLICATION_ROLE} needs REPLICATION and BYPASSRLS; the migration leaves a role that exists as it is, so run alter role ${REPLICATION_ROLE} with replication bypassrls (as supabase_admin)`,
+    };
+  }
+  return r.login ? { status: "ok", check, detail: `${REPLICATION_ROLE} is ready` } : { status: "warn", check, detail: `${REPLICATION_ROLE} cannot log in yet; set its password` };
 }
 
 /**

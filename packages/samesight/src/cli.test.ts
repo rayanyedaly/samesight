@@ -21,16 +21,29 @@ describe("samesight exit codes", () => {
     expect((await cli(["--help"])).code).toBe(0);
     expect((await cli([])).code).toBe(2);
     const unknown = await cli(["frobnicate"]);
-    expect([unknown.code, unknown.stderr]).toEqual([2, expect.stringMatching(/^Unknown command "frobnicate"/)]);
+    expect([unknown.code, unknown.stderr]).toEqual([2, 'samesight: unknown command "frobnicate"; the commands are init, generate, check, doctor, explain, lint, audit; see samesight --help\n']);
+  });
+
+  it("names a flag it cannot read in Node's words, and where to look", { timeout: 30_000 }, async () => {
+    const flag = await cli(["check", "--frobnicate"]);
+    expect([flag.code, flag.stderr]).toEqual([2, "samesight: unknown option '--frobnicate'; see samesight --help\n"]);
+    const value = await cli(["explain", "--table"]);
+    expect([value.code, value.stderr]).toEqual([2, "samesight: option '--table <value>' argument missing; see samesight --help\n"]);
+  });
+
+  it("says how to start a database it cannot reach", { timeout: 30_000 }, async () => {
+    const policy = fileURLToPath(new URL("../../../examples/fieldbook/samesight.policy.ts", import.meta.url));
+    const result = await cli(["generate", "--policy", policy, "--db", "postgresql://postgres:postgres@127.0.0.1:1/postgres"]);
+    expect([result.code, result.stderr]).toEqual([2, "samesight: cannot reach the local database at 127.0.0.1:1; start it with supabase start (or pass --db)\n"]);
   });
 
   it("exits 2 when it cannot find the policy, or would write over one", { timeout: 30_000 }, async () => {
     const dir = mkdtempSync(join(tmpdir(), "samesight-cli-test-"));
     const missing = await cli(["check", "--policy", join(dir, "nowhere.policy.ts")]);
-    expect([missing.code, missing.stderr]).toEqual([2, expect.stringMatching(/No policy file at/)]);
+    expect([missing.code, missing.stderr]).toEqual([2, `samesight: no policy file at ${join(dir, "nowhere.policy.ts")}; run samesight init, or pass --policy\n`]);
     writeFileSync(join(dir, "samesight.policy.ts"), "export default {};\n");
     const existing = await cli(["init", "--policy", join(dir, "samesight.policy.ts")]);
-    expect([existing.code, existing.stderr]).toEqual([2, expect.stringMatching(/already exists/)]);
+    expect([existing.code, existing.stderr]).toEqual([2, `samesight: ${join(dir, "samesight.policy.ts")} already exists; edit it, or remove it to start again\n`]);
   });
 });
 
