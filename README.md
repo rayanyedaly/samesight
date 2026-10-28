@@ -124,7 +124,7 @@ The [getting started guide](docs/getting-started.md) walks through it, including
 
 I built an EMR and patient management system for a developing country: an offline-first mobile app for patients, and a web dashboard for doctors and clinics, on cloud-hosted Postgres with PowerSync syncing to the devices. Patient records are PII and PHI, and the sync config decided which of them landed on which phone. I worried that one wrong filter would put a patient's data on someone else's device, and I didn't want to check by hand every time I changed the backend or the sync engine. So I wrote a small script I could run whenever I needed it.
 
-Then I thought other PowerSync developers might have the same worry, or have had it already. Why not build something that works for any PowerSync project? Samesight is that script, grown up. [The longer story](docs/why.md).
+Then I thought other PowerSync developers might have the same worry, or have had it already. Why not build something that works for any PowerSync project? Samesight is that script, grown up. Lint reads any PowerSync sync config; audit and the policy compiler work with Supabase today. [The longer story](docs/why.md).
 
 Rayan
 

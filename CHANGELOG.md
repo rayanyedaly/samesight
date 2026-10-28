@@ -11,7 +11,7 @@ The four npm packages (`samesight`, `@samesight/verify`, `@samesight/supabase`, 
 
 ### @samesight/verify
 
-- `samesight-verify --help` and the npm page link to the docs site's audit page.
+- `samesight-verify --help` and the npm page link to the docs site's page on the verifier and audit mode.
 
 ## 0.1.0 (2026-10-28)
 

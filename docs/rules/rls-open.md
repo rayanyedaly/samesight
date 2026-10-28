@@ -70,7 +70,7 @@ When every signed-in user is meant to read every row, keep the policy and accept
 
 ## What audit does
 
-Audit compares what devices hold with what RLS returns, so RLS wider than the sync config is no leak to it: here each device holds only its user's notes, which RLS returns too, and the differential passes. Its Database catalog section lists each synced table's policies, and warns about any policy that reads (`SELECT` or `ALL`) and applies to `anon` or `public` on a table `anon` can select. A policy like this one, for `authenticated`, gets no warning, so lint is the check for it.
+Audit compares what devices hold with what RLS returns, so RLS wider than the sync config is no leak to it: here each device holds only its user's notes, which RLS returns too, and the differential does not fail. It warns instead that RLS lets users read rows no stream sends them, since RLS alone then guards the REST API. Its Database catalog section lists each synced table's policies, and warns about any policy that reads (`SELECT` or `ALL`) and applies to `anon` or `public` on a table `anon` can select; a policy like this one, for `authenticated`, gets no catalog warning.
 
 Audit's write path does fail one case of it: an insert RLS allows that its writer cannot read back, which `with check (true)` beside a narrower read policy lets through.
 
