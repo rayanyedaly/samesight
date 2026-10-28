@@ -18,7 +18,8 @@
  * PowerSync containers and a replication role of its own.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { Console } from "node:console";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import fc from "fast-check";
@@ -35,14 +36,18 @@ import {
   type SchemaInfo,
 } from "samesight/compiler";
 import { audit } from "./audit/run.ts";
+import { green, red, useColor, yellow } from "./color.ts";
 import { type AutoStarted, autoStart } from "./autostart/run.ts";
 import { type Mode, onSignals, Teardown } from "./autostart/teardown.ts";
 import { connectLocal } from "./db.ts";
 import { brokeDown, differential, setUp, stoppable } from "./differential/run.ts";
 import { policyTables } from "./differential/model.ts";
 import { worldArbitrary } from "./differential/world.ts";
+import { reportDocument, type Section } from "./json.ts";
+import { toMarkdown } from "./markdown.ts";
 import { mutationTest } from "./mutate/run.ts";
-import { failed, type Finding, formatFindings } from "./report.ts";
+import { exitCode, failed, type Finding, formatFindings } from "./report.ts";
+import { MAX_SEED, readSeed, replayCommand } from "./replay.ts";
 import { readStack } from "./stack.ts";
 import { checkCatalogParity } from "./static/catalog-parity.ts";
 import { checkCatalog } from "./static/catalog.ts";
@@ -54,6 +59,22 @@ import { checkWritePath } from "./writepath.ts";
 
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+const ARGV = process.argv.slice(2);
+const began = Date.now();
+/** With --json, stdout carries the report document alone: everything the run prints goes to stderr. */
+const JSON_OUT = ARGV.some((a) => a === "--json" || a.startsWith("--json="));
+const textOut = JSON_OUT ? process.stderr : process.stdout;
+/** Colour and symbols in a terminal; plain when piped, in CI, or under NO_COLOR. Decided once, for every section, on the stream the text goes to. */
+const COLOR = useColor(textOut, process.env);
+if (JSON_OUT) globalThis.console = new Console({ stdout: process.stderr, stderr: process.stderr });
+/** Every section the run printed, for the document. */
+const sections: Section[] = [];
+/** Prints a section's findings under its title. */
+function printSection(title: string, f: Finding[]) {
+  sections.push({ title, findings: f });
+  textOut.write(`\n${title}\n${formatFindings(f, COLOR)}\n`);
+}
+
 const USAGE = `Usage: samesight-verify [options]
        samesight-verify audit [audit options]
 
@@ -63,11 +84,13 @@ Options:
   --compose <file>      the compose file that runs PowerSync (default: docker-compose.yml)
   --static              run the static and catalog checks only
   --runs <n>            generated datasets for the differential (default: 8)
-  --seed <n>            fast-check seed, to replay a run
+  --seed <n>            fast-check seed (0 to 2147483644), to replay a run
   --time-limit <s>      stop generating datasets after this many seconds (default: 120)
   --mutate              also run the mutation test (rewrites the sync config and restarts PowerSync)
   --mutate-datasets <n> datasets to try per mutant before calling it missed (default: 8)
   --restart <command>   restarts PowerSync (default: docker compose restart powersync)
+  --json                write one JSON report to stdout (schema/report.schema.json), the text to stderr
+  --report <file>       also write the findings to this file as Markdown, for an issue
 
 Audit options (a project with hand-written RLS and sync config, no policy file):
   --sync-config <file>  the PowerSync sync config (default: sync-config.yaml)
@@ -79,7 +102,7 @@ Audit options (a project with hand-written RLS and sync config, no policy file):
   --compose <file>      with --powersync or --static: the compose file that runs your PowerSync,
                         to check its version floor
   --publication <name>  with --powersync or --static: the publication to check (default: powersync)
-  --static, --runs, --seed, --time-limit   as above
+  --static, --runs, --seed, --time-limit, --json, --report   as above
 
   -v, --version         print the version
   -h, --help            print this help
@@ -88,6 +111,13 @@ Needs the project's local Supabase stack running (supabase start); the policy mo
 its PowerSync service, and audit needs Docker unless given --powersync or --static.
 Docs: https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme
 `;
+
+/** --seed, checked before anything runs. */
+function seedFlag(v: string): number {
+  const n = readSeed(v);
+  if (n === undefined) throw new Error(`--seed must be a whole number from 0 to ${MAX_SEED}, not "${v}"`);
+  return n;
+}
 
 /** A whole-number flag, checked before anything runs: a zero count would pass while testing nothing. */
 function int(name: string, v: string | undefined, fallback: number, min = 1): number {
@@ -99,7 +129,7 @@ function int(name: string, v: string | undefined, fallback: number, min = 1): nu
 
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === "-v" || argv[0] === "--version") {
-    process.stdout.write(`${VERSION}\n`);
+    textOut.write(`${VERSION}\n`);
     return 0;
   }
   if (argv[0] === "audit") return auditMain(argv.slice(1));
@@ -116,14 +146,16 @@ async function main(argv: string[]): Promise<number> {
       mutate: { type: "boolean" },
       "mutate-datasets": { type: "string" },
       restart: { type: "string" },
+      json: { type: "boolean" },
+      report: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
   if (values.help) {
-    process.stdout.write(USAGE);
+    textOut.write(USAGE);
     return 0;
   }
-  const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
+  const seed = values.seed === undefined ? undefined : seedFlag(values.seed);
   const runs = int("runs", values.runs, 8);
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
   const mutateDatasets = int("mutate-datasets", values["mutate-datasets"], 8);
@@ -137,7 +169,7 @@ async function main(argv: string[]): Promise<number> {
   const section = (title: string, f: Finding[]) => {
     if (stopped()) return;
     findings.push(...f);
-    process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
+    printSection(title, f);
   };
   const started = Date.now();
 
@@ -148,8 +180,7 @@ async function main(argv: string[]): Promise<number> {
   const snapshot = file(out.schemaSnapshot);
   const manifestText = file(out.manifest);
   if (!snapshot || !manifestText) {
-    process.stderr.write(`No ${snapshot ? out.manifest : out.schemaSnapshot} next to ${policyPath}; run samesight generate first.\n`);
-    return 1;
+    throw new Error(`no ${snapshot ? out.manifest : out.schemaSnapshot} next to ${policyPath}; run samesight generate first`);
   }
   const schema = JSON.parse(snapshot) as SchemaInfo;
   const ir = buildIR(policy, schema);
@@ -205,12 +236,12 @@ async function main(argv: string[]): Promise<number> {
     section("Database catalog", catalog);
     if (values.static) return report(findings, started);
     if (failed(findings)) {
-      process.stdout.write("\nSkipping the differential: fix the failures above first.\n");
+      textOut.write("\nSkipping the differential: fix the failures above first.\n");
       return report(findings, started);
     }
 
     // 3. Differential, and 4. mutation.
-    const log = (line: string) => process.stdout.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
+    const log = (line: string) => textOut.write(`  ${((Date.now() - started) / 1000).toFixed(0)}s  ${line}\n`);
     // One teardown for the run, from here on: on Ctrl+C, SIGTERM or SIGHUP it removes the run's
     // users and rows (and with --mutate puts the sync config back).
     const run = signalTeardown(log, "policy");
@@ -225,9 +256,11 @@ async function main(argv: string[]): Promise<number> {
       try {
         log("generating datasets for the differential");
         const result = await differential(s, {
+          sync: { kind: "streams", streams: parseStreams(syncYaml) },
           runs,
           timeLimitMs,
           ...(seed !== undefined ? { seed } : {}),
+          replay: (x) => replayCommand("policy", argv, x),
         });
         section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, result.findings);
         log("forging upload batches");
@@ -235,7 +268,7 @@ async function main(argv: string[]): Promise<number> {
         const worlds = fc.sample(worldArbitrary(s.tables, { minRows: 8, maxRows: 20 }), { numRuns: 6, seed: seed ?? 7 });
         section("Write path", (await checkWritePath(s, worlds)).findings);
         if (values.mutate) {
-          if (failed(findings)) process.stdout.write("\nSkipping the mutation test: fix the failures above first.\n");
+          if (failed(findings)) textOut.write("\nSkipping the mutation test: fix the failures above first.\n");
           else {
             const restart = (values.restart ?? "docker compose restart powersync").split(/\s+/).filter(Boolean);
             const m = await mutationTest(
@@ -279,11 +312,13 @@ async function auditMain(argv: string[]): Promise<number> {
       runs: { type: "string" },
       seed: { type: "string" },
       "time-limit": { type: "string" },
+      json: { type: "boolean" },
+      report: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
   if (values.help) {
-    process.stdout.write(USAGE);
+    textOut.write(USAGE);
     return 0;
   }
   const ownService = values.powersync !== undefined;
@@ -295,13 +330,12 @@ async function auditMain(argv: string[]): Promise<number> {
   if (values.publication !== undefined && values.publication !== "powersync" && !ownService && !values.static) {
     throw new Error(`the PowerSync service audit starts replicates the "powersync" publication; --publication ${values.publication} needs --powersync or --static`);
   }
-  const seed = values.seed === undefined ? undefined : int("seed", values.seed, 0, 0);
+  const seed = values.seed === undefined ? undefined : seedFlag(values.seed);
   const runs = int("runs", values.runs, 8);
   const timeLimitMs = int("time-limit", values["time-limit"], 120) * 1000;
   const syncPath = resolve(values["sync-config"] ?? "sync-config.yaml");
   if (!existsSync(syncPath)) {
-    process.stderr.write(`No sync config at ${syncPath}; pass --sync-config.\n`);
-    return 1;
+    throw new Error(`no sync config at ${syncPath}; pass --sync-config`);
   }
   const project = resolve(values.project ?? ".");
   const findings: Finding[] = [];
@@ -310,10 +344,10 @@ async function auditMain(argv: string[]): Promise<number> {
   const section = (title: string, f: Finding[]) => {
     if (stopped()) return;
     findings.push(...f);
-    process.stdout.write(`\n${title}\n${formatFindings(f)}\n`);
+    printSection(title, f);
   };
   const startedAt = Date.now();
-  const log = (line: string) => process.stdout.write(`  ${((Date.now() - startedAt) / 1000).toFixed(0)}s  ${line}\n`);
+  const log = (line: string) => textOut.write(`  ${((Date.now() - startedAt) / 1000).toFixed(0)}s  ${line}\n`);
   const syncText = readFileSync(syncPath, "utf8");
   if (values.compose !== undefined) {
     const compose = existsSync(values.compose) ? readFileSync(values.compose, "utf8") : null;
@@ -360,6 +394,7 @@ async function auditMain(argv: string[]): Promise<number> {
       runs,
       timeLimitMs,
       ...(seed !== undefined ? { seed } : {}),
+      replay: (x) => replayCommand("audit", argv, x),
       section,
       log,
       projectDir: project,
@@ -407,12 +442,45 @@ function signalTeardown(log: (line: string) => void, mode: Mode) {
 /** Stopped by a signal: onSignals exits with its code (130, 143, 129, 141) once the teardown is done. */
 const untilExit = () => new Promise<number>(() => setInterval(() => {}, 60_000));
 
+/** The summary line; exits 0 on a pass, 1 when a check found something, 2 when one only could not run. */
 function report(findings: Finding[], started: number): number {
-  const fails = findings.filter((f) => f.status === "fail").length;
+  const fails = findings.filter((f) => f.status === "fail" && !f.incomplete).length;
+  const incomplete = findings.filter((f) => f.status === "fail" && f.incomplete).length;
   const warns = findings.filter((f) => f.status === "warn").length;
   const time = `${((Date.now() - started) / 1000).toFixed(0)}s`;
-  process.stdout.write(`\n${fails ? `FAILED: ${fails} failing` : "PASSED"}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
-  return fails ? 1 : 0;
+  const notRun = incomplete ? `${incomplete} could not run` : "";
+  const head = fails ? `FAILED: ${fails} failing${notRun ? `, ${notRun}` : ""}` : notRun ? `INCOMPLETE: ${notRun}` : "PASSED";
+  const paint = !COLOR ? (s: string) => s : fails ? red : notRun ? yellow : green;
+  textOut.write(`\n${paint(head)}${warns ? `, ${warns} warnings` : ""} (${time})\n`);
+  return exitCode(findings);
+}
+
+/** What `--report` writes: each section as printed, and why the run could not go on. */
+/** `--report`'s file, read before the flags are, so a run that cannot read them still writes it. */
+function reportPath(argv: string[]): string | undefined {
+  let path: string | undefined;
+  for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
+    // A flag after --report is not its file (parseArgs refuses the line): no file named --json.
+    if (argv[i] === "--report" && i + 1 < argv.length && !argv[i + 1]?.startsWith("--")) path = argv[++i];
+    else if (argv[i]?.startsWith("--report=")) path = argv[i]?.slice("--report=".length);
+  }
+  return path;
+}
+
+/**
+ * Writes the Markdown report, when asked for and the run got as far as a check or an error
+ * (not for --help or --version). A report it cannot write turns a pass into exit 2.
+ */
+function writeReport(argv: string[], code: number, error?: string): number {
+  const path = reportPath(argv);
+  if (path === undefined || (!sections.length && error === undefined)) return code;
+  try {
+    writeFileSync(path, toMarkdown({ mode: argv[0] === "audit" ? "audit" : "policy", exitCode: code, sections, ...(error !== undefined ? { error } : {}) }));
+  } catch (e) {
+    process.stderr.write(`samesight-verify: could not write the report to ${path}: ${(e as Error).message}\n`);
+    return code === 0 ? 2 : code;
+  }
+  return code;
 }
 
 // PowerSync's worker threads can keep the process alive, so it exits explicitly, once the
@@ -423,20 +491,32 @@ function report(findings: Finding[], started: number): number {
 let outputGone: number | undefined;
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (e: NodeJS.ErrnoException) => {
-    outputGone ??= e.code === "EPIPE" || e.code === "EIO" ? 141 : 1;
+    outputGone ??= e.code === "EPIPE" || e.code === "EIO" ? 141 : 2;
   });
 }
 // A failed write calls back before it emits 'error': the callbacks' own errors count too.
 const exit = (code: number) => {
   let left = 2;
   const done = (e?: Error | null) => {
-    if (e) outputGone ??= ["EPIPE", "EIO"].includes((e as NodeJS.ErrnoException).code ?? "") ? 141 : 1;
+    if (e) outputGone ??= ["EPIPE", "EIO"].includes((e as NodeJS.ErrnoException).code ?? "") ? 141 : 2;
     if (--left === 0) process.exit(outputGone ?? code);
   };
   process.stdout.write("", done);
   process.stderr.write("", done);
 };
-main(process.argv.slice(2)).then(exit, (e) => {
-  process.stderr.write(`samesight-verify: ${(e as Error).message}\n`);
-  exit(1);
+/** Writes the --json document, then exits. A signal exits before this, with no document. */
+// A signal exits from onSignals instead, with neither report.
+const finish = (exitWith: number, error?: string) => {
+  const code = writeReport(ARGV, exitWith, error);
+  if (JSON_OUT) {
+    const doc = reportDocument({ toolVersion: VERSION, argv: ARGV, exitCode: code, durationMs: Date.now() - began, sections, ...(error !== undefined ? { error } : {}) });
+    process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
+  }
+  exit(code);
+};
+// An error (bad flags, a database or service it cannot reach) means it could not run: 2.
+main(ARGV).then(finish, (e) => {
+  const message = e instanceof Error ? e.message : String(e);
+  process.stderr.write(`samesight-verify: ${message}\n`);
+  finish(2, message);
 });

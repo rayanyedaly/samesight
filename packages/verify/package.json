@@ -32,7 +32,10 @@
     "node": ">=22.18"
   },
   "type": "module",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema/report.schema.json": "./schema/report.schema.json"
+  },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
@@ -60,6 +63,7 @@
   },
   "files": [
     "dist",
+    "schema",
     "src",
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
@@ -78,6 +82,7 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       },
+      "./schema/report.schema.json": "./schema/report.schema.json",
       "./package.json": "./package.json"
     },
     "bin": {
