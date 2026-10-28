@@ -1,7 +1,7 @@
 {
   "name": "@samesight/next",
   "version": "0.1.0",
-  "description": "Encrypted browser store, provider and sync status UI for Next.js",
+  "description": "Encrypted per-user PowerSync database for Next.js, with offline unlock, idle lock, safe sign-out and sync status UI",
   "license": "MIT",
   "author": "Rayan Yedaly",
   "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/next#readme",

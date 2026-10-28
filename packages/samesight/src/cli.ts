@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * samesight init | generate | check | doctor | explain | lint
+ * samesight init | generate | check | doctor | explain | lint | audit
  *
  * Runs on Node's built-in TypeScript support (type stripping), so a policy file is
  * imported as written. Paths in the policy's `output` are relative to the policy file.
@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
+import { forwardAudit } from "./forward.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
@@ -38,6 +39,9 @@ Commands:
   lint [file ...]
              check PowerSync sync configs for known leak patterns, reading the files only
              (default: sync-config.yaml or sync-rules.yaml, here or under powersync/)
+  audit [options]
+             run samesight-verify audit: the project's own RLS against its sync config, on
+             the local stack; needs @samesight/verify, and takes its flags (audit --help)
 
 Options:
   --policy <file>   policy file (default: samesight.policy.ts, or samesight.policy.mts)
@@ -59,20 +63,13 @@ Docs: https://github.com/rayanyedaly/samesight#readme
 `;
 
 async function main(argv: string[]): Promise<number> {
-  const { positionals, values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      policy: { type: "string" },
-      db: { type: "string" },
-      table: { type: "string" },
-      migrations: { type: "string" },
-      allow: { type: "string", multiple: true },
-      format: { type: "string" },
-      help: { type: "boolean", short: "h" },
-      version: { type: "boolean", short: "v" },
-    },
-  });
+  // Its flags are samesight-verify's, so they are not read here.
+  if (argv[0] === "audit") return forwardAudit(argv.slice(1));
+  if (auditAfterFlags(argv)) {
+    console.error("samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help");
+    return 2;
+  }
+  const { positionals, values } = flags(argv);
   const command = positionals[0];
   if (values.version) {
     process.stdout.write(`${VERSION}\n`);
@@ -95,7 +92,7 @@ async function main(argv: string[]): Promise<number> {
       const policy = await loadPolicy(policyPath);
       const snapshot = join(root, outputPaths(policy).schemaSnapshot);
       if (!existsSync(snapshot)) {
-        console.error(`No schema snapshot at ${snapshot}; run \`samesight generate\` first.`);
+        console.error(`samesight: no schema snapshot at ${snapshot}; run samesight generate first`);
         return 2;
       }
       const ir = buildIR(policy, JSON.parse(readFileSync(snapshot, "utf8")) as SchemaInfo);
@@ -111,7 +108,7 @@ async function main(argv: string[]): Promise<number> {
       const policy = await loadPolicy(policyPath);
       const snapshot = join(root, outputPaths(policy).schemaSnapshot);
       if (!existsSync(snapshot)) {
-        console.error(`No schema snapshot at ${snapshot}; run \`samesight generate\` first.`);
+        console.error(`samesight: no schema snapshot at ${snapshot}; run samesight generate first`);
         return 2;
       }
       return check(policy, JSON.parse(readFileSync(snapshot, "utf8")) as SchemaInfo, root);
@@ -148,9 +145,56 @@ async function main(argv: string[]): Promise<number> {
       return findings.some((f) => f.status === "fail") ? 1 : 0;
     }
     default:
-      console.error(`Unknown command "${command}".\n\n${USAGE}`);
+      console.error(`samesight: unknown command "${command}"; the commands are ${COMMANDS.join(", ")}; see samesight --help`);
       return 2;
   }
+}
+
+const COMMANDS = ["init", "generate", "check", "doctor", "explain", "lint", "audit"];
+
+/**
+ * The flags, read strictly. A flag Node cannot read is reported in its own words, with
+ * where to look: "unknown option '--x'; see samesight --help".
+ */
+function flags(argv: string[]) {
+  try {
+    return parseArgs({ args: argv, allowPositionals: true, options: OPTIONS });
+  } catch (e) {
+    throw flagError(e, "samesight --help");
+  }
+}
+
+const OPTIONS = {
+  policy: { type: "string" },
+  db: { type: "string" },
+  table: { type: "string" },
+  migrations: { type: "string" },
+  allow: { type: "string", multiple: true },
+  format: { type: "string" },
+  help: { type: "boolean", short: "h" },
+  version: { type: "boolean", short: "v" },
+} as const;
+
+/**
+ * Audit given after a flag (`samesight --sync-config x.yaml audit`): it runs only when it
+ * comes first, since after a flag its flags would be read as samesight's. Read loosely, so
+ * an audit flag samesight does not know still gets this answer, not "unknown option".
+ */
+function auditAfterFlags(argv: string[]): boolean {
+  const at = argv.indexOf("audit");
+  if (at < 0 || !argv.slice(0, at).some((a) => a.startsWith("-"))) return false;
+  const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, strict: false, options: OPTIONS });
+  // --help and --version answer as they do anywhere.
+  if (values.help || values.version) return false;
+  const first = positionals.findIndex((p) => p === "audit" || COMMANDS.includes(p));
+  return first >= 0 && positionals[first] === "audit";
+}
+
+/** Node's message for a flag parseArgs refuses, without its hint about '--', and the help to see. */
+function flagError(e: unknown, help: string): unknown {
+  if (!(e instanceof Error) || !(e as NodeJS.ErrnoException).code?.startsWith("ERR_PARSE_ARGS_")) return e;
+  const message = e.message.replace(/\. To specify a positional argument[\s\S]*$/, "");
+  return new Error(`${message.charAt(0).toLowerCase()}${message.slice(1)}; see ${help}`);
 }
 
 const FORMATS = ["text", "json", "sarif", "github"];
@@ -158,18 +202,18 @@ const FORMATS = ["text", "json", "sarif", "github"];
 /** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read; in every format. */
 function lint(given: string[], migrationsDir: string | undefined, allow: string[], format: string): number {
   if (!FORMATS.includes(format)) {
-    console.error(`--format must be text, json, sarif or github, not "${format}"`);
+    console.error(`samesight: --format must be text, json, sarif or github, not "${format}"`);
     return 2;
   }
   // A misspelt rule would allow nothing and look like it worked.
   const unknown = allow.map((a) => a.split(":")[0] as string).filter((r) => !RULE_NAMES.includes(r));
   if (unknown.length) {
-    console.error(`--allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
+    console.error(`samesight: --allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
     return 2;
   }
   const found = given.length ? given : [findSyncConfig(process.cwd())].filter((f): f is string => f !== undefined);
   if (found.length === 0) {
-    console.error(`No sync config found (tried ${SYNC_CONFIG_FILES.join(", ")}); name one: samesight lint <file>`);
+    console.error(`samesight: no sync config found (tried ${SYNC_CONFIG_FILES.join(", ")}); name one: samesight lint <file>`);
     return 2;
   }
   const dir = migrationsDir ?? (existsSync(MIGRATIONS_DIR) ? MIGRATIONS_DIR : undefined);
@@ -179,7 +223,13 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
       migrations = readMigrations(dir);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      console.error(code === "ENOENT" ? `No migrations directory at ${dir}.` : code === "ENOTDIR" ? `${dir} is not a directory${migrationsDir ? "; --migrations takes the directory that holds the .sql files" : ""}.` : `Cannot read the migrations in ${dir}: ${(e as Error).message}`);
+      const why =
+        code === "ENOENT"
+          ? `no migrations directory at ${dir}; check the path given to --migrations`
+          : code === "ENOTDIR"
+            ? `${dir} is not a directory; ${migrationsDir ? "--migrations takes the directory that holds the .sql files" : "make it the directory of .sql migrations, or pass --migrations <dir>"}`
+            : `cannot read the migrations in ${dir}: ${(e as Error).message}; fix it, or pass --migrations with another directory`;
+      console.error(`samesight: ${why}`);
       return 2;
     }
   } else console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run; pass --migrations <dir> to check them`);
@@ -189,7 +239,11 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
     try {
       findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file, undefined, migrations));
     } catch (e) {
-      console.error(`${file}: cannot be read as a sync config: ${(e as Error).message}`);
+      // A file the system could not read (not there, a directory) is a path to fix; anything else is its YAML.
+      const fix = (e as NodeJS.ErrnoException).syscall ? "check the path, or name another file" : "fix the YAML, or name another file";
+      const message = (e as Error).message.trimEnd();
+      // A YAML error ends with the line it points at: the fix goes below it.
+      console.error(`samesight: ${file}: cannot be read as a sync config: ${message}${message.includes("\n") ? "\n" : "; "}${fix}`);
       unreadable.push({ file, error: (e as Error).message });
     }
   }
@@ -263,7 +317,7 @@ async function init(given: string | undefined, db: string): Promise<number> {
   const path = given !== undefined ? resolve(given) : join(cwd, tsIsModule(cwd) ? POLICY_FILES[0] : POLICY_FILES[1]);
   for (const p of [existing, path]) {
     if (p && existsSync(p)) {
-      console.error(`${p} already exists.`);
+      console.error(`samesight: ${p} already exists; edit it, or remove it to start again`);
       return 2;
     }
   }
@@ -301,7 +355,7 @@ main(process.argv.slice(2)).then(
     process.exitCode = code;
   },
   (error: unknown) => {
-    console.error(error instanceof CompileError ? error.message : error instanceof Error ? error.message : error);
+    console.error(`samesight: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = error instanceof CompileError ? 1 : 2;
   },
 );

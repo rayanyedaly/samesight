@@ -15,10 +15,11 @@ import { prefixedUuid, worldArbitrary } from "../differential/world.ts";
 import { type Assignment, assignClaims, MAX_USERS, metadataOf, valueKeyFor } from "./assign.ts";
 import { failed, type Finding } from "../report.ts";
 import type { Stack } from "../stack.ts";
-import { checkAuditCatalog, checkUserEditableClaims } from "./catalog.ts";
-import { accessTokenHook, at, claimFindings, type ClaimsPlan, planClaims, policyFunctions, policyRules, type RuleSql, syncRules } from "./claims.ts";
+import { checkAuditCatalog } from "./catalog.ts";
+import { checkSyncConfig, checkUserMetadata, type PolicyRow } from "./config.ts";
+import { accessTokenHook, at, claimFindings, type ClaimsPlan, planClaims, policyFunctions, policyRules, syncRules } from "./claims.ts";
 import { auditScope } from "samesight/compiler";
-import { parseSyncConfig, type SyncConfig } from "samesight/compiler";
+import type { SyncConfig } from "samesight/compiler";
 import { coverageFindings, coverageScope, coverageTitle, qualifyDifferential } from "./coverage.ts";
 import { type Dim, type FixedPlan, type FixedRow, fixedPlan, fixedRows, hookDims, userColumn } from "./fixed.ts";
 import { type HookPlan, planHook, showUri } from "./hook.ts";
@@ -107,31 +108,13 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     o.section(title, f);
   };
 
-  let scope: ReturnType<typeof auditScope>;
-  let warnings: Finding[];
-  let streamSql: RuleSql[];
-  let config: SyncConfig;
-  try {
-    config = parseSyncConfig(o.syncConfig.text);
-    streamSql = syncRules(config);
-    scope = auditScope(config.streams, config.kind);
-    warnings = config.findings;
-  } catch (e) {
-    section("Sync config", [{ status: "fail", check: "sync config", detail: `${o.syncConfig.path}: ${(e as Error).message}` }]);
-    return findings;
-  }
-  section("Sync config", [...scope.findings, ...warnings]);
-  if (failed(findings)) return findings;
+  const checked = checkSyncConfig(o.syncConfig.path, o.syncConfig.text);
+  section("Sync config", checked.findings);
+  if (!checked.parsed || failed(findings)) return findings;
+  const { config, scope, streamSql } = checked.parsed;
 
-  const policies = await rows<{ table: string; name: string; qual: string | null; with_check: string | null }>(
-    client,
-    "select tablename as table, policyname as name, qual, with_check from pg_policies where schemaname = 'public'",
-  );
-  const rules = [
-    ...policies.map((p) => ({ where: `policy "${p.name}" on ${p.table}`, sql: `${p.qual ?? ""} ${p.with_check ?? ""}` })),
-    ...streamSql,
-  ];
-  section("Database catalog", [...(await checkAuditCatalog(client, scope.synced, o.publication, scope.reads)), ...checkUserEditableClaims(rules)]);
+  const policies = await rows<PolicyRow>(client, "select tablename as table, policyname as name, qual, with_check from pg_policies where schemaname = 'public'");
+  section("Database catalog", [...(await checkAuditCatalog(client, scope.synced, o.publication, scope.reads)), ...checkUserMetadata(policies, streamSql)]);
   const p = await planRun(client, config, o.projectDir);
   const { claims, hook, hookPlan, assignment, tables, named } = p;
   if (o.staticOnly || failed(findings)) {

@@ -28,7 +28,9 @@ describe("withSyncConfig", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const fn = vi.fn();
     await expect(withSyncConfig(client, ps, `${MUTANT_HEADER}\nstreams: {}\n`, fn)).rejects.toThrow();
+    const said = stderr.mock.calls.map(([x]) => String(x));
     stderr.mockRestore();
+    expect(said).toEqual([expect.stringMatching(/^samesight-verify: restored .* but PowerSync did not reload it and may still serve the mutants: /)]);
     expect(fn).not.toHaveBeenCalled();
     expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
     expect(process.listenerCount("exit")).toBe(exits);
@@ -36,7 +38,7 @@ describe("withSyncConfig", () => {
 
   it("refuses to treat another run's mutants as the original", async () => {
     const ps = project(`${MUTANT_HEADER} and restored when it finishes.\nstreams: {}\n`);
-    await expect(withSyncConfig(client, ps, "streams: {}\n", async () => {})).rejects.toThrow(/holds mutants from another/);
+    await expect(withSyncConfig(client, ps, "streams: {}\n", async () => {})).rejects.toThrow(/holds mutants from another samesight-verify --mutate run; wait for it, or restore the file \(samesight generate\), then retry$/);
     expect(readFileSync(ps.configPath, "utf8")).toContain(MUTANT_HEADER);
   });
 });
