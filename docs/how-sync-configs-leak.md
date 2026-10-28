@@ -100,7 +100,7 @@ corpus/planted/client-parameter-scope.yaml:14  error    bucket tasks, parameters
 ```
 <!-- /lint -->
 
-Audit only warns here, in its Sync config section:
+Audit warns here, in its Sync config section:
 
 <!-- audit:client-parameter-scope -->
 ```text
@@ -110,7 +110,7 @@ warn  sync config: tasks reads client parameters (connection.parameter(), subscr
 ```
 <!-- /audit -->
 
-The devices audit runs connect with no client parameters, and audit does not try what a modified client could send. So a passing audit says nothing about this pattern. Lint is the check for it. The fix is to take the user from the token, `request.user_id()` here, and let a client parameter only narrow rows the token already allows.
+The devices audit runs connect with no client parameters, and audit does not try what a modified client could send. So a passing audit says nothing about this pattern. Lint is the check for it. When a client parameter is the only way a table's rows reach a device, as here, no device receives any of them, and audit fails the run because the table went untested ([`client-scoped`](rules/client-scoped.md#what-audit-does) explains). The fix is to take the user from the token, `request.user_id()` here, and let a client parameter only narrow rows the token already allows.
 
 ## Access decided by `user_metadata`
 

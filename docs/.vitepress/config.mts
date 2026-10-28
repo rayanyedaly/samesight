@@ -47,9 +47,10 @@ function siteHref(href: string, page: string): string | undefined {
   const { target, rest } = link;
   const exists = existsSync(target);
   if (isInside(docsDir, target)) {
-    // Pages (cli.md, cli, a folder with an index.md) are VitePress's to serve and check.
-    const isPage =
-      exists && statSync(target).isDirectory() ? existsSync(join(target, "index.md")) : /\.(md|html)$/.test(target) || !/\.[^/\\]+$/.test(target);
+    // Pages (cli.md, cli, a folder with an index.md) are VitePress's to serve and check; an
+    // existing file that is not Markdown (assets/LICENSE) is not a page, whatever its name.
+    const page = /\.(md|html)$/.test(target);
+    const isPage = !exists ? page || !/\.[^/\\]+$/.test(target) : statSync(target).isDirectory() ? existsSync(join(target, "index.md")) : page;
     if (isPage || (exists && isInside(resolve(docsDir, "public"), target))) return undefined;
   }
   const where = `${relative(repoDir, page)}: the link ${href}`;
@@ -106,19 +107,45 @@ function llmsLinks(outDir: string): void {
             i % 2
               ? part
               : part.replace(/\]\(([^)\s]+)\)/g, (whole, href: string) => {
-                  const url = siteHref(href, page) ?? copyHref(href, page);
-                  return url ? `](${url})` : whole;
+                  const url = siteHref(href, page) ?? copyHref(href, page) ?? href;
+                  // No build step checks these copies' links, so check each site link here.
+                  if (url.startsWith(BASE) && !servedAt(outDir, url)) throw new Error(`${file}: the link ${url} points at nothing on the site`);
+                  return url === href ? whole : `](${url})`;
                 }),
           )
           .join("");
       });
-    const text = lines.join("\n");
-    // No build step checks these copies' links, so check each site link here.
-    for (const [, href] of text.matchAll(new RegExp(`\\]\\((${BASE}[^)\\s#]*)`, "g"))) {
-      const path = decodeURI(href.slice(BASE.length));
-      if (!existsSync(join(outDir, path === "" ? "index.html" : path))) throw new Error(`${file}: the link ${href} points at nothing on the site`);
+    writeFileSync(join(outDir, file), lines.join("\n"));
+  }
+}
+
+/** Whether the built site serves a path under BASE: /samesight/cli, /samesight/cli.md, /samesight/rules/. */
+function servedAt(outDir: string, url: string): boolean {
+  const path = decodeURI(url.slice(BASE.length).replace(/[?#].*$/, ""));
+  const file = join(outDir, path);
+  return path === "" || existsSync(`${file}.html`) || existsSync(join(file, "index.html")) || (existsSync(file) && statSync(file).isFile());
+}
+
+/**
+ * The links VitePress does not check, because they are not in a page's text: the nav, the
+ * sidebar and the home page's buttons. A renamed page would leave them pointing at nothing.
+ */
+function checkThemeLinks(outDir: string, theme: DefaultTheme.Config): void {
+  const links: string[] = [];
+  const walk = (items: unknown): void => {
+    for (const item of Array.isArray(items) ? items : []) {
+      if (item && typeof item === "object") {
+        const { link, items: children } = item as { link?: unknown; items?: unknown };
+        if (typeof link === "string") links.push(link);
+        walk(children);
+      }
     }
-    writeFileSync(join(outDir, file), text);
+  };
+  walk(theme.nav);
+  walk(theme.sidebar);
+  for (const [, link] of readFileSync(resolve(docsDir, "index.md"), "utf8").matchAll(/^\s*link:\s*(\S+)\s*$/gm)) links.push(link as string);
+  for (const link of links.filter((l) => l.startsWith("/"))) {
+    if (!servedAt(outDir, `${BASE}${link.slice(1)}`)) throw new Error(`the nav, sidebar or home page links to ${link}, which is not a page of the site`);
   }
 }
 
@@ -132,15 +159,21 @@ function checkSiteLinks(): void {
   const files = readdirSync(resolve(repoDir, "packages")).flatMap((p) =>
     ["README.md", "package.json", "src/cli.ts"].map((f) => resolve(repoDir, "packages", p, f)).filter((f) => existsSync(f)),
   );
+  let checked = 0;
   for (const file of [resolve(repoDir, "README.md"), ...files]) {
     for (const [url] of readFileSync(file, "utf8").matchAll(new RegExp(`${site.replaceAll(".", "\\.")}[\\w./-]*`, "g"))) {
       // A sentence may end right after the link.
       const path = url.slice(site.length).replace(/[./]+$/, "");
-      const page = path === "" ? "index.md" : `${path}.md`;
-      if (!existsSync(resolve(docsDir, page)) && !existsSync(resolve(docsDir, path, "index.md")))
-        throw new Error(`${relative(repoDir, file)}: ${url} is not a page of the site (no docs/${page})`);
+      // Only page links: a file the build writes (llms.txt) has an extension.
+      if (/\.\w+$/.test(path)) continue;
+      checked++;
+      const pages = path === "" ? ["index.md"] : [`${path}.md`, `${path}/index.md`];
+      if (!pages.some((page) => existsSync(resolve(docsDir, page))))
+        throw new Error(`${relative(repoDir, file)}: ${url} is not a page of the site (no ${pages.map((p) => `docs/${p}`).join(" or ")})`);
     }
   }
+  // The README links to the site, so finding none means this check is looking in the wrong place.
+  if (checked === 0) throw new Error(`no link to ${site} found in the README or the packages`);
 }
 
 checkSiteLinks();
@@ -171,7 +204,10 @@ export default defineConfig({
     // links to llms.txt in its head; no hidden note on the home page.
     plugins: [llmstxt({ injectLLMHint: false })],
   },
-  buildEnd: (site) => llmsLinks(site.outDir),
+  buildEnd: (site) => {
+    checkThemeLinks(site.outDir, site.site.themeConfig);
+    llmsLinks(site.outDir);
+  },
   themeConfig: {
     nav: [
       { text: "Guide", link: "/how-sync-configs-leak" },
