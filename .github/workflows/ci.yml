@@ -39,6 +39,9 @@ jobs:
       # Generated access files (migration, sync config, client schema) match the policy.
       - run: pnpm --filter fieldbook policy:check
       - run: pnpm --filter quickstart policy:check
+      # The docs show what the built CLI prints on the planted corpus configs.
+      - run: pnpm build:packages
+      - run: node scripts/docs/leaks.mjs --check
 
   package:
     name: packed packages (${{ matrix.os }})
