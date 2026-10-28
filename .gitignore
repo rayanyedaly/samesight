@@ -41,3 +41,7 @@ Thumbs.db
 
 # Git Bash crash dumps
 *.stackdump
+
+# VitePress build output and cache
+docs/.vitepress/dist
+docs/.vitepress/cache

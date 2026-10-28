@@ -1,0 +1,10 @@
+/*
+ * Images that come in a light and a dark version (the audit capture on the home page):
+ * show the one for the site's theme, which the reader can switch, rather than the system's.
+ * GitHub ignores these classes and goes by the #gh-light-mode-only and #gh-dark-mode-only
+ * fragments on the same images.
+ */
+.dark .light-only,
+html:not(.dark) .dark-only {
+  display: none;
+}
