@@ -254,7 +254,7 @@ step("samesight audit finds a global samesight-verify on the PATH", () => {
     if (doc.tool !== "samesight-verify" || !/no sync config at .*nowhere\.yaml/.test(doc.error)) throw new Error(`samesight audit --json: ${e.stdout}`);
   }
 });
-step("every package ships its licence", () => {
+step("every package ships its license", () => {
   for (const [dir, pkg] of [[cli, "samesight"], [cli, "@samesight/verify"], [lib, "@samesight/supabase"], [lib, "@samesight/next"]]) {
     expectIn(readFileSync(join(dir, "node_modules", pkg, "LICENSE"), "utf8"), "MIT License", `${pkg} LICENSE`);
   }
