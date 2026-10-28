@@ -40,7 +40,7 @@ function reads(t: Token[][]): string | undefined {
 export const unscopedQuery: LintRule = defineRule(RULE, ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
   const add = (sql: string, warning: boolean, subjects: string[], message: string) =>
-    out.push({ rule: RULE, level: warning ? "warning" : "error", file, line: lineOf(sql), message, subjects });
+    out.push({ rule: RULE, level: warning ? "warning" : "error", file, ...lineOf(sql), message, subjects });
 
   for (const s of config.streams) {
     if (config.kind === "streams") {

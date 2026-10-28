@@ -31,7 +31,7 @@ export const userMetadata: LintRule = defineRule(RULE, ({ file, config, lineOf }
         rule: RULE,
         level: "error",
         file,
-        line: lineOf(q.sql),
+        ...lineOf(q.sql),
         subjects: [s.name],
         message: `${kind} ${s.name}, ${q.label} decides access from user_metadata, which every Supabase user can set on themselves (supabase.auth.updateUser); use app_metadata or a table`,
       });

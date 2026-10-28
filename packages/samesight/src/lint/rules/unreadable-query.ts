@@ -16,7 +16,7 @@ export const unreadableQuery: LintRule = defineRule(RULE, ({ file, config, lineO
   const out: LintFinding[] = [];
   const kind = config.kind === "streams" ? "stream" : "bucket";
   const add = (sql: string, name: string, where: string, reason: string) =>
-    out.push({ rule: RULE, level: "warning", file, line: lineOf(sql), message: `${kind} ${name}, ${where} cannot be checked by audit: it ${reason}`, subjects: [name] });
+    out.push({ rule: RULE, level: "warning", file, ...lineOf(sql), message: `${kind} ${name}, ${where} cannot be checked by audit: it ${reason}`, subjects: [name] });
 
   // Device table names across the config: one name holding two tables' rows is refused too.
   const names = new Map<string, string>();

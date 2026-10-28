@@ -13,6 +13,8 @@ export interface LintFinding {
   file: string;
   /** 1-based; absent when the finding is about the file as a whole. */
   line?: number;
+  /** 1-based, where the query starts on `line`; absent when line is. */
+  column?: number;
   message: string;
   /** Names --allow <rule>:<name> matches: the stream or bucket, the tables, the policy. */
   subjects?: string[];
