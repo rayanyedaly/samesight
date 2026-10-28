@@ -20,11 +20,11 @@ afterAll(() => {
 const streams = "config:\n  edition: 3\n\nstreams:\n  user_data:\n    auto_subscribe: true\n    queries:\n      - SELECT * FROM lists WHERE owner_id = auth.user_id()\n";
 
 describe("lintSyncConfig", () => {
-  it("runs each rule on the parsed config, and places queries by line", () => {
+  it("runs each rule on the parsed config, and places queries by line and column", () => {
     const rule = defineRule("test", ({ file, config, lineOf }) =>
-      config.streams.flatMap((s) => s.queries.map((q) => ({ rule: "test", level: "info" as const, file, line: lineOf(q.sql), message: s.name }))),
+      config.streams.flatMap((s) => s.queries.map((q) => ({ rule: "test", level: "info" as const, file, ...lineOf(q.sql), message: s.name }))),
     );
-    expect(lintSyncConfig(streams, "sync-config.yaml", [rule])).toEqual([{ rule: "test", level: "info", file: "sync-config.yaml", line: 8, message: "user_data" }]);
+    expect(lintSyncConfig(streams, "sync-config.yaml", [rule])).toStrictEqual([{ rule: "test", level: "info", file: "sync-config.yaml", line: 8, column: 9, message: "user_data" }]);
   });
 
   it("throws on a file that is not a sync config it can read", () => {
@@ -57,11 +57,13 @@ describe("RULE_NAMES", () => {
 describe("lineOf", () => {
   it("places a query at its first content line, whatever the spacing, and gives up on what it cannot find", () => {
     const text = "streams:\n  s:\n    query: |\n      SELECT *\n        FROM todos\n";
-    expect(lineOf(text, "SELECT  *\nFROM todos")).toBe(4);
+    expect(lineOf(text, "SELECT  *\nFROM todos")).toEqual({ line: 4, column: 7 });
     expect(lineOf(text, "SELECT id FROM lists")).toBeUndefined();
     expect(lineOf(text, "")).toBeUndefined();
-    expect(lineOf("q: >-\n\n  SELECT 1\n", "SELECT 1")).toBe(3);
-    expect(lineOf('q: "SELECT\\n 2"\n', "SELECT 2")).toBe(1);
+    expect(lineOf("q: >-\n\n  SELECT 1\n", "SELECT 1")).toEqual({ line: 3, column: 3 });
+    // A quoted string starts at its quote; a flow sequence's items each where they start.
+    expect(lineOf('q: "SELECT\\n 2"\n', "SELECT 2")).toEqual({ line: 1, column: 4 });
+    expect(lineOf("q: [SELECT 3, SELECT 4]\n", "SELECT 4")).toEqual({ line: 1, column: 15 });
   });
 
   it("matches whole strings only: not a comment, not a longer query that starts the same", () => {
@@ -74,9 +76,9 @@ describe("lineOf", () => {
       "    query: SELECT * FROM todos",
       "",
     ].join("\n");
-    expect(lineOf(text, "SELECT * FROM todos")).toBe(6);
+    expect(lineOf(text, "SELECT * FROM todos")).toEqual({ line: 6, column: 12 });
     // The same query twice is placed at its first copy.
-    expect(lineOf("a:\n  query: SELECT 1\nb:\n  query: SELECT 1\n", "SELECT 1")).toBe(2);
+    expect(lineOf("a:\n  query: SELECT 1\nb:\n  query: SELECT 1\n", "SELECT 1")).toEqual({ line: 2, column: 10 });
   });
 });
 
@@ -135,7 +137,7 @@ describe("samesight lint", () => {
     expect(JSON.parse(out.stdout)).toEqual({
       files: ["sync-config.yaml", "bad.yaml"],
       rlsChecked: false,
-      findings: [expect.objectContaining({ rule: "unscoped-query", level: "error", file: "sync-config.yaml", line: 6, subjects: ["all", "customers"] })],
+      findings: [expect.objectContaining({ rule: "unscoped-query", level: "error", file: "sync-config.yaml", line: 6, column: 12, subjects: ["all", "customers"] })],
       allowed: [],
       unreadable: [{ file: "bad.yaml", error: "the sync config has no streams: section" }],
       errors: 1,

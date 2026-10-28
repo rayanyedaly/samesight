@@ -22,7 +22,7 @@ const RULE = "client-scoped";
 
 export const clientScoped: LintRule = defineRule(RULE, ({ file, config, lineOf }) => {
   const out: LintFinding[] = [];
-  const add = (sql: string, subjects: string[], message: string) => out.push({ rule: RULE, level: "error", file, line: lineOf(sql), message, subjects });
+  const add = (sql: string, subjects: string[], message: string) => out.push({ rule: RULE, level: "error", file, ...lineOf(sql), message, subjects });
 
   for (const s of config.streams) {
     if (config.kind === "streams") {
@@ -38,7 +38,7 @@ export const clientScoped: LintRule = defineRule(RULE, ({ file, config, lineOf }
             rule: RULE,
             level: "warning",
             file,
-            line: lineOf(q.sql),
+            ...lineOf(q.sql),
             subjects: [s.name, table],
             message: `stream ${s.name}, ${q.label} picks which rows of ${table} it sends by a parameter the client sends; only users who pass its check on who is asking (a role claim, or a list such as admins) can ask, and they can ask for any of them; fine if that is meant`,
           });
