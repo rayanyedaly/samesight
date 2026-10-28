@@ -132,7 +132,7 @@ Rayan
 
 | Package | What it is |
 | --- | --- |
-| [`samesight`](packages/samesight) | The `samesight` CLI: `lint` for any PowerSync sync config, and `audit` for a Supabase project's (`audit` runs `samesight-verify audit`), and `init`, `generate`, `check`, `doctor` and `explain` for a policy. Also the policy language and the compiler. |
+| [`samesight`](packages/samesight) | The `samesight` CLI: `lint` for any PowerSync sync config, and `audit` for one in a Supabase project (`audit` runs `samesight-verify audit`), and `init`, `generate`, `check`, `doctor` and `explain` for a policy. Also the policy language and the compiler. |
 | [`@samesight/verify`](packages/verify) | `samesight-verify`: static and catalog checks, the differential test, forged writes and the mutation test; `audit` for projects without a policy. |
 | [`@samesight/supabase`](packages/supabase) | A PowerSync connector for Supabase: one atomic `apply_batch` call per transaction, error classification, and refused writes kept instead of lost. |
 | [`@samesight/next`](packages/next) | For Next.js: a per-user encrypted local database, offline unlock, idle lock, safe sign-out, and sync status UI. |
