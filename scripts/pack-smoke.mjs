@@ -263,7 +263,9 @@ if (win) {
     const dir = join(work, "shim dir (x86)");
     mkdirSync(dir);
     const script = join(cli, "node_modules", "@samesight", "verify", "dist", "cli.js");
-    writeFileSync(join(dir, "samesight-verify.cmd"), `@"${process.execPath}" "${script}" %*\r\n`);
+    // The marker proves this shim ran, not a samesight-verify found another way.
+    const ran = join(dir, "ran");
+    writeFileSync(join(dir, "samesight-verify.cmd"), `@echo x> "${ran}"\r\n@"${process.execPath}" "${script}" %*\r\n`);
     const name = "nowhere & 100% %OS% (x).yaml";
     try {
       const out = samesightAlone(lib, dir, "audit", "--json", "--sync-config", name);
@@ -274,7 +276,7 @@ if (win) {
       try {
         doc = JSON.parse(e.stdout);
       } catch {}
-      if (doc?.tool !== "samesight-verify" || !String(doc.error).includes(name)) {
+      if (!existsSync(ran) || doc?.tool !== "samesight-verify" || !String(doc.error).includes(name)) {
         throw new Error(`samesight audit --json through cmd.exe:\nstdout:\n${e.stdout}\nstderr:\n${e.stderr}`);
       }
     }

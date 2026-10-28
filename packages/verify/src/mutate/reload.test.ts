@@ -22,7 +22,9 @@ function tempDir() {
 
 /** The copies of the original a message named, which withSyncConfig keeps: removed once the test is done. */
 function removeNamed(said: string) {
-  for (const [, dir] of said.matchAll(/(\S*[/\\]samesight-mutate-[^/\\\s]+)[/\\]sync-config\.yaml/g)) {
+  // From the temp directory itself, so a path with spaces still matches.
+  const tmp = tmpdir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const [, dir] of said.matchAll(new RegExp(`(${tmp}[/\\\\]samesight-mutate-[^/\\\\\\s]+)[/\\\\]sync-config\\.yaml`, "g"))) {
     onTestFinished(() => rmSync(dir as string, { recursive: true, force: true }));
   }
 }

@@ -35,8 +35,8 @@ describe("stackFromStatus", () => {
   });
 
   it("refuses a stack that is not this machine, or a missing value", () => {
-    expect(() => stackFromStatus(status, "https://powersync.example.com", { NODE_ENV: "test" })).toThrow(/PowerSync: powersync.example.com is not this machine/);
-    expect(() => stackFromStatus({ ...status, API_URL: "https://abc.supabase.co" }, "http://127.0.0.1:8080", { NODE_ENV: "test" })).toThrow(/Supabase API/);
+    expect(() => stackFromStatus(status, "https://powersync.example.com", { NODE_ENV: "test" })).toThrow(/PowerSync: powersync.example.com is not this machine; point --powersync at localhost/);
+    expect(() => stackFromStatus({ ...status, API_URL: "https://abc.supabase.co" }, "http://127.0.0.1:8080", { NODE_ENV: "test" })).toThrow(/Supabase API: .*supabase start/);
     expect(() => stackFromStatus({ ...status, DB_URL: "" }, "http://127.0.0.1:8080", { NODE_ENV: "test" })).toThrow(
       "supabase status -o env prints no DB_URL; run supabase status to see what the CLI reports (is the stack running?)",
     );
