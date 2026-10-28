@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { constants, tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { besideShim, cmdLine, findVerify, forwardAudit, type Lookups, onPath, quoteForCmd } from "./forward.ts";
 
 /** A package.json naming a samesight-verify script, and that script. */
@@ -16,6 +16,10 @@ function verifyPackage(dir: string, bin: string | Record<string, string> = { "sa
 
 const none: Lookups = { project: () => undefined, own: () => undefined, path: () => undefined };
 
+/** Why a shim cmd.exe would expand part of the path of is not run. */
+const refusal = (shim: string) =>
+  `cannot run ${shim} safely through cmd.exe (its path holds % or !); install @samesight/verify in the project instead: npm install -D @samesight/verify`;
+
 describe("findVerify", () => {
   const root = mkdtempSync(join(tmpdir(), "samesight-forward-"));
   afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -26,7 +30,7 @@ describe("findVerify", () => {
   it("takes the project's install first, then samesight's own, then the PATH", () => {
     const all: Lookups = { project: () => project, own: () => own, path: () => "/bin/samesight-verify" };
     expect(findVerify(all, "linux")).toEqual({ command: process.execPath, args: [join(root, "project/dist/cli.js")], shell: false });
-    expect(findVerify({ ...all, project: () => undefined }, "linux")?.args).toEqual([join(root, "own/dist/cli.js")]);
+    expect(findVerify({ ...all, project: () => undefined }, "linux")).toMatchObject({ args: [join(root, "own/dist/cli.js")] });
     expect(findVerify({ ...none, path: () => "/bin/samesight-verify" }, "linux")).toEqual({ command: "/bin/samesight-verify", args: [], shell: false });
     // A shim with no package beside it runs through cmd.exe.
     const shim = join(root, "nowhere/samesight-verify.cmd");
@@ -38,7 +42,7 @@ describe("findVerify", () => {
     const broken = join(root, "broken");
     mkdirSync(broken);
     writeFileSync(join(broken, "package.json"), JSON.stringify({ bin: { "samesight-verify": "./gone.js" } }));
-    expect(findVerify({ ...none, project: () => join(broken, "package.json"), own: () => own }, "linux")?.args).toEqual([join(root, "own/dist/cli.js")]);
+    expect(findVerify({ ...none, project: () => join(broken, "package.json"), own: () => own }, "linux")).toMatchObject({ args: [join(root, "own/dist/cli.js")] });
     expect(findVerify({ ...none, project: () => join(root, "nowhere/package.json") })).toBeUndefined();
   });
 
@@ -68,6 +72,41 @@ describe("findVerify", () => {
     });
     // Elsewhere the command on the PATH runs as it is.
     expect(findVerify({ ...none, path: () => shim }, "linux")).toEqual({ command: shim, args: [], shell: false });
+  });
+
+  it("refuses to run a shim through cmd.exe when its path holds % or !", () => {
+    for (const shim of [join(root, "100%/samesight-verify.cmd"), join(root, "%USERPROFILE%/samesight-verify.cmd"), join(root, "hi!/samesight-verify.cmd")]) {
+      expect(findVerify({ ...none, path: () => shim }, "win32")).toBe(refusal(shim));
+      expect(findVerify({ ...none, path: () => shim }, "linux")).toEqual({ command: shim, args: [], shell: false });
+    }
+    // With its package beside it, the shim's script runs without cmd.exe, whatever the path.
+    const prefix = join(root, "50% off!");
+    verifyPackage(join(prefix, "node_modules/@samesight/verify"));
+    expect(findVerify({ ...none, path: () => join(prefix, "samesight-verify.cmd") }, "win32")).toEqual({
+      command: process.execPath,
+      args: [join(prefix, "node_modules/@samesight/verify/dist/cli.js")],
+      shell: false,
+    });
+  });
+});
+
+describe("forwardAudit with a shim it will not run", () => {
+  it("says why and exits 2, with a --json document, running nothing", async () => {
+    const shim = "C:\\Users\\%USERNAME%\\npm\\samesight-verify.cmd";
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let code: number;
+    let printed: { out: string; err: string };
+    try {
+      code = await forwardAudit(["--json"], { ...none, path: () => shim }, "win32");
+      printed = { out: stdout.mock.calls.map((c) => String(c[0])).join(""), err: stderr.mock.calls.map((c) => String(c[0])).join("") };
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+    expect(code).toBe(2);
+    expect(printed.err).toBe(`samesight: ${refusal(shim)}\n`);
+    expect(JSON.parse(printed.out)).toMatchObject({ tool: "samesight", mode: "audit", result: "incomplete", exitCode: 2, error: refusal(shim) });
   });
 });
 
@@ -99,7 +138,11 @@ describe("quoteForCmd", () => {
 });
 
 describe.skipIf(process.platform === "win32")("forwardAudit", () => {
-  const dir = mkdtempSync(join(tmpdir(), "samesight-forward-run-"));
+  // Made in beforeAll: a skipped suite's body still runs, its hooks do not.
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "samesight-forward-run-"));
+  });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const script = (name: string, body: string) => {
     const path = join(dir, name);
@@ -125,16 +168,21 @@ describe.skipIf(process.platform === "win32")("forwardAudit", () => {
 // one hoisted to the repository's root node_modules would be run instead.
 describe.skipIf(process.platform === "win32")("samesight audit stopped by a signal sent to it alone", () => {
   const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
-  const dir = mkdtempSync(join(tmpdir(), "samesight-forward-signal-"));
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  let dir: string;
+  let bin: string;
   // A samesight-verify on the PATH that says which signal reached it, and ends as the signal
   // would; one the signal never reaches gives up after about 20s, rather than outlive the test.
-  const bin = join(dir, "bin");
-  mkdirSync(bin);
-  const trap = (s: string) => `trap 'echo ${s} > "$OUT"; trap - ${s}; kill -${s} $$' ${s}`;
-  const wait = "i=0\nwhile [ $i -lt 400 ]; do sleep 0.05; i=$((i + 1)); done\nexit 9";
-  writeFileSync(join(bin, "samesight-verify"), `#!/bin/sh\n${["INT", "TERM", "HUP"].map(trap).join("\n")}\necho ready\n${wait}\n`);
-  chmodSync(join(bin, "samesight-verify"), 0o755);
+  // Written in beforeAll, so a skipped suite writes nothing.
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "samesight-forward-signal-"));
+    bin = join(dir, "bin");
+    mkdirSync(bin);
+    const trap = (s: string) => `trap 'echo ${s} > "$OUT"; trap - ${s}; kill -${s} $$' ${s}`;
+    const wait = "i=0\nwhile [ $i -lt 400 ]; do sleep 0.05; i=$((i + 1)); done\nexit 9";
+    writeFileSync(join(bin, "samesight-verify"), `#!/bin/sh\n${["INT", "TERM", "HUP"].map(trap).join("\n")}\necho ready\n${wait}\n`);
+    chmodSync(join(bin, "samesight-verify"), 0o755);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     it(`passes ${signal} on to samesight-verify and exits as it did`, { timeout: 30_000 }, async ({ onTestFinished }) => {

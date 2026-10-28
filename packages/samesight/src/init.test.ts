@@ -1,16 +1,17 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { fieldbookSchema } from "./fixtures/fieldbook.ts";
 import { draftPolicy, findMembership } from "./init.ts";
 import { buildIR } from "./ir.ts";
 import { loadPolicy } from "./load.ts";
 import type { SchemaInfo } from "./schema.ts";
 
-/** Loads a drafted policy the way the CLI would, with "samesight" pointing at this source. */
+/** Loads a drafted policy the way the CLI would, with "samesight" pointing at this source; its directory goes when the test ends. */
 async function load(source: string) {
   const dir = mkdtempSync(join(tmpdir(), "samesight-init-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "samesight.policy.mts");
   writeFileSync(path, source.replace('from "samesight"', `from ${JSON.stringify(new URL("./index.ts", import.meta.url).href)}`));
   return loadPolicy(path);

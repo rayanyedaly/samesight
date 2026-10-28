@@ -6,10 +6,11 @@
  *   <!-- lint:<name> -->        `samesight lint corpus/planted/<name>.yaml`, as the built CLI prints it
  *   <!-- /lint -->
  *   <!-- audit:<name> -->       what audit prints on corpus/planted/<name>.yaml before it reads
- *   <!-- /audit -->             the database, from verify's own checkSyncConfig: the Sync config
- *                               section in full, then, when a stream query reads user_metadata,
- *                               the user metadata line of Database catalog (computed with no RLS
- *                               policy; the lines that need the database are left out)
+ *   <!-- /audit -->             the database, from verify's own checkSyncConfig, printed by its
+ *                               formatSection: the Sync config section in full, then, when a
+ *                               stream query reads user_metadata, the user metadata line of
+ *                               Database catalog (computed with no RLS policy; the lines that
+ *                               need the database are left out)
  *   <!-- capture:audit-demo --> the differential's failure, from its FAIL line to its replay
  *   <!-- /capture -->           line, copied from docs/assets/audit-demo.txt, the live run
  *                               scripts/demo/capture.sh records
@@ -69,17 +70,24 @@ function lintBlock(name) {
   return ["```console", `$ npx samesight lint ${file}`, ...lines(r.stdout), "```"];
 }
 
-const { failed, formatFindings } = await import(pathToFileURL(join(VERIFY, "report.js")).href);
+const { failed, formatSection } = await import(pathToFileURL(join(VERIFY, "report.js")).href);
 const { checkSyncConfig, checkUserMetadata } = await import(pathToFileURL(join(VERIFY, "audit/config.js")).href);
 
-/** What audit prints on one planted file before it reads the database, as audit/run.ts runs it. */
+/**
+ * What audit prints on one planted file before it reads the database, as audit/run.ts runs it:
+ * each section in verify's own layout, a blank line between them as the CLI prints them.
+ */
 function auditBlock(name) {
   const file = `${PLANTED}/${name}.yaml`;
   const checked = checkSyncConfig(file, readFileSync(join(ROOT, file), "utf8"));
-  const out = ["Sync config", ...lines(formatFindings(checked.findings))];
+  const sections = [formatSection("Sync config", checked.findings)];
   // run.ts stops after a failing Sync config section; otherwise Database catalog comes next.
   const metadata = checked.parsed && !failed(checked.findings) ? checkUserMetadata([], checked.parsed.streamSql) : [];
-  if (failed(metadata)) out.push("", "Database catalog", "(the lines that read the database are left out here)", ...lines(formatFindings(metadata)));
+  if (failed(metadata)) {
+    // The doc's own note goes under the title, where the lines it leaves out would be.
+    sections.push(formatSection("Database catalog", metadata).replace("\n", "\n(the lines that read the database are left out here)\n"));
+  }
+  const out = lines(sections.join("\n\n"));
   if (!out.some((l) => /^(warn|FAIL) /.test(l))) fail(`audit reports nothing on ${file} before the database; drop its audit block`);
   return ["```text", ...out, "```"];
 }

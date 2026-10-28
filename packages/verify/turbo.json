@@ -1,0 +1,18 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/examples/fieldbook/samesight.policy.ts",
+        "$TURBO_ROOT$/examples/fieldbook/samesight/**",
+        "$TURBO_ROOT$/examples/fieldbook/powersync/**",
+        "$TURBO_ROOT$/examples/fieldbook/src/lib/powersync/schema.ts",
+        "$TURBO_ROOT$/examples/fieldbook/src/lib/policy-types.ts",
+        "$TURBO_ROOT$/examples/fieldbook/supabase/migrations/**",
+        "$TURBO_ROOT$/examples/fieldbook/docker-compose.yml"
+      ]
+    }
+  }
+}

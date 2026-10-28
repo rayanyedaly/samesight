@@ -46,7 +46,7 @@ import { worldArbitrary } from "./differential/world.ts";
 import { reportDocument, type Section } from "./json.ts";
 import { toMarkdown } from "./markdown.ts";
 import { mutationTest } from "./mutate/run.ts";
-import { exitCode, failed, type Finding, formatFindings } from "./report.ts";
+import { exitCode, failed, type Finding, formatSection } from "./report.ts";
 import { MAX_SEED, readSeed, replayCommand } from "./replay.ts";
 import { assertPowerSync, readStack } from "./stack.ts";
 import { checkCatalogParity } from "./static/catalog-parity.ts";
@@ -72,7 +72,7 @@ const sections: Section[] = [];
 /** Prints a section's findings under its title. */
 function printSection(title: string, f: Finding[]) {
   sections.push({ title, findings: f });
-  textOut.write(`\n${title}\n${formatFindings(f, COLOR)}\n`);
+  textOut.write(`\n${formatSection(title, f, COLOR)}\n`);
 }
 
 const USAGE = `Usage: samesight-verify [options]

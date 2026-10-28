@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isReady } from "./autostart/powersync.ts";
-import { assertLocalTargets } from "./guard.ts";
+import { assertLocalTargets, shown } from "./guard.ts";
 
 export interface Stack {
   db: string;
@@ -54,7 +54,8 @@ export function stackFromStatus(status: Record<string, string>, powersync: strin
   if (missing.length) {
     throw new Error(`supabase status -o env prints no ${missing.join(", ")}; run supabase status to see what the CLI reports (is the stack running?)`);
   }
-  assertLocalTargets({ db: stack.db, http: { "Supabase API": stack.api, PowerSync: stack.powersync } }, env);
+  // Only --powersync sets an address of its own; the rest is what supabase status prints.
+  assertLocalTargets({ db: stack.db, http: { "Supabase API": stack.api, PowerSync: stack.powersync }, flags: { PowerSync: "--powersync" } }, env);
   return stack;
 }
 
@@ -64,7 +65,7 @@ export function stackFromStatus(status: Record<string, string>, powersync: strin
  */
 export async function assertPowerSync(url: string, ready: (url: string) => Promise<boolean> = isReady): Promise<void> {
   if (!(await ready(url.replace(/\/+$/, "")))) {
-    throw new Error(`PowerSync is not reachable at ${url}; start it (docker compose up powersync) or pass --powersync <url>`);
+    throw new Error(`PowerSync is not reachable at ${shown(url) ?? "the --powersync URL"}; start it (docker compose up powersync) or pass --powersync <url>`);
   }
 }
 

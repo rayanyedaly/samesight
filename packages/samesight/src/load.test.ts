@@ -1,11 +1,19 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished } from "vitest";
 import { loadPolicy, resolvePolicyPath, tsIsModule } from "./load.ts";
+
+/** A directory for one test, removed when it ends. */
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
 
 describe("loadPolicy", () => {
   const dir = mkdtempSync(join(tmpdir(), "samesight-load-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   it("refuses a missing file", async () => {
     await expect(loadPolicy(join(dir, "missing.ts"))).rejects.toThrow(/^no policy file at .*missing\.ts; run samesight init, or pass --policy$/);
@@ -20,7 +28,7 @@ describe("loadPolicy", () => {
 
 describe("resolvePolicyPath", () => {
   it("takes the given path, else samesight.policy.ts, else samesight.policy.mts", () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-find-"));
+    const dir = tempDir("samesight-find-");
     expect(resolvePolicyPath("policies/a.ts", dir)).toBe(join(dir, "policies/a.ts"));
     expect(resolvePolicyPath(undefined, dir)).toBe(join(dir, "samesight.policy.ts"));
     writeFileSync(join(dir, "samesight.policy.mts"), "");
@@ -32,7 +40,7 @@ describe("resolvePolicyPath", () => {
 
 describe("tsIsModule", () => {
   it("reads the nearest package.json", () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-type-"));
+    const dir = tempDir("samesight-type-");
     mkdirSync(join(dir, "app"));
     writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
     expect(tsIsModule(join(dir, "app"))).toBe(true);
