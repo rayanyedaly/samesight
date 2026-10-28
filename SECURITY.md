@@ -6,7 +6,7 @@ Samesight is before 1.0: fixes go into the latest 0.x release only.
 
 ## Reporting a vulnerability
 
-Report it privately through GitHub: on this repository's **Security** tab, choose **Report a vulnerability**. Please do not open a public issue for it. You should hear back within a week.
+Report it privately through GitHub: on this repository's **Security** tab, choose **Report a vulnerability**. Please do not open a public issue for it.
 
 In scope:
 
