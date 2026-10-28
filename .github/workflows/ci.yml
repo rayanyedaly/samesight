@@ -201,11 +201,12 @@ jobs:
           version: installed
           sync-config: examples/audit-todolist/upstream/sync-config.planted.yaml
           project: examples/audit-todolist/upstream
-      - name: the planted lint failed, with its SARIF result at the planted line
+      - name: the planted lint failed, with its annotation and SARIF result at the planted line
         env:
           OUTCOME: ${{ steps.lint_planted.outcome }}
           EXIT_CODE: ${{ steps.lint_planted.outputs.exit-code }}
           SARIF: ${{ steps.lint_planted.outputs.sarif-file }}
+          ANNOTATIONS: ${{ steps.lint_planted.outputs.annotations-file }}
         run: |
           planted=examples/audit-todolist/upstream/sync-config.planted.yaml
           line=$(grep -n '^ *- SELECT \* FROM lists$' "$planted" | cut -d: -f1)
@@ -224,9 +225,15 @@ jobs:
             process.exit(1);
           }
           ' "$SARIF" "$line"
+          # The annotation GitHub shows on the pull request's changed line.
+          if ! grep -qE "^::error file=examples/audit-todolist/upstream/sync-config\.planted\.yaml,line=$line,col=[0-9]+,title=samesight unscoped-query::" "$ANNOTATIONS"; then
+            echo "no unscoped-query annotation at line $line in $ANNOTATIONS:" >&2
+            cat "$ANNOTATIONS" >&2
+            exit 1
+          fi
       # The action starts Supabase, audits and stops it (removing its data).
       - name: audit on the demo as published
-        timeout-minutes: 10
+        timeout-minutes: 15
         uses: ./
         with:
           mode: audit

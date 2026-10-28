@@ -27,9 +27,9 @@ inputs:
     required: false
     default: "."
   version:
-    description: "The samesight version to install from npm, or installed to use samesight and samesight-verify already on the PATH"
+    description: "The samesight version to install from npm (default: the version of this action's own release), or installed to use samesight and samesight-verify already on the PATH"
     required: false
-    default: latest
+    default: ""
   node-version:
     description: "The Node.js version to set up (not used with version: installed)"
     required: false
@@ -43,7 +43,7 @@ inputs:
     required: false
     default: samesight
   args:
-    description: "Extra flags for samesight lint or samesight-verify audit, split on whitespace"
+    description: "Extra flags for samesight lint or samesight-verify audit, split on whitespace and newlines (no quoting)"
     required: false
     default: ""
   supabase-version:
@@ -57,11 +57,14 @@ inputs:
 
 outputs:
   exit-code:
-    description: "The exit code of samesight lint (text) or samesight-verify audit: 0 pass, 1 findings, 2 could not run"
+    description: "The exit code of samesight lint (text) or samesight-verify audit: 0 pass, 1 findings, 2 could not run (another code when the CLI did not start)"
     value: ${{ format('{0}{1}', steps.lint.outputs.exit-code, steps.audit.outputs.exit-code) }}
   sarif-file:
     description: "lint: the path of the SARIF file"
     value: ${{ steps.lint.outputs.sarif-file }}
+  annotations-file:
+    description: "lint: the path of a file holding the annotations the run printed"
+    value: ${{ steps.lint.outputs.annotations-file }}
   report-file:
     description: "audit: the path of the Markdown report"
     value: ${{ steps.audit.outputs.report-file }}
@@ -78,15 +81,15 @@ runs:
         set -euo pipefail
         case "$MODE" in
           lint | audit) ;;
-          *) echo "::error title=samesight::mode must be lint or audit, not \"$MODE\""; exit 1 ;;
+          *) echo "::error title=samesight::mode must be lint or audit"; exit 1 ;;
         esac
         case "$UPLOAD_SARIF" in
           true | false) ;;
-          *) echo "::error title=samesight::upload-sarif must be true or false, not \"$UPLOAD_SARIF\""; exit 1 ;;
+          *) echo "::error title=samesight::upload-sarif must be true or false"; exit 1 ;;
         esac
 
     - if: inputs.version != 'installed'
-      uses: actions/setup-node@v7
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: ${{ inputs.node-version }}
 
@@ -98,6 +101,10 @@ runs:
         SUPABASE_VERSION: ${{ inputs.supabase-version }}
       run: |
         set -euo pipefail
+        if [ -z "$VERSION" ]; then
+          # This action's own release: its packages carry the version it was tagged with.
+          VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$GITHUB_ACTION_PATH/packages/samesight/package.json" | head -n 1)
+        fi
         pkgs=()
         if [ "$VERSION" != installed ]; then
           if [ "$MODE" = lint ]; then pkgs+=("samesight@$VERSION"); else pkgs+=("@samesight/verify@$VERSION"); fi
@@ -116,6 +123,11 @@ runs:
           # earlier use of this action in the job installed there.
           npm install --save-exact --no-audit --no-fund --prefix "$prefix" "${pkgs[@]}"
           echo "$prefix/node_modules/.bin" >> "$GITHUB_PATH"
+          if [ "$VERSION" != installed ]; then
+            bin=samesight
+            [ "$MODE" = lint ] || bin=samesight-verify
+            [ -x "$prefix/node_modules/.bin/$bin" ] || { echo "::error title=samesight::samesight $VERSION has no $bin command on npm; set version to a published release"; exit 1; }
+          fi
         fi
 
     - name: samesight lint
@@ -129,27 +141,32 @@ runs:
       run: |
         set -euo pipefail
         cd "$GITHUB_WORKSPACE"
-        read -r -a extra <<< "$ARGS"
+        read -r -d '' -a extra <<< "$ARGS" || true
         migrations=()
         if [ -d "$PROJECT/supabase/migrations" ]; then migrations=(--migrations "$PROJECT/supabase/migrations"); fi
         cmd=(samesight lint "$SYNC_CONFIG" "${migrations[@]}" "${extra[@]}")
         out=$(mktemp -d "$RUNNER_TEMP/samesight-lint-XXXXXX")
-        # Annotations on the pull request; the text run below decides the result.
-        "${cmd[@]}" --format github 2> /dev/null || true
+        # Annotations on the pull request (escaped by samesight); the text run below decides the result.
+        "${cmd[@]}" --format github 2> /dev/null | tee "$out/annotations.txt" || true
+        echo "annotations-file=$out/annotations.txt" >> "$GITHUB_OUTPUT"
         sarif="$out/samesight.sarif"
         sarif_code=0
         "${cmd[@]}" --format sarif > "$sarif" 2> "$out/sarif.err" || sarif_code=$?
         if [ "$sarif_code" -le 1 ]; then
           echo "sarif-file=$sarif" >> "$GITHUB_OUTPUT"
         else
-          echo "::warning title=samesight::samesight lint --format sarif exited $sarif_code, so no SARIF file was written: $(tr '\n' ' ' < "$out/sarif.err")"
+          echo "::warning title=samesight::samesight lint --format sarif exited $sarif_code, so no SARIF file was written: $(tr '\r\n' '  ' < "$out/sarif.err" | sed 's/%/%25/g')"
         fi
         code=0
+        # Text the sync config controls could read as a workflow command: the runner ignores them meanwhile.
+        token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        echo "::stop-commands::$token"
         "${cmd[@]}" || code=$?
+        echo "::$token::"
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
     - if: always() && inputs.mode == 'lint' && inputs.upload-sarif == 'true' && steps.lint.outputs.sarif-file != ''
-      uses: github/codeql-action/upload-sarif@v4
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
         sarif_file: ${{ steps.lint.outputs.sarif-file }}
         category: ${{ inputs.sarif-category }}
@@ -208,11 +225,14 @@ runs:
       run: |
         set -euo pipefail
         cd "$GITHUB_WORKSPACE"
-        read -r -a extra <<< "$ARGS"
+        read -r -d '' -a extra <<< "$ARGS" || true
         out=$(mktemp -d "$RUNNER_TEMP/samesight-audit-XXXXXX")
         report="$out/samesight-audit.md"
         code=0
+        token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        echo "::stop-commands::$token"
         samesight-verify audit --project "$PROJECT" --sync-config "$SYNC_CONFIG" --report "$report" "${extra[@]}" || code=$?
+        echo "::$token::"
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         if [ -s "$report" ]; then
           echo "report-file=$report" >> "$GITHUB_OUTPUT"

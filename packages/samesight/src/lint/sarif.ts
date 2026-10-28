@@ -62,10 +62,14 @@ function location(file: string, line?: number, column?: number): Location {
   return { physicalLocation: { artifactLocation: { uri: uri(file) }, ...region } };
 }
 
-/** Stable across runs and line moves: the rule, the file, the subjects and the message. */
+/**
+ * Stable across runs, machines and line moves: the rule, the file, the subjects and the
+ * message with any `file:line` it names (rls-open names the policy's) reduced to the file.
+ */
 export function fingerprint(f: LintFinding): string {
+  const message = f.message.replace(/\\/g, "/").replace(/:\d+\b/g, "");
   return createHash("sha256")
-    .update(JSON.stringify([f.rule, repoPath(f.file), f.subjects ?? [], f.message]))
+    .update(JSON.stringify([f.rule, repoPath(f.file), f.subjects ?? [], message]))
     .digest("hex");
 }
 
