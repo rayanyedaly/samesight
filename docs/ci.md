@@ -7,7 +7,7 @@ Samesight ships a GitHub Action at the root of its repository, `rayanyedaly/same
 
 A common setup is lint on every pull request and audit on pull requests that change the sync config or the migrations.
 
-> The packages are not on npm until the first release. Until then there is no version for the action to install: `version` must name a version that is published on npm, and the examples below name `0.1.0`, the first release.
+> The packages are not on npm until the first release. Until then the action has nothing to install: by default it installs the version of its own release (`0.1.0` for `@v0.1.0`), and the examples below name `0.1.0`, the first release.
 
 ## Lint with annotations
 
@@ -113,6 +113,8 @@ In audit mode the action:
 
 The job summary can be read by anyone who can read the workflow run. The report holds the run's generated rows, its flags and local paths; see [`--report`](verify.md#options).
 
+Besides the report, the action changes the job it runs in: without `version: installed` it sets up Node `node-version` for the steps after it, and it puts its own `samesight`, `samesight-verify` and `supabase` first on the PATH. In audit mode, when `config.toml` names a `signing_keys_path` file that is missing or empty, it writes a new local signing key there, in your checkout; and when it started Supabase, it stops it with `--no-backup`, which deletes the stack's data.
+
 The verifier refuses to run where `NODE_ENV` is set to anything but `development` or `test`, or where variables a hosting platform sets (`VERCEL`, `FLY_APP_NAME` and others) are present. Do not set them in this job.
 
 ## Inputs
@@ -120,13 +122,13 @@ The verifier refuses to run where `NODE_ENV` is set to anything but `development
 | Input | Default | |
 | --- | --- | --- |
 | `mode` | (required) | `lint` or `audit`. |
-| `sync-config` | `sync-config.yaml` | The PowerSync sync config, sync streams or sync rules. |
-| `project` | `.` | The directory holding `supabase/`. |
-| `version` | `latest` | The npm version of `samesight` and `@samesight/verify` to install. `installed` uses the CLIs already on the PATH. |
-| `node-version` | `22` | The Node version to set up. Samesight needs 22.18 or newer. |
+| `sync-config` | `sync-config.yaml` | The PowerSync sync config, sync streams or sync rules, relative to the repository root. Check the repository out at the workspace root (no `path:`), so annotations and code scanning land on the right file. |
+| `project` | `.` | The directory holding `supabase/`, relative to the repository root. |
+| `version` | this action's release | The npm version of `samesight` and `@samesight/verify` to install: by default the version of the action's own release. `installed` uses the CLIs already on the PATH. |
+| `node-version` | `22` | The Node version to set up, unless `version` is `installed`. Samesight needs 22.18 or newer. |
 | `upload-sarif` | `false` | Lint mode: upload the SARIF file to code scanning. |
 | `sarif-category` | `samesight` | Lint mode: the code scanning category of the upload. Give each job its own when one repository lints more than one sync config. |
-| `args` | | Extra flags for `samesight lint` or `samesight-verify audit`, such as `--allow unscoped-query:customers` or `--runs 4 --seed 7`. |
+| `args` | | Extra flags for `samesight lint` or `samesight-verify audit`, such as `--allow unscoped-query:customers` or `--runs 4 --seed 7`, split on spaces and newlines (no quoting). |
 | `supabase-version` | `2.122.0` | Audit mode: the Supabase CLI version to install from npm. |
 | `exclude` | every service but Postgres, Auth, REST and the gateway | Audit mode: the Supabase services `supabase start` does not start (its `-x` list). |
 
@@ -149,8 +151,9 @@ With `version: installed`, install the packages yourself and put their binaries 
 
 | Output | |
 | --- | --- |
-| `exit-code` | The exit code of `samesight lint` or `samesight-verify audit`. |
+| `exit-code` | The exit code of `samesight lint` or `samesight-verify audit`: 0, 1 or 2, or another code when the command did not start. |
 | `sarif-file` | Lint mode: the path of the SARIF file. |
+| `annotations-file` | Lint mode: the path of a file holding the annotations the run printed. |
 | `report-file` | Audit mode: the path of the Markdown report. |
 
 ## Pinning
@@ -163,6 +166,8 @@ Pin the action to a release tag or, stricter, to a full commit SHA, and pin `ver
           mode: lint
           version: 0.1.0
 ```
+
+The actions it uses itself, `actions/setup-node` and `github/codeql-action/upload-sarif`, are pinned to commit SHAs in `action.yml`. An exact `version` pins `samesight` and `@samesight/verify`, not every package they depend on, since the action installs them without a lockfile; for that, use `version: installed` with your own lockfile.
 
 `version: latest` installs whatever npm has on the day of the run, so a new release can change your results, or fail a run that passed, with no change in your repository. Before 1.0, a minor version may change what lint and audit report; the [changelog](../CHANGELOG.md) lists each change.
 
@@ -207,4 +212,4 @@ A finding that is deliberate, such as a table public by design, can be accepted 
 
 **An alert does not show on the pull request.** Code scanning shows an alert on a pull request only when its lines are in the diff. The alert is still listed in the Security tab.
 
-**The install step fails.** `version` must name a version published on npm. Before the first release there is none, and `latest` fails too.
+**The install step fails.** `version` must name a version published on npm. Before the first release there is none, so the install step fails and says so.

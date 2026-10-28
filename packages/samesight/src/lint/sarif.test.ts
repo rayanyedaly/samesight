@@ -76,6 +76,10 @@ describe("formatSarif", () => {
     expect(fingerprint(error)).toBe(fingerprint({ ...error, file: "powersync/sync-config.yaml", line: 40, column: 1 }));
     expect(fingerprint(error)).not.toBe(fingerprint({ ...error, subjects: ["all", "orders"] }));
     expect(fingerprint(error)).not.toBe(fingerprint({ ...error, rule: "client-scoped" }));
+    // A policy that moves down its migration, or a path written with backslashes, is the same finding.
+    const open = { ...error, rule: "rls-open", message: "policy p on lists lets everyone read it (supabase/migrations/1_a.sql:3)" };
+    expect(fingerprint(open)).toBe(fingerprint({ ...open, message: "policy p on lists lets everyone read it (supabase\\migrations\\1_a.sql:4)" }));
+    expect(fingerprint(open)).not.toBe(fingerprint({ ...open, message: "policy p on lists lets everyone read it (supabase/migrations/2_b.sql:3)" }));
     expect(fingerprint(error)).not.toBe(fingerprint({ ...error, message: "other" }));
   });
 });
