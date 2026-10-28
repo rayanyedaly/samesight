@@ -115,7 +115,7 @@ step("samesight-verify --json writes its report on exit 2", () => {
   } catch (e) {
     if (e.status !== 2) throw e;
     const doc = JSON.parse(e.stdout);
-    if (doc.exitCode !== 2 || !/no sync config/.test(doc.error) || !doc.$schema.includes(`@samesight/verify@${version.verify}/schema/report.schema.json`)) {
+    if (doc.exitCode !== 2 || !/no sync config at .*nowhere\.yaml/.test(doc.error) || !doc.$schema.includes(`@samesight/verify@${version.verify}/schema/report.schema.json`)) {
       throw new Error(`--json: ${e.stdout}`);
     }
   }
@@ -140,7 +140,7 @@ step("samesight audit runs samesight-verify audit", () => {
   } catch (e) {
     if (e.status !== 2) throw e;
     const doc = JSON.parse(e.stdout);
-    if (doc.exitCode !== 2 || !/no sync config/.test(doc.error)) throw new Error(`samesight audit --json: ${e.stdout}`);
+    if (doc.exitCode !== 2 || !/no sync config at .*nowhere\.yaml/.test(doc.error)) throw new Error(`samesight audit --json: ${e.stdout}`);
   }
 });
 step("the report schema is exported", () => {
@@ -251,7 +251,7 @@ step("samesight audit finds a global samesight-verify on the PATH", () => {
   } catch (e) {
     if (e.status !== 2) throw e;
     const doc = JSON.parse(e.stdout);
-    if (doc.tool !== "samesight-verify" || !/no sync config/.test(doc.error)) throw new Error(`samesight audit --json: ${e.stdout}`);
+    if (doc.tool !== "samesight-verify" || !/no sync config at .*nowhere\.yaml/.test(doc.error)) throw new Error(`samesight audit --json: ${e.stdout}`);
   }
 });
 step("node imports samesight", () =>
