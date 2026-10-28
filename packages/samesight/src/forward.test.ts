@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { besideShim, cmdLine, findVerify, forwardAudit, type Lookups, onPath, quoteForCmd } from "./forward.ts";
 
 /** A package.json naming a samesight-verify script, and that script. */
@@ -18,6 +18,7 @@ const none: Lookups = { project: () => undefined, own: () => undefined, path: ()
 
 describe("findVerify", () => {
   const root = mkdtempSync(join(tmpdir(), "samesight-forward-"));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
   const project = verifyPackage(join(root, "project"));
   // A package with one script may name it with a string.
   const own = verifyPackage(join(root, "own"), "./dist/cli.js");
@@ -99,6 +100,7 @@ describe("quoteForCmd", () => {
 
 describe.skipIf(process.platform === "win32")("forwardAudit", () => {
   const dir = mkdtempSync(join(tmpdir(), "samesight-forward-run-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const script = (name: string, body: string) => {
     const path = join(dir, name);
     writeFileSync(path, `#!/bin/sh\n${body}\n`);
@@ -119,9 +121,12 @@ describe.skipIf(process.platform === "win32")("forwardAudit", () => {
   });
 });
 
+// The stub on the PATH is found only while samesight's own lookup finds no @samesight/verify:
+// one hoisted to the repository's root node_modules would be run instead.
 describe.skipIf(process.platform === "win32")("samesight audit stopped by a signal sent to it alone", () => {
   const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
   const dir = mkdtempSync(join(tmpdir(), "samesight-forward-signal-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
   // A samesight-verify on the PATH that says which signal reached it, and ends as the signal
   // would; one the signal never reaches gives up after about 20s, rather than outlive the test.
   const bin = join(dir, "bin");

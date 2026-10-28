@@ -1,10 +1,17 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { NOT_FOUND } from "./forward.ts";
+
+/** A directory for one test, removed when it ends. */
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "samesight-cli-test-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
 
 const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
@@ -38,7 +45,7 @@ describe("samesight exit codes", () => {
   });
 
   it("exits 2 when it cannot find the policy, or would write over one", { timeout: 30_000 }, async () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-cli-test-"));
+    const dir = tempDir();
     const missing = await cli(["check", "--policy", join(dir, "nowhere.policy.ts")]);
     expect([missing.code, missing.stderr]).toEqual([2, `samesight: no policy file at ${join(dir, "nowhere.policy.ts")}; run samesight init, or pass --policy\n`]);
     writeFileSync(join(dir, "samesight.policy.ts"), "export default {};\n");
@@ -48,7 +55,7 @@ describe("samesight exit codes", () => {
 
   it("says to generate first when there is no schema snapshot, and exits 1 on a policy that does not compile", { timeout: 30_000 }, async () => {
     // Fieldbook's policy, from a directory of its own: no snapshot beside it.
-    const dir = mkdtempSync(join(tmpdir(), "samesight-cli-test-"));
+    const dir = tempDir();
     const fieldbook = new URL("../../../examples/fieldbook/samesight.policy.ts", import.meta.url).href;
     writeFileSync(join(dir, "samesight.policy.mjs"), `export { default } from ${JSON.stringify(fieldbook)};\n`);
     const policy = ["--policy", join(dir, "samesight.policy.mjs")];
@@ -76,7 +83,7 @@ describe("samesight audit", () => {
   });
 
   it("says how to install @samesight/verify when it finds none, and exits 2", { timeout: 30_000 }, async () => {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-cli-test-"));
+    const dir = tempDir();
     const result = await cli(["audit", "--help"], dir, { PATH: "" });
     expect([result.code, result.stderr, result.stdout]).toEqual([2, `${NOT_FOUND}\n`, ""]);
     // With --json, stdout still carries one document, as samesight-verify's would.
