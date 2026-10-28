@@ -61,13 +61,13 @@ Setting it up:
    - Environment name: `npm`
    - Allowed actions: allow `npm publish`, not only staged publishing.
 3. **On GitHub,** in Settings, Environments, `npm`:
-   - Under Deployment branches, choose Selected branches and tags, click Add deployment branch or tag rule, set Ref type to Tag and the name pattern to `v*`. Only release tags can then reach the publish job. The workflow reads no secrets from the environment.
-   - Optional, stricter: add yourself as a required reviewer on the environment, so each publish waits for your approval, and add a tag ruleset limiting who can create `v*` tags.
+   - Set the deployment branches and tags to Selected branches and tags, click Add deployment branch or tag rule, set Ref type to Tag and the name pattern to `v*`. Only release tags can then reach the publish job. The workflow reads no secrets from the environment.
+   - Optional, stricter: add yourself as a required reviewer on the environment, so each publish waits for your approval (leave Prevent self-review off, or you cannot approve your own release), and add a tag ruleset limiting who can create `v*` tags.
 4. **After the first release published this way:**
    - in each package's Settings, Publishing access, choose "Require two-factor authentication and disallow tokens" (trusted publishing keeps working);
    - revoke the old npm token;
    - delete the `NPM_TOKEN` secret from the `npm` environment.
 
-If only the publish job is rerun, its tarballs come from the build job's artifact, which is kept for 30 days; after that, rerun all jobs.
+If only the publish job is rerun, its tarballs come from the build job's artifact. GitHub allows reruns for 30 days after a run starts, and the artifact is kept for 30 days (less if the repository's artifact retention is shorter). After that, delete the tag and push it again, or release a new version.
 
 A package that has never been published cannot be given a trusted publisher. A new package's first version has to be published once with a token or by hand.
