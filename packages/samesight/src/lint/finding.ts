@@ -13,9 +13,30 @@ export interface LintFinding {
   file: string;
   /** 1-based; absent when the finding is about the file as a whole. */
   line?: number;
+  /** 1-based, where the query starts on `line`; absent when line is. */
+  column?: number;
   message: string;
   /** Names --allow <rule>:<name> matches: the stream or bucket, the tables, the policy. */
   subjects?: string[];
+}
+
+/** A file that could not be read as a sync config, and why. */
+export interface Unreadable {
+  file: string;
+  error: string;
+}
+
+/** What one lint run found, as the report formats take it. */
+export interface LintRun {
+  /** Findings --allow did not accept. */
+  kept: LintFinding[];
+  allowed: LintFinding[];
+  unreadable: Unreadable[];
+}
+
+/** A file as SARIF and GitHub annotations name it: forward slashes, no leading ./. */
+export function repoPath(file: string): string {
+  return file.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
 }
 
 const ORDER: Record<LintLevel, number> = { error: 0, warning: 1, info: 2 };

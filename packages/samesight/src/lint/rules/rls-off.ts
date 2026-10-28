@@ -20,7 +20,7 @@ export const rlsOff: LintRule = defineRule(RULE, ({ file, config, migrations, li
       rule: RULE,
       level: "warning" as const,
       file,
-      line: lineOf(sql),
+      ...lineOf(sql),
       subjects: [table],
       message: `${table} is synced, but the migrations never enable row level security on it, so unless its grants to anon and authenticated were revoked, any client can read and change every row through the Supabase API`,
     }));

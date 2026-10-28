@@ -3,7 +3,7 @@
   "extends": ["//"],
   "tasks": {
     "test": {
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/corpus/**"]
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/corpus/**", "$TURBO_ROOT$/docs/cli.md"]
     }
   }
 }
