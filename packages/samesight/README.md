@@ -1,6 +1,28 @@
 # samesight
 
-One access policy for Supabase and PowerSync. Write who can see what once, in TypeScript, and generate both the Postgres row level security and the PowerSync sync streams from it, so the rows a device receives are always the rows RLS would return.
+PowerSync replicates with a role that bypasses Postgres row level security, so the sync config is the only filter between your tables and a device. When the sync config is wider than RLS, nothing fails: devices quietly hold rows their users may not read. `samesight` catches that.
+
+Lint the sync config and the SQL migrations for known leak patterns. It reads files only: no database, no Docker, no policy file.
+
+```bash
+npx samesight lint sync-config.yaml --migrations supabase/migrations
+```
+
+Audit the rows themselves: test users, generated rows and a real PowerSync device per user, each device's rows compared with what RLS returns for the same user. `samesight audit` runs `samesight-verify audit`, so it needs [`@samesight/verify`](https://www.npmjs.com/package/@samesight/verify) installed, the project's local Supabase stack and Docker:
+
+```bash
+npm install -D samesight @samesight/verify
+npx supabase start
+npx samesight audit --project . --sync-config sync-config.yaml
+```
+
+![samesight audit on the to-do list demo with a leak planted: it fails, names the stream query that sent another user's list, the RLS policy that refused it, and the filter to add](https://raw.githubusercontent.com/rayanyedaly/samesight/main/docs/assets/audit-demo-light.svg)
+
+[How sync configs leak](https://github.com/rayanyedaly/samesight/blob/main/docs/how-sync-configs-leak.md) walks through the patterns, and [CI and the GitHub Action](https://github.com/rayanyedaly/samesight/blob/main/docs/ci.md) runs both on pull requests.
+
+## One policy for both sides
+
+Write who can see what once, in TypeScript, and generate both the Postgres row level security and the PowerSync sync streams from it, so the rows a device receives are always the rows RLS would return.
 
 ```bash
 npm install samesight
@@ -8,7 +30,6 @@ npx samesight init       # draft samesight.policy.ts from your local database
 npx samesight generate   # migration, sync config, client schema
 npx samesight explain    # who can do what, in plain words
 npx samesight check      # in CI: fail when generated files drift from the policy
-npx samesight lint       # check any PowerSync sync config for known leak patterns, no policy needed
 ```
 
 ```ts
@@ -40,6 +61,9 @@ Needs Node 22.18 or newer: the policy file is loaded as TypeScript with Node's t
 - [Getting started](https://github.com/rayanyedaly/samesight/blob/main/docs/getting-started.md)
 - [The policy language](https://github.com/rayanyedaly/samesight/blob/main/docs/policy.md)
 - [The CLI](https://github.com/rayanyedaly/samesight/blob/main/docs/cli.md)
+- [The verifier and audit mode](https://github.com/rayanyedaly/samesight/blob/main/docs/verify.md)
+- [How sync configs leak](https://github.com/rayanyedaly/samesight/blob/main/docs/how-sync-configs-leak.md)
+- [CI and the GitHub Action](https://github.com/rayanyedaly/samesight/blob/main/docs/ci.md)
 
 `samesight/compiler` exposes the compiler's internals for the verifier. It is not a stable API before 1.0.
 
