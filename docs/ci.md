@@ -7,7 +7,7 @@ Samesight ships a GitHub Action at the root of its repository, `rayanyedaly/same
 
 A common setup is lint on every pull request and audit on pull requests that change the sync config or the migrations.
 
-> The packages are not on npm until the first release. Until then the action has nothing to install: by default it installs the version of its own release (`0.1.0` for `@v0.1.0`), and the examples below name `0.1.0`, the first release.
+> Samesight is not released on npm until 0.1.0 (the `samesight` name holds a 0.0.0 placeholder with no command). Until then the action has nothing to install. By default it installs the version in its own `packages/samesight/package.json`: at a release tag (`@v0.1.0`) that is the release itself; at a branch or commit SHA it is the last version released before it, which can lag the action. The examples below name `0.1.0`, the first release.
 
 ## Lint with annotations
 
@@ -113,7 +113,7 @@ In audit mode the action:
 
 The job summary can be read by anyone who can read the workflow run. The report holds the run's generated rows, its flags and local paths; see [`--report`](verify.md#options).
 
-Besides the report, the action changes the job it runs in: without `version: installed` it sets up Node `node-version` for the steps after it, and it puts its own `samesight`, `samesight-verify` and `supabase` first on the PATH. In audit mode, when `config.toml` names a `signing_keys_path` file that is missing or empty, it writes a new local signing key there, in your checkout; and when it started Supabase, it stops it with `--no-backup`, which deletes the stack's data.
+Besides the report, the action changes the job it runs in. Without `version: installed` it sets up Node `node-version` for the steps after it, and puts the commands it installs first on the PATH: `samesight` in lint mode, `samesight-verify` and `supabase` in audit mode (`supabase` also with `version: installed`, when none is on the PATH). In audit mode, when `config.toml` names a `signing_keys_path` file that is missing, empty or `[]`, it writes a new local signing key there (in your checkout, unless the path is absolute); and when it started Supabase, it stops it with `--no-backup`, which deletes the stack's data.
 
 The verifier refuses to run where `NODE_ENV` is set to anything but `development` or `test`, or where variables a hosting platform sets (`VERCEL`, `FLY_APP_NAME` and others) are present. Do not set them in this job.
 
@@ -124,7 +124,7 @@ The verifier refuses to run where `NODE_ENV` is set to anything but `development
 | `mode` | (required) | `lint` or `audit`. |
 | `sync-config` | `sync-config.yaml` | The PowerSync sync config, sync streams or sync rules, relative to the repository root. Check the repository out at the workspace root (no `path:`), so annotations and code scanning land on the right file. |
 | `project` | `.` | The directory holding `supabase/`, relative to the repository root. |
-| `version` | this action's release | The npm version of `samesight` and `@samesight/verify` to install: by default the version of the action's own release. `installed` uses the CLIs already on the PATH. |
+| `version` | this action's own version | The npm version of `samesight` (lint) or `@samesight/verify` (audit) to install: by default the version in the action's `packages/samesight/package.json`, the release itself at a release tag. `installed` uses the CLIs already on the PATH. |
 | `node-version` | `22` | The Node version to set up, unless `version` is `installed`. Samesight needs 22.18 or newer. |
 | `upload-sarif` | `false` | Lint mode: upload the SARIF file to code scanning. |
 | `sarif-category` | `samesight` | Lint mode: the code scanning category of the upload. Give each job its own when one repository lints more than one sync config. |
