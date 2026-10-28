@@ -1,11 +1,18 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { checkAuthConfig, HOOK_URI, readSupabaseConfig } from "./supabase-config.ts";
 
-function project(toml: string): string {
+/** A directory for one test, removed when it ends. */
+function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "samesight-config-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+function project(toml: string): string {
+  const dir = tempDir();
   mkdirSync(join(dir, "supabase"));
   writeFileSync(join(dir, "supabase", "config.toml"), toml);
   return dir;
@@ -36,6 +43,6 @@ describe("checkAuthConfig", () => {
   });
 
   it("warns when there is no config.toml", () => {
-    expect(checkAuthConfig(readSupabaseConfig(mkdtempSync(join(tmpdir(), "samesight-config-"))))[0]?.status).toBe("warn");
+    expect(checkAuthConfig(readSupabaseConfig(tempDir()))[0]?.status).toBe("warn");
   });
 });

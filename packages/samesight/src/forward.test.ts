@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { constants, tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { besideShim, cmdLine, findVerify, forwardAudit, type Lookups, onPath, quoteForCmd } from "./forward.ts";
 
 /** A package.json naming a samesight-verify script, and that script. */
@@ -138,7 +138,11 @@ describe("quoteForCmd", () => {
 });
 
 describe.skipIf(process.platform === "win32")("forwardAudit", () => {
-  const dir = mkdtempSync(join(tmpdir(), "samesight-forward-run-"));
+  // Made in beforeAll: a skipped suite's body still runs, its hooks do not.
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "samesight-forward-run-"));
+  });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const script = (name: string, body: string) => {
     const path = join(dir, name);
@@ -164,16 +168,21 @@ describe.skipIf(process.platform === "win32")("forwardAudit", () => {
 // one hoisted to the repository's root node_modules would be run instead.
 describe.skipIf(process.platform === "win32")("samesight audit stopped by a signal sent to it alone", () => {
   const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
-  const dir = mkdtempSync(join(tmpdir(), "samesight-forward-signal-"));
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  let dir: string;
+  let bin: string;
   // A samesight-verify on the PATH that says which signal reached it, and ends as the signal
   // would; one the signal never reaches gives up after about 20s, rather than outlive the test.
-  const bin = join(dir, "bin");
-  mkdirSync(bin);
-  const trap = (s: string) => `trap 'echo ${s} > "$OUT"; trap - ${s}; kill -${s} $$' ${s}`;
-  const wait = "i=0\nwhile [ $i -lt 400 ]; do sleep 0.05; i=$((i + 1)); done\nexit 9";
-  writeFileSync(join(bin, "samesight-verify"), `#!/bin/sh\n${["INT", "TERM", "HUP"].map(trap).join("\n")}\necho ready\n${wait}\n`);
-  chmodSync(join(bin, "samesight-verify"), 0o755);
+  // Written in beforeAll, so a skipped suite writes nothing.
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "samesight-forward-signal-"));
+    bin = join(dir, "bin");
+    mkdirSync(bin);
+    const trap = (s: string) => `trap 'echo ${s} > "$OUT"; trap - ${s}; kill -${s} $$' ${s}`;
+    const wait = "i=0\nwhile [ $i -lt 400 ]; do sleep 0.05; i=$((i + 1)); done\nexit 9";
+    writeFileSync(join(bin, "samesight-verify"), `#!/bin/sh\n${["INT", "TERM", "HUP"].map(trap).join("\n")}\necho ready\n${wait}\n`);
+    chmodSync(join(bin, "samesight-verify"), 0o755);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     it(`passes ${signal} on to samesight-verify and exits as it did`, { timeout: 30_000 }, async ({ onTestFinished }) => {
