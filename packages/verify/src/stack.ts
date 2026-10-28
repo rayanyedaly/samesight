@@ -54,7 +54,8 @@ export function stackFromStatus(status: Record<string, string>, powersync: strin
   if (missing.length) {
     throw new Error(`supabase status -o env prints no ${missing.join(", ")}; run supabase status to see what the CLI reports (is the stack running?)`);
   }
-  assertLocalTargets({ db: stack.db, http: { "Supabase API": stack.api, PowerSync: stack.powersync } }, env);
+  // Only --powersync sets an address of its own; the rest is what supabase status prints.
+  assertLocalTargets({ db: stack.db, http: { "Supabase API": stack.api, PowerSync: stack.powersync }, flags: { PowerSync: "--powersync" } }, env);
   return stack;
 }
 
