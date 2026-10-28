@@ -77,9 +77,11 @@ describe("formatSarif", () => {
     expect(fingerprint(error)).not.toBe(fingerprint({ ...error, subjects: ["all", "orders"] }));
     expect(fingerprint(error)).not.toBe(fingerprint({ ...error, rule: "client-scoped" }));
     // A policy that moves down its migration, or a path written with backslashes, is the same finding.
-    const open = { ...error, rule: "rls-open", message: "policy p on lists lets everyone read it (supabase/migrations/1_a.sql:3)" };
-    expect(fingerprint(open)).toBe(fingerprint({ ...open, message: "policy p on lists lets everyone read it (supabase\\migrations\\1_a.sql:4)" }));
-    expect(fingerprint(open)).not.toBe(fingerprint({ ...open, message: "policy p on lists lets everyone read it (supabase/migrations/2_b.sql:3)" }));
+    // rls-open's own wording: policy "<name>" on <table> (<file>:<line>) lets ...
+    const said = (where: string) => `policy "p" on lists (${where}) lets anyone read through the Supabase API, whatever the sync config sends`;
+    const open = { ...error, rule: "rls-open", message: said("supabase/migrations/1_a.sql:3") };
+    expect(fingerprint(open)).toBe(fingerprint({ ...open, message: said("supabase\\migrations\\1_a.sql:4") }));
+    expect(fingerprint(open)).not.toBe(fingerprint({ ...open, message: said("supabase/migrations/2_b.sql:3") }));
     expect(fingerprint(error)).not.toBe(fingerprint({ ...error, message: "other" }));
   });
 });

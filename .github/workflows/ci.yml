@@ -185,6 +185,17 @@ jobs:
             echo "the lists query was not found; has the demo changed?" >&2
             exit 1
           fi
+      # The steps below pass version: installed; this checks the version the action installs by
+      # default, read with action.yml's own sed.
+      - name: the action's default version is its own packages' version
+        run: |
+          read=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' packages/samesight/package.json | head -n 1)
+          want=$(node -p 'require("./packages/samesight/package.json").version')
+          verify=$(node -p 'require("./packages/verify/package.json").version')
+          if [ -z "$read" ] || [ "$read" != "$want" ] || [ "$want" != "$verify" ]; then
+            echo "action.yml would install '$read'; samesight is $want and @samesight/verify $verify" >&2
+            exit 1
+          fi
       - name: lint on the demo as published
         uses: ./
         with:
@@ -228,7 +239,7 @@ jobs:
           # The annotation GitHub shows on the pull request's changed line.
           if ! grep -qE "^::error file=examples/audit-todolist/upstream/sync-config\.planted\.yaml,line=$line,col=[0-9]+,title=samesight unscoped-query::" "$ANNOTATIONS"; then
             echo "no unscoped-query annotation at line $line in $ANNOTATIONS:" >&2
-            cat "$ANNOTATIONS" >&2
+            sed 's/^/  /' "$ANNOTATIONS" >&2
             exit 1
           fi
       # The action starts Supabase, audits and stops it (removing its data).

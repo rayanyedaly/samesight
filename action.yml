@@ -103,7 +103,9 @@ runs:
         set -euo pipefail
         if [ -z "$VERSION" ]; then
           # This action's own release: its packages carry the version it was tagged with.
-          VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$GITHUB_ACTION_PATH/packages/samesight/package.json" | head -n 1)
+          own="$GITHUB_ACTION_PATH/packages/samesight/package.json"
+          [ -f "$own" ] && VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$own" | head -n 1)
+          [ -n "$VERSION" ] || { echo "::error title=samesight::could not read this action's own version; set the version input"; exit 1; }
         fi
         pkgs=()
         if [ "$VERSION" != installed ]; then
@@ -126,7 +128,7 @@ runs:
           if [ "$VERSION" != installed ]; then
             bin=samesight
             [ "$MODE" = lint ] || bin=samesight-verify
-            [ -x "$prefix/node_modules/.bin/$bin" ] || { echo "::error title=samesight::samesight $VERSION has no $bin command on npm; set version to a published release"; exit 1; }
+            [ -x "$prefix/node_modules/.bin/$bin" ] || { echo "::error title=samesight::the version installed from npm has no $bin command (not a samesight release); set version to a published release"; exit 1; }
           fi
         fi
 
@@ -182,7 +184,7 @@ runs:
         set -euo pipefail
         cd "$GITHUB_WORKSPACE"
         config="$PROJECT/supabase/config.toml"
-        [ -f "$config" ] || { echo "::error title=samesight::no $config; set project to the directory that holds supabase/"; exit 1; }
+        [ -f "$config" ] || { echo "::error title=samesight::no supabase/config.toml in project; set project to the directory that holds supabase/"; exit 1; }
         if supabase --workdir "$PROJECT" status > /dev/null 2>&1; then
           # Started by an earlier step: used as it is, and left running.
           echo "The project's Supabase stack is already running; the audit uses it."

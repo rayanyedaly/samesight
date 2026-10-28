@@ -12,8 +12,7 @@
     },
     "lint": {},
     "test": {
-      "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/cli.md"]
+      "dependsOn": ["^build"]
     },
     "dev": {
       "cache": false,
