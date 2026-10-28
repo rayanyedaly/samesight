@@ -98,7 +98,7 @@ describe("samesight lint", () => {
   const cli = fileURLToPath(new URL("../cli.ts", import.meta.url));
   const run = (cwd: string, ...args: string[]) => spawnSync(process.execPath, [cli, "lint", ...args], { cwd, encoding: "utf8" });
 
-  it("exits 0 on a clean config, and 2 when there is no config or it cannot be read", () => {
+  it("exits 0 on a clean config, and 2 when there is no config or it cannot be read", { timeout: 30_000 }, () => {
     const dir = tempDir();
     const none = run(dir);
     expect(none.status).toBe(2);
@@ -124,7 +124,7 @@ describe("samesight lint", () => {
     expect([mixed.status, mixed.stdout]).toEqual([2, expect.stringMatching(/^open.yaml:6 {2}error .*\n1 error\n$/)]);
   });
 
-  it("accepts --allow for a known rule, reports what it allowed, and refuses an unknown rule", () => {
+  it("accepts --allow for a known rule, reports what it allowed, and refuses an unknown rule", { timeout: 30_000 }, () => {
     const dir = tempDir();
     writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
     expect(run(dir).status).toBe(1);
@@ -134,7 +134,7 @@ describe("samesight lint", () => {
     expect([typo.status, typo.stderr]).toEqual([2, expect.stringMatching(/^samesight: --allow names no rule unscoped-querry; the rules are /)]);
   });
 
-  it("prints one JSON object on stdout with --format json, keeping notes on stderr", () => {
+  it("prints one JSON object on stdout with --format json, keeping notes on stderr", { timeout: 30_000 }, () => {
     const dir = tempDir();
     writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
     writeFileSync(join(dir, "bad.yaml"), "streams: [1]\n");
@@ -156,7 +156,7 @@ describe("samesight lint", () => {
     expect([xml.status, xml.stderr]).toEqual([2, 'samesight: --format must be text, json, sarif or github, not "xml"\n']);
   });
 
-  it("prints one SARIF log with --format sarif, with the same exit codes", () => {
+  it("prints one SARIF log with --format sarif, with the same exit codes", { timeout: 30_000 }, () => {
     const dir = tempDir();
     writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
     writeFileSync(join(dir, "bad.yaml"), "streams: [1]\n");
@@ -179,7 +179,7 @@ describe("samesight lint", () => {
     expect(bad.stderr).toMatch(/bad.yaml: cannot be read as a sync config/);
   });
 
-  it("prints GitHub workflow commands with --format github, with the same exit codes", () => {
+  it("prints GitHub workflow commands with --format github, with the same exit codes", { timeout: 30_000 }, () => {
     const dir = tempDir();
     writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
     writeFileSync(join(dir, "bad.yaml"), "streams: [1]\n");

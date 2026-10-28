@@ -5,7 +5,7 @@
  * the PATH.
  */
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { constants } from "node:os";
@@ -14,7 +14,8 @@ import { dirname, join, resolve } from "node:path";
 const PACKAGE = "@samesight/verify/package.json";
 const BIN = "samesight-verify";
 
-export const NOT_FOUND = "samesight: samesight audit needs @samesight/verify: npm install -D @samesight/verify (or run npx @samesight/verify audit)";
+const MISSING = "samesight audit needs @samesight/verify: npm install -D @samesight/verify (or run npx @samesight/verify audit)";
+export const NOT_FOUND = `samesight: ${MISSING}`;
 
 /** Where to look, in order; each returns a path or undefined. */
 export interface Lookups {
@@ -67,6 +68,15 @@ function binOf(packageJson: string): string | undefined {
   }
 }
 
+/**
+ * @samesight/verify's package.json beside a .cmd shim, as npm installs globally on
+ * Windows: <prefix>\samesight-verify.cmd and <prefix>\node_modules\@samesight\verify.
+ */
+export function besideShim(shim: string): string | undefined {
+  const pkg = join(dirname(shim), "node_modules", "@samesight", "verify", "package.json");
+  return existsSync(pkg) ? pkg : undefined;
+}
+
 /** How to run samesight-verify, or undefined when it is nowhere to be found. */
 export function findVerify(lookups: Lookups = LOOKUPS, platform: NodeJS.Platform = process.platform): Command | undefined {
   for (const find of [lookups.project, lookups.own]) {
@@ -75,41 +85,99 @@ export function findVerify(lookups: Lookups = LOOKUPS, platform: NodeJS.Platform
     if (bin) return { command: process.execPath, args: [bin], shell: false };
   }
   const bin = lookups.path();
-  return bin ? { command: bin, args: [], shell: platform === "win32" } : undefined;
+  if (!bin || platform !== "win32") return bin ? { command: bin, args: [], shell: false } : undefined;
+  // The shim's own script, run by this Node, needs no cmd.exe; the shim itself does.
+  const pkg = besideShim(bin);
+  const script = pkg && binOf(pkg);
+  return script ? { command: process.execPath, args: [script], shell: false } : { command: bin, args: [], shell: true };
 }
+
+/** What cmd.exe acts on outside quotes; a caret before one makes it literal. */
+const CMD_META = /([()\][%!^"`<>&|;, *?])/g;
+
+/**
+ * One argument for an npm .cmd shim run by cmd.exe, as cross-spawn quotes it (after
+ * https://qntm.org/cmd): backslashes before a quote or at the end doubled, quotes escaped,
+ * the whole quoted, then every cmd.exe metacharacter caret-escaped, twice, since the
+ * shim's %* is read by cmd.exe again.
+ */
+export function quoteForCmd(arg: string): string {
+  let quoted = "";
+  let slashes = 0;
+  for (const c of arg) {
+    if (c === "\\") {
+      slashes++;
+      continue;
+    }
+    quoted += "\\".repeat(c === '"' ? slashes * 2 + 1 : slashes) + c;
+    slashes = 0;
+  }
+  quoted = `"${quoted}${"\\".repeat(slashes * 2)}"`;
+  return quoted.replace(CMD_META, "^$1").replace(CMD_META, "^$1");
+}
+
+/** The command line cmd.exe runs for a .cmd shim and its arguments. */
+export function cmdLine(shim: string, args: string[]): string {
+  return [shim.replace(CMD_META, "^$1"), ...args.map(quoteForCmd)].join(" ");
+}
+
+/** The signals that end a run: passed on to the child, which removes what its run made. */
+const SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 /**
  * Runs `samesight-verify audit ...rest` with this terminal, and resolves with its exit
  * code: 128 plus the signal's number when a signal ended it, as a shell reports it.
- * Ctrl+C reaches the child itself (same process group), so meanwhile this process
- * ignores SIGINT and SIGTERM, and passes on a SIGTERM sent to it alone, while the child
- * removes what its run made.
+ * Meanwhile this process stays up for the child's clean-up: it passes SIGINT, SIGTERM and
+ * SIGHUP on to the child, so one sent to it alone reaches the child too. Ctrl+C reaches
+ * both (same process group), and samesight-verify takes the same signal twice at once as
+ * once. On Windows, where kill() ends a process outright, the console's Ctrl+C, Ctrl+Break
+ * and close already reach the child, so they are only ignored here.
  */
 export function forwardAudit(rest: string[], lookups: Lookups = LOOKUPS): Promise<number> {
   const found = findVerify(lookups);
-  if (!found) {
-    process.stderr.write(`${NOT_FOUND}\n`);
-    return Promise.resolve(2);
-  }
-  // cmd.exe joins arguments with spaces and does not quote them.
-  const args = [...found.args, "audit", ...rest].map((a) => (found.shell && /\s/.test(a) ? `"${a}"` : a));
-  return new Promise((done, fail) => {
-    const child = spawn(found.shell ? `"${found.command}"` : found.command, args, { stdio: "inherit", shell: found.shell });
-    const ignore = () => {};
-    const term = () => child.kill("SIGTERM");
-    process.on("SIGINT", ignore);
-    process.on("SIGTERM", term);
+  if (!found) return Promise.resolve(unable(MISSING, rest));
+  const args = [...found.args, "audit", ...rest];
+  return new Promise((done) => {
+    // Listening before the child starts: a signal that comes as it starts is handled on the
+    // event loop, once `child` is set, rather than ending this process at once.
+    const win = process.platform === "win32";
+    const handlers = (win ? [...SIGNALS, "SIGBREAK" as const] : SIGNALS).map((signal) => {
+      const handler = win ? () => {} : () => child.kill(signal);
+      process.on(signal, handler);
+      return [signal, handler] as const;
+    });
     const stop = () => {
-      process.off("SIGINT", ignore);
-      process.off("SIGTERM", term);
+      for (const [signal, handler] of handlers) process.off(signal, handler);
     };
+    let child: ChildProcess;
+    try {
+      // One command line, so cmd.exe reads exactly the quoting above.
+      child = found.shell ? spawn(cmdLine(found.command, args), { stdio: "inherit", shell: true }) : spawn(found.command, args, { stdio: "inherit" });
+    } catch (e) {
+      stop();
+      throw e;
+    }
     child.on("error", (e) => {
       stop();
-      fail(new Error(`could not run ${found.command}: ${e.message}`));
+      done(unable(`could not run ${found.command}: ${e.message}`, rest));
     });
     child.on("exit", (code, signal) => {
       stop();
       done(code ?? 128 + (signal ? constants.signals[signal] : 0));
     });
   });
+}
+
+/**
+ * Says why audit could not run, and returns its exit code, 2. With --json, stdout still carries one
+ * document, as samesight-verify's would: the fields of its report schema that samesight
+ * can fill, under its own name (no toolVersion or $schema without verify to name them).
+ */
+function unable(message: string, rest: string[]): number {
+  process.stderr.write(`samesight: ${message}\n`);
+  if (rest.some((a) => a === "--json" || a.startsWith("--json="))) {
+    const doc = { tool: "samesight", mode: "audit", result: "incomplete", exitCode: 2, sections: [], error: message };
+    process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
+  }
+  return 2;
 }
