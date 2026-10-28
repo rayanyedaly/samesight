@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exitCode, type Finding, failed, formatFindings, formatRow, formatRows, type RowReport } from "./report.ts";
+import { exitCode, type Finding, failed, formatFindings, formatRow, formatRows, formatSection, type RowReport } from "./report.ts";
 
 describe("report", () => {
   it("fails only on a fail, never on warnings", () => {
@@ -26,6 +26,21 @@ describe("report", () => {
       "      replay     samesight-verify audit --runs 3 --seed 9",
       "warn  differential: RLS lets users read rows no stream sends them",
     ]);
+  });
+});
+
+describe("formatSection", () => {
+  const findings: Finding[] = [
+    { status: "ok", check: "streams", detail: "1 stream, 1 query, sending tasks" },
+    { status: "fail", check: "user metadata", detail: "reads user_metadata" },
+  ];
+
+  it("prints the title, then the findings' lines, with no blank line around them", () => {
+    expect(formatSection("Sync config", findings)).toBe("Sync config\nok    streams: 1 stream, 1 query, sending tasks\nFAIL  user metadata: reads user_metadata");
+  });
+
+  it("leaves the title plain and colours the findings as formatFindings does", () => {
+    expect(formatSection("Sync config", findings, true)).toBe(`Sync config\n${formatFindings(findings, true)}`);
   });
 });
 

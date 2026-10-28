@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type pg from "pg";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { Teardown } from "../autostart/teardown.ts";
 import { MUTANT_HEADER } from "./mutants.ts";
 import { withSyncConfig } from "./reload.ts";
@@ -13,8 +13,28 @@ vi.mock("../differential/run.ts", () => ({ waitForReplication: () => gate.wait()
 
 const client = { query: async () => ({ rows: [] }) } as unknown as pg.Client;
 
-function project(content: string) {
+/** A temporary directory, removed once the test is done. */
+function tempDir() {
   const dir = mkdtempSync(join(tmpdir(), "samesight-reload-test-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/** The copies of the original a message named, which withSyncConfig keeps: removed once the test is done. */
+function removeNamed(said: string) {
+  let found = 0;
+  // From the temp directory itself, so a path with spaces still matches.
+  const tmp = tmpdir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const [, dir] of said.matchAll(new RegExp(`(${tmp}[/\\\\]samesight-mutate-[^/\\\\\\s]+)[/\\\\]sync-config\\.yaml`, "g"))) {
+    onTestFinished(() => rmSync(dir as string, { recursive: true, force: true }));
+    found++;
+  }
+  // Each caller's message names one: none found means the copy would be left behind unseen.
+  expect(found, `no kept copy named in: ${said}`).toBeGreaterThan(0);
+}
+
+function project(content: string) {
+  const dir = tempDir();
   const configPath = join(dir, "sync-config.yaml");
   writeFileSync(configPath, content);
   // A restart that fails, as a stopped Docker would.
@@ -30,6 +50,7 @@ describe("withSyncConfig", () => {
     await expect(withSyncConfig(client, ps, `${MUTANT_HEADER}\nstreams: {}\n`, fn)).rejects.toThrow();
     const said = stderr.mock.calls.map(([x]) => String(x));
     stderr.mockRestore();
+    removeNamed(said.join(""));
     expect(said).toEqual([expect.stringMatching(/^samesight-verify: restored .* but PowerSync did not reload it and may still serve the mutants: /)]);
     expect(fn).not.toHaveBeenCalled();
     expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
@@ -51,7 +72,7 @@ describe("withSyncConfig under the run's teardown", () => {
   /** A service that takes up each restart: a new slot on every look, and ready. */
   /** Restarts fail from the `failFrom`th (0-based) on, or only the `failAt`th; each takes `delayMs`. */
   function live(failFrom = Number.POSITIVE_INFINITY, { failAt = -1, delayMs = 0 } = {}) {
-    const dir = mkdtempSync(join(tmpdir(), "samesight-reload-test-"));
+    const dir = tempDir();
     const configPath = join(dir, "sync-config.yaml");
     const marker = join(dir, "restarts");
     const done = join(dir, "finished");
@@ -109,6 +130,7 @@ describe("withSyncConfig under the run's teardown", () => {
         expect(await t.run()).toEqual(["the mutant streams PowerSync serves"]);
       }, t),
     ).rejects.toThrow(/PowerSync did not reload it and may still serve the mutants/);
+    removeNamed(lines.join("\n"));
     expect(readFileSync(ps.configPath, "utf8")).toBe("streams: {}\n");
     expect(lines).toEqual([expect.stringMatching(/^could not remove the mutant streams PowerSync serves: .*: exit code 1; PowerSync serves them to every device until it restarts on the original sync config: the original is at .*sync-config\.yaml; copy it to .* if it is not there, then restart PowerSync \(.*\)$/)]);
   });
@@ -118,6 +140,7 @@ describe("withSyncConfig under the run's teardown", () => {
     const { ps, slots, restarts } = live(Number.POSITIVE_INFINITY, { failAt: 1 });
     const t = new Teardown(() => {}, "policy");
     const error = await withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {}, t).catch((e: Error) => e);
+    removeNamed(String(error));
     expect(String(error)).toMatch(/did not reload/);
     const copy = /a copy is at (\S+)\)/.exec(String(error))?.[1] as string;
     expect(restarts()).toBe(2);
@@ -243,6 +266,7 @@ describe("withSyncConfig under the run's teardown", () => {
     await withSyncConfig(slots, ps, `${MUTANT_HEADER}\nstreams: {}\n`, async () => {
       await t.run();
     }, t);
+    removeNamed(lines.join("\n"));
     const copy = /the original is at (\S+);/.exec(lines.join("\n"))?.[1] as string;
     expect(copy).toBeDefined();
     expect(existsSync(copy)).toBe(true);

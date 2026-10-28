@@ -36,7 +36,37 @@ export interface Targets {
   db: string;
   /** HTTP services: the Supabase API (Auth, REST) and the PowerSync service. */
   http: Record<string, string>;
+  /** The flag that sets an HTTP service, by name, for the fix a refusal names; one without is read from supabase status. */
+  flags?: Record<string, string>;
 }
+
+/** The fix for an address read from supabase status, which only a stack on this machine changes. */
+const FROM_STATUS = "it comes from supabase status: run the project's local stack on this machine (supabase start)";
+
+/**
+ * A value as a message may print it, when it is plainly an address: a URL as its scheme and
+ * host (and … for anything after them), or a bare host:port. Anything else, a token pasted
+ * by mistake or an opaque value such as user:password, is not printed (undefined), since a
+ * value given here can carry a password or a token.
+ */
+export function shown(value: string): string | undefined {
+  if (/^[\w.-]+:\d+$/.test(value)) return value;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (!parsed.host) return undefined;
+  const rest = parsed.username || parsed.password || parsed.pathname.length > 1 || parsed.search || parsed.hash;
+  return `${parsed.protocol}//${parsed.host}${rest ? "/…" : ""}`;
+}
+
+/** The value, quoted, as `shown` allows, or "the value given". */
+const quoted = (value: string) => {
+  const s = shown(value);
+  return s === undefined ? "the value given" : `"${s}"`;
+};
 
 /** Throws, listing every problem, unless each target is local and the environment is not a deployment. */
 export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = process.env): void {
@@ -44,18 +74,25 @@ export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = pr
   try {
     assertLocal(targets.db);
   } catch (e) {
-    problems.push(`database: ${(e as Error).message}`);
+    problems.push(`database: ${(e as Error).message}; ${FROM_STATUS}`);
   }
   for (const [name, url] of Object.entries(targets.http)) {
+    const flag = targets.flags?.[name];
+    const toUrl = flag ? `pass ${flag} an http(s) URL on localhost or 127.0.0.1` : FROM_STATUS;
     let parsed: URL;
     try {
       parsed = new URL(url);
     } catch {
-      problems.push(`${name}: "${url}" is not a URL`);
+      problems.push(`${name}: ${quoted(url)} is not a URL; ${toUrl}`);
       continue;
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") problems.push(`${name}: ${url} is not an http(s) URL`);
-    else if (!LOCAL_HOSTS.has(parsed.hostname)) problems.push(`${name}: ${parsed.hostname} is not this machine`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") problems.push(`${name}: ${quoted(url)} is not an http(s) URL; ${toUrl}`);
+    else if (!LOCAL_HOSTS.has(parsed.hostname)) {
+      problems.push(`${name}: ${parsed.hostname} is not this machine; ${flag ? `point ${flag} at localhost or 127.0.0.1` : FROM_STATUS}`);
+    } else if (parsed.username || parsed.password) {
+      // fetch refuses a URL with credentials, so the run would fail later, and print it.
+      problems.push(`${name}: ${quoted(url)} carries a user name or password; ${flag ? `drop user:password@ from ${flag}` : FROM_STATUS}`);
+    }
   }
   const nodeEnv = env.NODE_ENV ?? "development";
   if (nodeEnv !== "development" && nodeEnv !== "test") {
