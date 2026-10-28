@@ -56,7 +56,9 @@ Keep the parameter to narrow the rows, and compare the row with the user's own m
 
 ## What audit does
 
-Audit only warns, in its Sync config section, that the stream reads client parameters. The devices it runs connect with none, so it does not try what a modified client could send, and a passing audit says nothing about this pattern. Lint is the check for it. Audit warns about the fixed query too, since it still reads the parameter.
+Audit warns, in its Sync config section, that the stream reads client parameters. The devices it runs connect with none, so it never tries what a modified client could send: lint is the check for this pattern, and a passing audit says nothing about it.
+
+With no parameter, a query that a client parameter selects returns no rows. When no other stream sends the table either, as in the example, no device receives any of its rows, and audit fails the run with `no device received any tasks row`: the table went untested, which is not a finding that it leaks. The fixed query still reads the parameter, so audit warns about it, and fails the same way, too.
 
 [How sync configs leak](../how-sync-configs-leak.md#a-client-parameter-picks-the-rows) shows the sync rules form, with `request.parameters()`, and audit's warning in full.
 

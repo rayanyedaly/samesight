@@ -47,7 +47,7 @@ jobs:
       - run: node scripts/docs/leaks.mjs --check
       # The terminal capture's SVGs are what scripts/demo/render.mjs makes of its transcript.
       - run: node scripts/demo/render.mjs --check
-      # The docs site builds; a dead link fails it.
+      # The docs site builds; a link to a missing page or file fails it.
       - run: pnpm docs:build
 
   package:

@@ -41,7 +41,7 @@ When an emitter's output changes on purpose, update the golden files in `package
 
 ## Docs site
 
-`docs/` is also a VitePress site. `pnpm docs:dev` previews it; CI builds it on every pull request, and a dead link fails the build. The Docs workflow publishes it to GitHub Pages, at https://rayanyedaly.github.io/samesight/, when the docs change on main. Before the first deploy, the owner sets Settings, Pages, Source to "GitHub Actions" once.
+`docs/` is also a VitePress site. `pnpm docs:dev` previews it on localhost (keep it there: VitePress 1's dev server has known advisories, none of which reach the built site). CI builds it on every pull request, and a link to a page or file that does not exist fails the build, as does a site link in a package's README, homepage or `--help` that names no page; anchors are not checked. The Docs workflow publishes it to GitHub Pages, at https://rayanyedaly.github.io/samesight/, when the docs change on main. Before the first deploy, the owner sets Settings, Pages, Source to "GitHub Actions" once.
 
 ## Releasing
 

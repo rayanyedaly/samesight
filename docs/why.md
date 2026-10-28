@@ -10,7 +10,7 @@ Then I thought other PowerSync developers might have the same worry, or have had
 
 - **[Lint](cli.md#lint)** reads a sync config, and the SQL migrations when you have them, and flags the patterns that leak, in seconds, with nothing to start.
 - **[Audit](verify.md#audit-mode)** signs up test users, generates rows, syncs a real PowerSync device for each user and compares every row each device got with what the database allows that user. When a device holds a row it should not, audit names the query that sent it, the policy that refuses it and, when it can, the filter to add.
-- **[The policy compiler](getting-started.md)** goes further: write who may see what once, and generate both the database policies and the sync config from it, so the two cannot drift apart.
+- **[The policy compiler](getting-started.md)** goes further: write who may see what once, and generate both the database policies and the sync config from it; `samesight check` fails CI if either drifts.
 
 Lint reads any PowerSync sync config. Audit and the policy compiler work with Supabase today, where row level security in the database is what each device is compared against.
 

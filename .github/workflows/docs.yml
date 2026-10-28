@@ -28,9 +28,14 @@ concurrency:
 
 jobs:
   build:
+    # Forks have no Pages site of their own to publish to.
+    if: github.repository == 'rayanyedaly/samesight'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       # No dependency cache in a build that is published: it comes from a clean install.
       - uses: actions/setup-node@v7
@@ -38,10 +43,8 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
-      # Fails on a dead link, as on pull requests.
+      # Fails on a link to a missing page or file, as on pull requests.
       - run: pnpm docs:build
-      # Reads the repository's Pages settings, which needs no permission on a public repository.
-      - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/.vitepress/dist
@@ -49,6 +52,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

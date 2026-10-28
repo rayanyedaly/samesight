@@ -47,8 +47,10 @@ function siteHref(href: string, page: string): string | undefined {
   const { target, rest } = link;
   const exists = existsSync(target);
   if (isInside(docsDir, target)) {
-    const servedFile = !exists || statSync(target).isDirectory() || /\.(md|html)$/.test(target);
-    if (servedFile || isInside(resolve(docsDir, "public"), target)) return undefined;
+    // Pages (cli.md, cli, a folder with an index.md) are VitePress's to serve and check.
+    const isPage =
+      exists && statSync(target).isDirectory() ? existsSync(join(target, "index.md")) : /\.(md|html)$/.test(target) || !/\.[^/\\]+$/.test(target);
+    if (isPage || (exists && isInside(resolve(docsDir, "public"), target))) return undefined;
   }
   const where = `${relative(repoDir, page)}: the link ${href}`;
   if (!isInside(repoDir, target)) throw new Error(`${where} points outside the repository`);
@@ -97,14 +99,51 @@ function llmsLinks(outDir: string): void {
         if (full && line.startsWith(`url: ${BASE}`) && line.endsWith(".md")) page = source(line.slice(`url: ${BASE}`.length));
         if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
         if (fenced) return line;
-        return line.replace(/\]\(([^)\s]+)\)/g, (whole, href: string) => {
-          const url = siteHref(href, page) ?? copyHref(href, page);
-          return url ? `](${url})` : whole;
-        });
+        // Links in inline code are examples, not links: the odd parts of the split.
+        return line
+          .split(/(`[^`]*`)/)
+          .map((part, i) =>
+            i % 2
+              ? part
+              : part.replace(/\]\(([^)\s]+)\)/g, (whole, href: string) => {
+                  const url = siteHref(href, page) ?? copyHref(href, page);
+                  return url ? `](${url})` : whole;
+                }),
+          )
+          .join("");
       });
-    writeFileSync(join(outDir, file), lines.join("\n"));
+    const text = lines.join("\n");
+    // No build step checks these copies' links, so check each site link here.
+    for (const [, href] of text.matchAll(new RegExp(`\\]\\((${BASE}[^)\\s#]*)`, "g"))) {
+      const path = decodeURI(href.slice(BASE.length));
+      if (!existsSync(join(outDir, path === "" ? "index.html" : path))) throw new Error(`${file}: the link ${href} points at nothing on the site`);
+    }
+    writeFileSync(join(outDir, file), text);
   }
 }
+
+/**
+ * The site's pages that the packages link to (their READMEs, package.json homepage and
+ * --help) must exist: the links are in what users install, so a renamed page would break
+ * them silently.
+ */
+function checkSiteLinks(): void {
+  const site = `https://rayanyedaly.github.io${BASE}`;
+  const files = readdirSync(resolve(repoDir, "packages")).flatMap((p) =>
+    ["README.md", "package.json", "src/cli.ts"].map((f) => resolve(repoDir, "packages", p, f)).filter((f) => existsSync(f)),
+  );
+  for (const file of [resolve(repoDir, "README.md"), ...files]) {
+    for (const [url] of readFileSync(file, "utf8").matchAll(new RegExp(`${site.replaceAll(".", "\\.")}[\\w./-]*`, "g"))) {
+      // A sentence may end right after the link.
+      const path = url.slice(site.length).replace(/[./]+$/, "");
+      const page = path === "" ? "index.md" : `${path}.md`;
+      if (!existsSync(resolve(docsDir, page)) && !existsSync(resolve(docsDir, path, "index.md")))
+        throw new Error(`${relative(repoDir, file)}: ${url} is not a page of the site (no docs/${page})`);
+    }
+  }
+}
+
+checkSiteLinks();
 
 /** The Markdown copy a relative link to a page points at: cli.md#lint is /samesight/cli.md#lint. */
 function copyHref(href: string, page: string): string | undefined {
@@ -128,8 +167,9 @@ export default defineConfig({
     config: repoLinks,
   },
   vite: {
-    // llms.txt, llms-full.txt and a Markdown copy of each page, for coding agents.
-    plugins: [llmstxt()],
+    // llms.txt, llms-full.txt and a Markdown copy of each page, for coding agents. Each page
+    // links to llms.txt in its head; no hidden note on the home page.
+    plugins: [llmstxt({ injectLLMHint: false })],
   },
   buildEnd: (site) => llmsLinks(site.outDir),
   themeConfig: {
