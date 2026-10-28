@@ -170,7 +170,9 @@ $ npx samesight audit --sync-config powersync/sync-config.yaml
 
 Runs `samesight-verify audit` with the arguments after `audit`: the project's own RLS against its own sync config, on the local stack, with generated data, real users and headless devices. Where lint reads the files, audit tests the rows. Every flag is `samesight-verify audit`'s (`samesight audit --help` lists them), and so are the exit codes; a run stopped by a signal exits 128 plus its number (130 for Ctrl+C). See [the verifier](verify.md) for what it checks and what it needs.
 
-It needs `@samesight/verify`, which `samesight` does not install: it looks for it in the project (`npm install -D @samesight/verify`), then next to `samesight`, then for `samesight-verify` on the PATH, and when it finds none it says so and exits 2. `npx @samesight/verify audit` runs it without installing anything.
+`audit` must be the first argument: `samesight audit --sync-config ...`, not `samesight --sync-config ... audit`.
+
+It needs `@samesight/verify`, which `samesight` does not install (`npm install -D @samesight/verify`). It looks for it in the current directory's project (its `node_modules`, then those of the parent directories), then next to `samesight`, then for `samesight-verify` on the PATH, and when it finds none it says so and exits 2. `--project` does not change where it looks, so run `samesight audit` from the directory where `@samesight/verify` is installed. `npx @samesight/verify audit` runs it without installing anything.
 
 ## `samesight-verify`
 

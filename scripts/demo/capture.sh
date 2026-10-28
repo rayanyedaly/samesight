@@ -14,6 +14,9 @@
 #
 #   bash scripts/demo/capture.sh --trim <file>   trims a saved NO_COLOR run instead of running one
 #
+# Either way it then renders the SVGs and refreshes the guide's excerpt of the capture in
+# docs/how-sync-configs-leak.md with scripts/docs/leaks.mjs.
+#
 # It runs the built `samesight audit`, which forwards to the demo's @samesight/verify; the
 # first line shows it as a user runs it, `npx samesight audit`, with the flags of the run.
 # The replay line is printed by samesight-verify, so it names samesight-verify. Trimming,
@@ -78,8 +81,14 @@ trim() {
 
 if [ "${1:-}" = "--trim" ]; then
   [ -f "${2:-}" ] || { echo "capture.sh: --trim needs a saved run" >&2; exit 2; }
+  # In colour the marks differ too (a check mark before ok), so stripping the codes is not enough.
+  if grep -q $'\x1b' "$2"; then
+    echo "capture.sh: $2 has colour codes; save the run with NO_COLOR=1" >&2
+    exit 2
+  fi
   { echo "\$ npx samesight audit ${flags[*]}"; trim <"$2"; } >"$out"
   node "$root/scripts/demo/render.mjs"
+  node "$root/scripts/docs/leaks.mjs"
   exit 0
 fi
 
@@ -107,3 +116,4 @@ fi
 { echo "\$ npx samesight audit ${flags[*]}"; trim <"$raw"; } >"$out"
 echo "wrote ${out#"$root"/}"
 node "$root/scripts/demo/render.mjs"
+node "$root/scripts/docs/leaks.mjs"

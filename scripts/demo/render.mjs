@@ -122,7 +122,24 @@ function render(text, theme) {
   ].join("\n");
 }
 
-const text = readFileSync(join(ROOT, SOURCE), "utf8");
+/**
+ * The transcript as plain text: colour codes (from a run saved without NO_COLOR) are dropped,
+ * and any other control character, which XML cannot hold, stops the render.
+ */
+function plain(raw) {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: colour codes start with ESC
+  const text = raw.replace(/\r\n/g, "\n").replace(/\x1b\[[0-9;]*m/g, "");
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it looks for
+  const bad = /[\x00-\x08\x0b-\x1f\x7f]/.exec(text);
+  if (bad) {
+    const line = text.slice(0, bad.index).split("\n").length;
+    console.error(`render.mjs: ${SOURCE} line ${line} holds control character U+${bad[0].charCodeAt(0).toString(16).padStart(4, "0").toUpperCase()}, which an SVG cannot hold; capture the run again with NO_COLOR=1`);
+    process.exit(2);
+  }
+  return text;
+}
+
+const text = plain(readFileSync(join(ROOT, SOURCE), "utf8"));
 let stale = 0;
 for (const theme of Object.keys(PALETTES)) {
   const file = `${ASSETS}/audit-demo-${theme}.svg`;
