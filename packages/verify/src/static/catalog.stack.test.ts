@@ -99,9 +99,9 @@ describe("checkCatalog on the local Fieldbook database", () => {
     [`grant execute on function samesight.custom_access_token_hook(jsonb) to authenticated`, "token hook: authenticated can execute it"],
     [
       "drop function samesight.custom_access_token_hook(jsonb)",
-      "token hook: samesight.custom_access_token_hook(jsonb) does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset",
+      "token hook: samesight.custom_access_token_hook(jsonb) does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset (which resets the local data)",
     ],
-    ["drop publication powersync", "publication: powersync does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset; the migration creates it with the synced tables"],
+    ["drop publication powersync", "publication: powersync does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset (which resets the local data); the migration creates it with the synced tables"],
     [`alter publication powersync set (publish = 'insert, update')`, "publication: does not publish delete"],
     [`alter publication powersync set table public."Tenant" where (true), public."Membership", public."Site", public."Inspection", public."Finding", public."Photo"`, "publication: filters rows or columns of"],
     [`alter publication powersync drop table public."Photo"`, "publication: missing public.Photo"],
