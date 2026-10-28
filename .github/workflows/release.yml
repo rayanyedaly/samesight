@@ -5,7 +5,7 @@
 # test pass on the tagged commit. Packages carry npm provenance, which links each
 # tarball to this workflow run.
 #
-# Publishes with npm trusted publishing: no npm token is stored. Each of the four packages
+# Publishes with npm trusted publishing and uses no npm token. Each of the four packages
 # names this repository, this workflow (release.yml) and the "npm" environment as its
 # trusted publisher on npmjs.com, and npm trades this run's OIDC token for a short-lived
 # publish credential. Only the publish job can ask for that token: the build job, which
