@@ -1,0 +1,243 @@
+# samesight as a GitHub Action.
+#
+# mode: lint runs `samesight lint` on a sync config: findings show as annotations on the
+# pull request, a SARIF file is always written (and uploaded to code scanning when
+# upload-sarif is true), and the step fails on an error-level finding.
+# mode: audit starts the project's local Supabase stack (Docker), runs `samesight-verify
+# audit` against it, adds the Markdown report to the job summary, and stops the stack.
+#
+# Setup and examples: docs/ci.md
+name: samesight
+description: Lint a PowerSync sync config against Supabase RLS, or audit them against a local stack
+author: Rayan Yedaly
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  mode:
+    description: "lint or audit"
+    required: true
+  sync-config:
+    description: "The sync config file, relative to the workspace root"
+    required: false
+    default: sync-config.yaml
+  project:
+    description: "The directory that holds supabase/, relative to the workspace root"
+    required: false
+    default: "."
+  version:
+    description: "The samesight version to install from npm, or installed to use samesight and samesight-verify already on the PATH"
+    required: false
+    default: latest
+  node-version:
+    description: "The Node.js version to set up (not used with version: installed)"
+    required: false
+    default: "22"
+  upload-sarif:
+    description: "lint: true uploads the SARIF file to code scanning (needs security-events: write)"
+    required: false
+    default: "false"
+  sarif-category:
+    description: "lint: the code scanning category for the upload"
+    required: false
+    default: samesight
+  args:
+    description: "Extra flags for samesight lint or samesight-verify audit, split on whitespace"
+    required: false
+    default: ""
+  supabase-version:
+    description: "audit: the Supabase CLI version to install from npm"
+    required: false
+    default: "2.122.0"
+  exclude:
+    description: "audit: the Supabase services not to start (supabase start -x)"
+    required: false
+    default: realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
+
+outputs:
+  exit-code:
+    description: "The exit code of samesight lint (text) or samesight-verify audit: 0 pass, 1 findings, 2 could not run"
+    value: ${{ format('{0}{1}', steps.lint.outputs.exit-code, steps.audit.outputs.exit-code) }}
+  sarif-file:
+    description: "lint: the path of the SARIF file"
+    value: ${{ steps.lint.outputs.sarif-file }}
+  report-file:
+    description: "audit: the path of the Markdown report"
+    value: ${{ steps.audit.outputs.report-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check inputs
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        UPLOAD_SARIF: ${{ inputs.upload-sarif }}
+      run: |
+        set -euo pipefail
+        case "$MODE" in
+          lint | audit) ;;
+          *) echo "::error title=samesight::mode must be lint or audit, not \"$MODE\""; exit 1 ;;
+        esac
+        case "$UPLOAD_SARIF" in
+          true | false) ;;
+          *) echo "::error title=samesight::upload-sarif must be true or false, not \"$UPLOAD_SARIF\""; exit 1 ;;
+        esac
+
+    - if: inputs.version != 'installed'
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Install samesight
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        VERSION: ${{ inputs.version }}
+        SUPABASE_VERSION: ${{ inputs.supabase-version }}
+      run: |
+        set -euo pipefail
+        pkgs=()
+        if [ "$VERSION" != installed ]; then
+          if [ "$MODE" = lint ]; then pkgs+=("samesight@$VERSION"); else pkgs+=("@samesight/verify@$VERSION"); fi
+        else
+          bin=samesight
+          [ "$MODE" = lint ] || bin=samesight-verify
+          command -v "$bin" > /dev/null || { echo "::error title=samesight::version: installed, but $bin is not on the PATH"; exit 1; }
+        fi
+        if [ "$MODE" = audit ] && { [ "$VERSION" != installed ] || ! command -v supabase > /dev/null; }; then
+          pkgs+=("supabase@$SUPABASE_VERSION")
+        fi
+        if [ "${#pkgs[@]}" -gt 0 ]; then
+          prefix="$RUNNER_TEMP/samesight"
+          mkdir -p "$prefix"
+          # Saved to the prefix's own package.json: a --no-save install would remove what an
+          # earlier use of this action in the job installed there.
+          npm install --save-exact --no-audit --no-fund --prefix "$prefix" "${pkgs[@]}"
+          echo "$prefix/node_modules/.bin" >> "$GITHUB_PATH"
+        fi
+
+    - name: samesight lint
+      id: lint
+      if: inputs.mode == 'lint'
+      shell: bash
+      env:
+        SYNC_CONFIG: ${{ inputs.sync-config }}
+        PROJECT: ${{ inputs.project }}
+        ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        read -r -a extra <<< "$ARGS"
+        migrations=()
+        if [ -d "$PROJECT/supabase/migrations" ]; then migrations=(--migrations "$PROJECT/supabase/migrations"); fi
+        cmd=(samesight lint "$SYNC_CONFIG" "${migrations[@]}" "${extra[@]}")
+        out=$(mktemp -d "$RUNNER_TEMP/samesight-lint-XXXXXX")
+        # Annotations on the pull request; the text run below decides the result.
+        "${cmd[@]}" --format github 2> /dev/null || true
+        sarif="$out/samesight.sarif"
+        sarif_code=0
+        "${cmd[@]}" --format sarif > "$sarif" 2> "$out/sarif.err" || sarif_code=$?
+        if [ "$sarif_code" -le 1 ]; then
+          echo "sarif-file=$sarif" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning title=samesight::samesight lint --format sarif exited $sarif_code, so no SARIF file was written: $(tr '\n' ' ' < "$out/sarif.err")"
+        fi
+        code=0
+        "${cmd[@]}" || code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+    - if: always() && inputs.mode == 'lint' && inputs.upload-sarif == 'true' && steps.lint.outputs.sarif-file != ''
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.lint.outputs.sarif-file }}
+        category: ${{ inputs.sarif-category }}
+
+    - name: Start Supabase
+      id: start
+      if: inputs.mode == 'audit'
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        EXCLUDE: ${{ inputs.exclude }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        config="$PROJECT/supabase/config.toml"
+        [ -f "$config" ] || { echo "::error title=samesight::no $config; set project to the directory that holds supabase/"; exit 1; }
+        if supabase --workdir "$PROJECT" status > /dev/null 2>&1; then
+          # Started by an earlier step: used as it is, and left running.
+          echo "The project's Supabase stack is already running; the audit uses it."
+          echo "started=false" >> "$GITHUB_OUTPUT"
+        else
+          # Auth's signing key, when config.toml names a key file that is missing or empty.
+          keys=$(sed -n 's/^[[:space:]]*signing_keys_path[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$config" | head -n 1)
+          if [ -n "$keys" ]; then
+            case "$keys" in /*) ;; *) keys="$PROJECT/supabase/$keys" ;; esac
+            if [ ! -s "$keys" ] || [ "$(tr -d '[:space:]' < "$keys")" = "[]" ]; then
+              mkdir -p "$(dirname "$keys")"
+              echo "[]" > "$keys"
+              # Not printed into the log.
+              supabase --workdir "$PROJECT" gen signing-key --algorithm ES256 --append > /dev/null
+            fi
+          fi
+          # Set first, so a stack that half starts is still stopped.
+          echo "started=true" >> "$GITHUB_OUTPUT"
+          supabase --workdir "$PROJECT" start -x "$EXCLUDE"
+        fi
+        # The CLI can return while Postgres still restarts.
+        id=$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$config" | head -n 1)
+        if [ -n "$id" ]; then
+          for _ in $(seq 1 60); do
+            docker exec "supabase_db_$id" pg_isready -U postgres -q && break
+            sleep 1
+          done
+          docker exec "supabase_db_$id" pg_isready -U postgres -q || { echo "::error title=samesight::Postgres is not ready after 60s"; exit 1; }
+        fi
+
+    - name: samesight-verify audit
+      id: audit
+      if: inputs.mode == 'audit'
+      shell: bash
+      env:
+        SYNC_CONFIG: ${{ inputs.sync-config }}
+        PROJECT: ${{ inputs.project }}
+        ARGS: ${{ inputs.args }}
+        NO_COLOR: "1"
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        read -r -a extra <<< "$ARGS"
+        out=$(mktemp -d "$RUNNER_TEMP/samesight-audit-XXXXXX")
+        report="$out/samesight-audit.md"
+        code=0
+        samesight-verify audit --project "$PROJECT" --sync-config "$SYNC_CONFIG" --report "$report" "${extra[@]}" || code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ -s "$report" ]; then
+          echo "report-file=$report" >> "$GITHUB_OUTPUT"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Stop Supabase
+      if: always() && inputs.mode == 'audit' && steps.start.outputs.started == 'true'
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        supabase --workdir "$PROJECT" stop --no-backup
+
+    - name: Result
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        CODE: ${{ format('{0}{1}', steps.lint.outputs.exit-code, steps.audit.outputs.exit-code) }}
+      run: |
+        set -euo pipefail
+        case "$CODE" in
+          0) ;;
+          1) echo "::error title=samesight::samesight $MODE found problems (exit 1); see the log above"; exit 1 ;;
+          *) echo "::error title=samesight::samesight $MODE could not run (exit ${CODE:-none}); see the log above"; exit 1 ;;
+        esac
