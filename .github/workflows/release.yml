@@ -7,8 +7,9 @@
 #
 # Publishes with npm trusted publishing: no npm token is stored. Each of the four packages
 # names this repository, this workflow (release.yml) and the "npm" environment as its
-# trusted publisher on npmjs.com, and npm trades this run's OIDC token for a one-time
-# publish credential.
+# trusted publisher on npmjs.com, and npm trades this run's OIDC token for a short-lived
+# publish credential. Only the publish job can ask for that token: the build job, which
+# runs the tests and the dependencies' code, has no id-token permission.
 name: Release
 
 on:
@@ -19,12 +20,8 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    environment: npm
-    permissions:
-      contents: write # the GitHub release
-      id-token: write # npm trusted publishing and provenance
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,10 +29,11 @@ jobs:
       # Only commits already on main are released.
       - run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: pnpm/action-setup@v6
+      # No dependency cache in a release build: what is published is built from a clean install.
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+          package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: node scripts/version.mjs --check "$GITHUB_REF_NAME"
       - run: pnpm typecheck
@@ -43,29 +41,62 @@ jobs:
       - run: pnpm test
       - run: pnpm --filter fieldbook policy:check
       - run: pnpm smoke
+      # pnpm packs each package as it publishes one: prepack builds it, publishConfig
+      # applies, and workspace:^ ranges become the released version.
+      - name: Pack
+        run: |
+          for p in samesight supabase verify next; do
+            (cd "packages/$p" && pnpm pack --pack-destination "$RUNNER_TEMP/packs/$p")
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packs
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write # the GitHub release
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packs
       # Trusted publishing is npm's own: npm 11.5.1 or newer, on Node 22.14 or newer.
-      - run: npm install --global "npm@^11.5.1" && npm --version
-      # pnpm packs each package (prepack builds it, and workspace:^ ranges become the
-      # released version); npm publishes the tarball, with provenance.
+      # The npm that comes with Node is used, not one downloaded here.
+      - name: Check npm
+        run: |
+          v=$(npm --version)
+          node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); process.exit(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))) ? 0 : 1)' "$v" \
+            || { echo "::error title=release::npm $v cannot do trusted publishing; it needs 11.5.1 or newer"; exit 1; }
+          echo "npm $v"
+      # In dependency order, so a package never goes out before what it depends on.
       # A version with a prerelease part (0.2.0-rc.1) goes to the "next" tag, not "latest".
       - name: Publish
         run: |
           tag=latest
           case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
-          for dir in packages/*/; do
-            name=$(node -p "require('./${dir}package.json').name")
-            version=$(node -p "require('./${dir}package.json').version")
+          for p in samesight supabase verify next; do
+            tgz=$(ls "$RUNNER_TEMP/packs/$p"/*.tgz)
+            id=$(tar -xOzf "$tgz" package/package.json | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { const m = JSON.parse(s); console.log(`${m.name}@${m.version}`); })')
             # A rerun after a partial publish skips what npm already has.
-            if npm view "$name@$version" version > /dev/null 2>&1; then
-              echo "$name@$version is already on npm"
+            if npm view "$id" version > /dev/null; then
+              echo "$id is already on npm"
               continue
             fi
-            out="$RUNNER_TEMP/packs/$(basename "$dir")"
-            mkdir -p "$out"
-            (cd "$dir" && pnpm pack --pack-destination "$out" > /dev/null)
-            npm publish "$out"/*.tgz --access public --tag "$tag" --provenance
+            npm publish "$tgz" --access public --tag "$tag" --provenance
           done
       - name: GitHub release
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/CHANGELOG.md)." $([[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease)
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --notes "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/CHANGELOG.md)." $([[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease)
         env:
           GH_TOKEN: ${{ github.token }}
