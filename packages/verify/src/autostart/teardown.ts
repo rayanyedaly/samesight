@@ -112,7 +112,7 @@ export interface Signals {
 /**
  * Runs the teardown on Ctrl+C, SIGTERM or SIGHUP (and Ctrl+Break, SIGBREAK, on Windows),
  * then exits as a killed process would (130, 143, 129; 149); and when the output fails (a closed terminal, or a reader that left:
- * | head, | tee), exits 141 as on SIGPIPE (129 when SIGHUP comes first), or 1 for any
+ * | head, | tee), exits 141 as on SIGPIPE (129 when SIGHUP comes first), or 2 for any
  * other output error. During it, a different signal does not cut it short; the same one
  * again a second or more later (Ctrl+C again, a second SIGTERM) exits at once, and so
  * does a teardown still running `graceMs` after the first. A teardown begun by the run
@@ -176,7 +176,7 @@ export function onSignals(
     ...(proc.platform === "win32" ? [["SIGBREAK", () => end("SIGBREAK", 149)] as [Signal, () => void]] : []),
   ];
   // Unhandled, a failed write would end the process at once, before any teardown.
-  const broken = (e: NodeJS.ErrnoException) => end("output closed", e.code === "EPIPE" || e.code === "EIO" ? 141 : 1);
+  const broken = (e: NodeJS.ErrnoException) => end("output closed", e.code === "EPIPE" || e.code === "EIO" ? 141 : 2);
   for (const [signal, fn] of handlers) proc.on(signal, fn);
   proc.stdout.on("error", broken);
   proc.stderr.on("error", broken);

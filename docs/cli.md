@@ -15,6 +15,8 @@ From the `samesight` package.
 | `samesight explain` | no | Prints who can read and write what, in plain words, from the saved snapshot. |
 | `samesight lint [file ...]` | no | Checks PowerSync sync configs for known leak patterns, reading files only. Needs no policy. |
 
+Every command exits 0 when it passes, 1 when it found something (a stale file, a failing doctor check, a lint error, a policy that does not compile), and 2 when it could not run: no command or an unknown one, a flag it cannot read, a policy, snapshot or file it cannot find, an existing policy `init` would overwrite, or a database it cannot reach.
+
 | Option | |
 | --- | --- |
 | `--policy <file>` | The policy file. |
@@ -46,7 +48,7 @@ Writes the migration, the sync and service config, the client schema, the policy
 
 ### `check`
 
-Exit code 1 and a list of stale files when anything differs. It needs no database, so it runs anywhere your type check runs.
+Exit code 1 and a list of stale files when anything differs (2 when there is no schema snapshot to check against). It needs no database, so it runs anywhere your type check runs.
 
 ### `doctor`
 
@@ -131,9 +133,11 @@ From `@samesight/verify`. See [the verifier](verify.md) for what each step does.
 samesight-verify [--policy <file>] [--powersync <url>] [--compose <file>]
                  [--static] [--runs <n>] [--seed <n>] [--time-limit <s>]
                  [--mutate] [--mutate-datasets <n>] [--restart <command>]
+                 [--json] [--report <file>]
 samesight-verify audit [--sync-config <file>] [--project <dir>] [--publication <name>]
                        [--powersync <url> | --keep-powersync] [--compose <file>]
                        [--static] [--runs <n>] [--seed <n>] [--time-limit <s>]
+                       [--json] [--report <file>]
 ```
 
 In audit, a `--publication` other than `powersync` needs `--powersync` or `--static` (the PowerSync audit starts always replicates `powersync`), as does `--compose`, and `--keep-powersync` goes with neither.

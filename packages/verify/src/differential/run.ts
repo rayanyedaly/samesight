@@ -7,14 +7,18 @@
 
 import fc from "fast-check";
 import type pg from "pg";
-import { type IR, ident } from "samesight/compiler";
+import { type IR, ident, type Stream } from "samesight/compiler";
 import { leftForNext, type Mode } from "../autostart/teardown.ts";
 import { connectLocal, rows } from "../db.ts";
-import type { Finding } from "../report.ts";
+import { type Finding, formatRows, type RowReport, rowSentence } from "../report.ts";
+import { MAX_SEED } from "../replay.ts";
 import type { Stack } from "../stack.ts";
 import { show } from "../audit/assign.ts";
 import { claimKey } from "../audit/claims.ts";
 import { type Coverage, measure, pending } from "../audit/coverage.ts";
+import { sendingQueries } from "./attribute.ts";
+import { likelyFixes } from "./fix.ts";
+import { policyVerdicts } from "./policies.ts";
 import { compare, type Problem } from "./compare.ts";
 import { syncOnce } from "./device.ts";
 import { insertOrder, policyTables, readModel, type ScopeTable, type TableModel } from "./model.ts";
@@ -229,11 +233,10 @@ export async function setUp(client: pg.Client, stack: Stack, ir: IR): Promise<Se
 
 /** How a differential finding says a dataset could not be run (the service failed, say), alone or after a counterexample. */
 const RUN_FAILED = "the run failed: ";
-const THEN_FAILED = "(then a run failed: ";
 
 /** Whether the differential broke down rather than found something: its service's logs are then worth showing. */
 export function brokeDown(findings: Finding[]): boolean {
-  return findings.some((f) => f.status === "fail" && (f.detail.startsWith(RUN_FAILED) || f.detail.includes(THEN_FAILED)));
+  return findings.some((f) => f.status === "fail" && f.incomplete === true);
 }
 
 /** Users a run without a policy signs up. */
@@ -633,8 +636,8 @@ export interface DifferentialResult {
   findings: Finding[];
   /** Datasets tried before the first failure; shrinking runs are not counted. */
   runs: number;
-  /** The shrunk failing world's problems, in plain words. */
-  counterexample?: string[];
+  /** The shrunk failing world's problems, as row reports. */
+  counterexample?: RowReport[];
   /** The time limit ended the run before every dataset. */
   stopped?: boolean;
 }
@@ -706,6 +709,10 @@ export interface DifferentialOptions {
   timeLimitMs: number;
   /** Audit only: counts which rules each passing dataset exercised, until the first failure. */
   coverage?: Coverage;
+  /** The sync config's streams, to name the query that sent a row of the counterexample and suggest a fix. */
+  sync?: { kind: "streams" | "bucket definitions"; streams: Stream[] };
+  /** The command that replays the run with a seed, set on a counterexample's finding. */
+  replay?: (seed: number) => string;
 }
 
 export async function differential(s: Run, options: DifferentialOptions): Promise<DifferentialResult> {
@@ -717,12 +724,12 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const visible = new Map<string, number>();
   const received = new Map<string, number>();
   // Gaps that are only warnings (audit mode): one example per kind of gap, ids aside.
-  const gaps = new Map<string, string>();
+  const gaps = new Map<string, RowReport>();
   const failing = (all: UserProblems[]): UserProblems[] => {
     const split = splitProblems(all, s.gaps);
-    for (const line of describeFailures(s, split.narrower)) {
-      const key = line.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, "…");
-      if (!gaps.has(key)) gaps.set(key, line);
+    for (const r of reportRows(s, split.narrower)) {
+      const key = r.summary.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, "…");
+      if (!gaps.has(key)) gaps.set(key, r);
     }
     return split.failing;
   };
@@ -735,11 +742,16 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       {
         status: "warn",
         check,
-        detail: `RLS lets users read rows no stream sends them (sync is narrower than RLS: fine if intended, but RLS alone guards the REST API), for example:\n${shown.map((l) => `    ${l}`).join("\n")}${more}`,
+        detail: `RLS lets users read rows no stream sends them (sync is narrower than RLS: fine if intended, but RLS alone guards the REST API), for example:\n${formatRows(shown)}${more}`,
+        rows: shown,
       },
     ];
   };
-  const fail = (detail: string, runs: number) => ({ runs, findings: withGaps([{ status: "fail" as const, check, detail }]) });
+  // A run that could not finish (a service broke down) is incomplete: it found nothing, and checked nothing either.
+  const fail = (detail: string, runs: number, incomplete = false) => ({
+    runs,
+    findings: withGaps([{ status: "fail" as const, check, detail, ...(incomplete ? { incomplete } : {}) }]),
+  });
 
   // Coverage counts datasets up to the first failure: shrinking replays variations of that one.
   let failedOnce = false;
@@ -761,20 +773,31 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   // reads (its rows all landed in the tenant nobody in the run belongs to). More datasets
   // are tried, within the time limit, until every synced table was compared.
   const started = Date.now();
-  let x = await explore(worldArbitrary(s.tables), evaluate, options);
+  // A seed of the run's own when none is given: fast-check's may be negative, which --seed does not take, so the replay line could not run.
+  const seed = options.seed ?? Math.floor(Math.random() * (MAX_SEED + 1));
+  let x = await explore(worldArbitrary(s.tables), evaluate, { ...options, seed });
   let datasets = x.datasets;
   for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {
     const left = options.timeLimitMs - (Date.now() - started);
     if (left <= 0) break;
-    x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, ...(options.seed !== undefined ? { seed: options.seed + pass } : {}) });
+    x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, seed: (seed + pass) % (MAX_SEED + 1) });
     datasets += x.datasets;
   }
   x = { ...x, datasets };
-  const crashed = x.crash === undefined ? "" : ` ${THEN_FAILED}${String(x.crash)})`;
+  // A run that failed after the counterexample was found: said on its own, as incomplete.
+  const crashed: Finding[] = x.crash === undefined ? [] : [{ status: "fail", check, detail: `then ${RUN_FAILED}${String(x.crash)}`, incomplete: true }];
   if (x.lastFailing) {
     const world = x.lastFailing;
-    const counterexample = describeFailures(s, failing(await withWorld(s, world, () => compareAll(s))));
-    if (!counterexample.length) return fail(`a dataset failed (seed ${x.seed}) but passed when run again: devices may not have caught up${crashed}`, x.datasets);
+    // Put down to their queries and policies while the rows are still in the database.
+    const counterexample = await withWorld(s, world, async () => {
+      const rows = reportRows(s, failing(await compareAll(s)));
+      const claimsOf = (id: string) => s.sessions.get(id)?.claims;
+      if (options.sync) await sendingQueries(s.client, options.sync.streams, rows, claimsOf);
+      await policyVerdicts(s.client, rows, claimsOf);
+      if (options.sync) await likelyFixes(s.client, options.sync, rows, claimsOf);
+      return rows;
+    });
+    if (!counterexample.length) return fail(`a dataset failed (seed ${x.seed}) but passed when run again: devices may not have caught up${x.crash === undefined ? "" : ` (then ${RUN_FAILED}${String(x.crash)})`}`, x.datasets, true);
     return {
       runs: x.datasets,
       counterexample,
@@ -782,13 +805,16 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
         {
           status: "fail",
           check,
-          detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}${crashed}):\n${counterexample.map((l) => `    ${l}`).join("\n")}`,
+          detail: `devices and RLS disagree (seed ${x.seed}, shrunk ${x.numShrinks} times to ${countRows(world)} rows${x.stopped ? "; shrinking stopped at the time limit" : ""}):\n${formatRows(counterexample)}`,
+          rows: counterexample,
+          ...(options.replay ? { replay: options.replay(x.seed) } : {}),
         },
+        ...crashed,
       ]),
     };
   }
-  if (x.crash !== undefined) return { ...fail(`${RUN_FAILED}${String(x.crash)}`, x.datasets), stopped: x.stopped };
-  if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit" }] };
+  if (x.crash !== undefined) return { ...fail(`${RUN_FAILED}${String(x.crash)}`, x.datasets, true), stopped: x.stopped };
+  if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit", incomplete: true }] };
   const untested = s.tables
     .filter((t) => s.synced.includes(t.name))
     .flatMap((t) =>
@@ -843,20 +869,27 @@ function describeRow(s: Run, table: string, id: string, row: Record<string, unkn
   return `${table} ${id}${parts.length ? ` (${parts.join(", ")})` : ""}`;
 }
 
+/** Each problem as a row report: who, which row, which streams sent it. */
+export function reportRows(s: Run, failures: UserProblems[]): RowReport[] {
+  return failures.flatMap(({ user, problems }) =>
+    problems.map((p) => {
+      const r = {
+        kind: p.kind,
+        user: { label: user.label, id: user.id, role: user.role },
+        table: p.table,
+        id: p.id,
+        row: describeRow(s, p.table, p.id, p.row),
+        ...(p.columns ? { columns: p.columns } : {}),
+        sentBy: p.streams.map((stream) => ({ stream })),
+      };
+      return { ...r, summary: `${rowSentence(r, p.streams.length ? ` (stream ${p.streams.join(", ")})` : "")}.` };
+    }),
+  );
+}
+
+/** Each problem in a sentence: who, which row, which streams, which way. */
 export function describeFailures(s: Run, failures: UserProblems[]): string[] {
-  const out: string[] = [];
-  for (const { user, problems } of failures) {
-    for (const p of problems) {
-      const row = describeRow(s, p.table, p.id, p.row);
-      const via = p.streams.length ? ` (stream ${p.streams.join(", ")})` : "";
-      if (p.kind === "leak") out.push(`${user.label} received ${row}${via}; RLS returns no such row for this user.`);
-      else if (p.kind === "hidden") out.push(`${user.label} received ${row} with ${p.columns?.join(", ")}${via}, which the policy hides from ${user.role}.`);
-      else if (p.kind === "gap") out.push(`RLS lets ${user.label} read ${row}, but no stream sent it.`);
-      else if (p.kind === "unsent") out.push(`${user.label}'s copy of ${row} lacks ${p.columns?.join(", ")}, which RLS lets them read${via}.`);
-      else out.push(`${user.label}'s copy of ${row} differs from the database in ${p.columns?.join(", ")}${via}.`);
-    }
-  }
-  return out;
+  return reportRows(s, failures).map((r) => r.summary);
 }
 
 export async function tearDown(s: Run): Promise<void> {

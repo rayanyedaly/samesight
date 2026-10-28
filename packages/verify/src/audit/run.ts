@@ -33,6 +33,8 @@ export interface AuditOptions {
   runs: number;
   seed?: number;
   timeLimitMs: number;
+  /** The command that replays the run with a seed, for a counterexample's finding. */
+  replay?: (seed: number) => string;
   section: (title: string, findings: Finding[]) => void;
   log: (line: string) => void;
   /** The directory holding supabase/, to read its access token hook settings. */
@@ -166,7 +168,7 @@ export async function audit(client: pg.Client, given: Stack, o: AuditOptions): P
     // Claims users hold values of: what audit set, and what the hook added from their rows when tokens differ.
     const held = new Set([...assignment.paths.map((x) => x.key), ...hookKeysHeld(claims, tokens)]);
     const coverage = await coverageScope(client, scope.synced, config.streams, p.functions, config.kind, held);
-    const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
+    const result = await differential(s, { runs: o.runs, timeLimitMs: o.timeLimitMs, coverage, sync: { kind: config.kind, streams: config.streams }, ...(o.seed !== undefined ? { seed: o.seed } : {}), ...(o.replay ? { replay: o.replay } : {}) });
     section(`Differential (${s.fixed.users.length} users, ${result.runs} datasets)`, qualifyDifferential(result.findings, coverage));
     section(coverageTitle(coverage, result), coverageFindings(coverage, held, assignment.partial, new Set(claims.uses.filter((u) => u.cls === "hook").map((u) => u.key))));
     o.log("writing as each user");

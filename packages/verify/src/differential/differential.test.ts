@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compare, normalize } from "./compare.ts";
 import { type Flow, rowsFromOps, streamOfBucket, watchErrors } from "./device.ts";
-import { brokeDown, isRunRow } from "./run.ts";
+import { brokeDown, describeFailures, isRunRow, reportRows } from "./run.ts";
 import { type ColumnModel, insertOrder, parseCheck, sqlHints, type TableModel } from "./model.ts";
 import { rowKey } from "./rls.ts";
 import { columnArbitrary } from "./world.ts";
@@ -222,10 +222,13 @@ describe("watchErrors", () => {
 
 describe("brokeDown", () => {
   it("tells a run that could not finish its datasets from one that found something", () => {
-    const fail = (detail: string) => ({ status: "fail" as const, check: "differential", detail });
-    expect(brokeDown([fail("the run failed: Error: no complete sync from http://x: fetch failed")])).toBe(true);
-    expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows (then a run failed: Error: fetch failed)):\n    u0 received ...")])).toBe(true);
+    const fail = (detail: string, incomplete?: true) => ({ status: "fail" as const, check: "differential", detail, ...(incomplete ? { incomplete } : {}) });
+    expect(brokeDown([fail("the run failed: Error: no complete sync from http://x: fetch failed", true)])).toBe(true);
+    // A counterexample, then a run that failed: two findings, the second incomplete.
+    expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows):\n    u0 received ..."), fail("then the run failed: Error: fetch failed", true)])).toBe(true);
     expect(brokeDown([fail("devices and RLS disagree (seed 1, shrunk 2 times to 3 rows):\n    u0 received ...")])).toBe(false);
+    // Read from the flag, not the words.
+    expect(brokeDown([fail("the run failed: x")])).toBe(false);
     expect(brokeDown([{ status: "warn", check: "differential", detail: "the run failed: x" }])).toBe(false);
   });
 });
@@ -249,5 +252,34 @@ describe("isRunRow", () => {
   it("counts every row of a table whose key is no uuid, and of a table it does not know", () => {
     expect(run("tags", "anything")).toBe(true);
     expect(run("elsewhere", "0c0c0c0c-0000-4000-8000-000000000009")).toBe(true);
+  });
+});
+
+describe("reportRows", () => {
+  const s = {
+    model: [{ name: "lists", primaryKey: ["id"], unique: ["id"], columns: [column({ name: "id", type: "uuid" }), column({ name: "owner_id", type: "uuid" })], foreignKeys: [] }],
+    fixed: { prefix: "5a3e5a3e", tenants: [], users: [{ id: "id-0", label: "u0", role: null }, { id: "id-1", label: "u1 (app_metadata.role=editor)", role: null }] },
+  } as never;
+  const failures = [
+    {
+      user: { id: "id-1", label: "u1 (app_metadata.role=editor)", role: null, tenant: null, email: "" },
+      problems: [{ kind: "leak" as const, table: "lists", id: "5a3e5a3e-1", streams: ["user_data"], row: { id: "5a3e5a3e-1", owner_id: "id-0" } }],
+    },
+  ];
+
+  it("says who received which row, described by the users it holds, and which streams sent it", () => {
+    expect(reportRows(s, failures)).toEqual([
+      {
+        kind: "leak",
+        summary: "u1 (app_metadata.role=editor) received lists 5a3e5a3e-1 (owner_id u0) (stream user_data); RLS returns no such row for this user.",
+        user: { label: "u1 (app_metadata.role=editor)", id: "id-1", role: null },
+        table: "lists",
+        id: "5a3e5a3e-1",
+        row: "lists 5a3e5a3e-1 (owner_id u0)",
+        sentBy: [{ stream: "user_data" }],
+      },
+    ]);
+    // The sentence, as the mutation test and the gap examples say it.
+    expect(describeFailures(s, failures)).toEqual([reportRows(s, failures)[0]?.summary]);
   });
 });

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "samesight-verify --json report",
+  "description": "The one document samesight-verify --json writes to stdout, for exits 0, 1 and 2.",
+  "type": "object",
+  "required": ["$schema", "version", "tool", "toolVersion", "mode", "result", "exitCode", "durationMs", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string", "description": "Where this schema is published, for the version that wrote the document." },
+    "version": { "const": 1, "description": "The document's format version; a change that breaks readers raises it." },
+    "tool": { "const": "samesight-verify" },
+    "toolVersion": { "type": "string" },
+    "mode": { "enum": ["policy", "audit"], "description": "policy: samesight-verify; audit: samesight-verify audit." },
+    "result": { "enum": ["passed", "failed", "incomplete"], "description": "The exit code in a word: 0 passed, 1 failed, 2 incomplete." },
+    "exitCode": { "enum": [0, 1, 2], "description": "0 when nothing failed, 1 when a check found something, 2 when the run could not do its job." },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "seed": { "type": "integer", "minimum": 0, "maximum": 2147483644, "description": "The --seed the run was given." },
+    "replay": { "type": "string", "description": "The command that replays the differential's failure, when it failed." },
+    "sections": {
+      "type": "array",
+      "description": "The sections the run printed, in order, with their findings.",
+      "items": {
+        "type": "object",
+        "required": ["title", "findings"],
+        "additionalProperties": false,
+        "properties": {
+          "title": { "type": "string" },
+          "findings": { "type": "array", "items": { "$ref": "#/$defs/Finding" } }
+        }
+      }
+    },
+    "error": { "type": "string", "description": "Why the run could not run: a bad flag, a missing file, a database it could not reach." }
+  },
+  "$defs": {
+    "Finding": {
+      "type": "object",
+      "required": ["status", "check", "detail"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["ok", "warn", "fail"] },
+        "check": { "type": "string" },
+        "detail": { "type": "string", "description": "The finding as the text output says it, row reports included." },
+        "incomplete": { "type": "boolean", "description": "A fail that says the check could not run, not that it found something." },
+        "rows": { "type": "array", "items": { "$ref": "#/$defs/RowReport" } },
+        "replay": { "type": "string" }
+      }
+    },
+    "RowReport": {
+      "type": "object",
+      "description": "One row a user's device and RLS disagree on.",
+      "required": ["kind", "summary", "user", "table", "id", "row", "sentBy"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["leak", "hidden", "gap", "unsent", "differs"],
+          "description": "leak: the device has a row RLS refuses; hidden: a column the policy hides; gap: RLS lets them read a row no stream sent; unsent: a column missing from a sent row; differs: a copy unlike the database's."
+        },
+        "summary": { "type": "string" },
+        "user": {
+          "type": "object",
+          "required": ["label", "id"],
+          "additionalProperties": false,
+          "properties": {
+            "label": { "type": "string" },
+            "id": { "type": "string" },
+            "role": { "type": ["string", "null"] }
+          }
+        },
+        "table": { "type": "string" },
+        "id": { "type": "string" },
+        "row": { "type": "string", "description": "The row as the run describes it: its table, id, tenant and the users and values it holds." },
+        "columns": { "type": "array", "items": { "type": "string" } },
+        "sentBy": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["stream"],
+            "additionalProperties": false,
+            "properties": {
+              "stream": { "type": "string" },
+              "query": { "type": "string", "description": "The query's label in the config, such as queries[0]." },
+              "sql": { "type": "string" }
+            }
+          }
+        },
+        "policies": {
+          "type": "array",
+          "description": "For a leak or a gap: the user's RLS read policies on the table, each evaluated on the row.",
+          "items": {
+            "type": "object",
+            "required": ["name", "permissive", "verdict"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "permissive": { "type": "boolean" },
+              "verdict": { "enum": ["allows", "refuses"] }
+            }
+          }
+        },
+        "policiesNote": { "type": "string", "description": "Why the policies were not evaluated, or what they say together." },
+        "fix": {
+          "type": "object",
+          "description": "For a leak the narrow rule covers: what to add to which query, checked against the row.",
+          "required": ["query", "add", "why"],
+          "additionalProperties": false,
+          "properties": {
+            "query": { "type": "string" },
+            "add": { "type": "string", "description": "The clause to add, such as WHERE owner_id = auth.user_id()." },
+            "why": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

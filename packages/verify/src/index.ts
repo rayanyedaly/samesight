@@ -4,7 +4,7 @@
  * before 1.0.
  */
 
-export { failed, type Finding, formatFindings } from "./report.ts";
+export { exitCode, failed, type Finding, formatFindings, formatRow, type RowReport } from "./report.ts";
 export { checkClientSchema, readClientSchema } from "./static/client-schema.ts";
 export { checkManifest, type Manifest } from "./static/manifest.ts";
 export { parseStreams, type Stream } from "samesight/compiler";

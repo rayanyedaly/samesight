@@ -108,6 +108,22 @@ const samesight = (...a) => run("npx", ["--no-install", "samesight", ...a], { cw
 step("samesight --version", () => expectIn(samesight("--version"), version.samesight, "version"));
 step("samesight-verify --version", () => expectIn(run("npx", ["--no-install", "samesight-verify", "--version"], { cwd: cli }), version.verify, "version"));
 step("samesight-verify --help", () => expectIn(run("npx", ["--no-install", "samesight-verify", "--help"], { cwd: cli }), "samesight-verify audit", "help"));
+step("samesight-verify --json writes its report on exit 2", () => {
+  try {
+    run("npx", ["--no-install", "samesight-verify", "audit", "--json", "--sync-config", "nowhere.yaml"], { cwd: cli });
+    throw new Error("audit passed with no sync config");
+  } catch (e) {
+    if (e.status !== 2) throw e;
+    const doc = JSON.parse(e.stdout);
+    if (doc.exitCode !== 2 || !/no sync config/.test(doc.error) || !doc.$schema.includes(`@samesight/verify@${version.verify}/schema/report.schema.json`)) {
+      throw new Error(`--json: ${e.stdout}`);
+    }
+  }
+});
+step("the report schema is exported", () => {
+  const code = 'import s from "@samesight/verify/schema/report.schema.json" with { type: "json" }; console.log(Object.keys(s.$defs).join(" "));';
+  expectIn(run("node", ["--input-type=module", "-e", code], { cwd: cli }), "Finding RowReport", "schema export");
+});
 
 // Fieldbook's policy and generated files, as a project of its own.
 for (const p of ["samesight.policy.ts", "supabase/types.ts", "powersync", "samesight", "src/lib/powersync/schema.ts", "src/lib/policy-types.ts"]) {
