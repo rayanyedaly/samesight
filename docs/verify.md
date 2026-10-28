@@ -181,6 +181,8 @@ The verifier is built to run in CI next to the stack. Fieldbook's job ([ci.yml](
 
 To keep the findings as data, add `--json > verify.json` and upload the file as an artifact; the log still shows the text, and the exit code still fails the step.
 
+For audit mode on GitHub, the [GitHub Action](ci.md) starts the Supabase services audit needs, runs the audit, adds the Markdown report to the job summary and stops Supabase.
+
 ## Using the checks in your own tests
 
 The offline checks are exported for use in a test runner:

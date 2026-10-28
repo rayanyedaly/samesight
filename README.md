@@ -95,7 +95,7 @@ npx supabase start
 npx @samesight/verify audit --sync-config powersync/sync-config.yaml
 ```
 
-See [auditing an existing project](docs/verify.md#audit-mode).
+See [auditing an existing project](docs/verify.md#audit-mode). To run both on every pull request, use the [GitHub Action](docs/ci.md).
 
 ## Packages
 
@@ -114,6 +114,7 @@ See [auditing an existing project](docs/verify.md#audit-mode).
 - [The policy language](docs/policy.md)
 - [The CLIs](docs/cli.md)
 - [The verifier and audit mode](docs/verify.md)
+- [CI and the GitHub Action](docs/ci.md): lint and audit on pull requests
 - [Fieldbook](examples/fieldbook), the example app: multi-tenant inspections with three roles, offline writes and append-only records
 - [Quickstart](examples/quickstart): what the getting-started guide produces, verified in CI
 - [Audit roles](examples/audit-roles): hand-written RLS and sync streams reading a role and an org from `app_metadata`, audited in CI
