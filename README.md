@@ -147,6 +147,7 @@ The docs are also a website, with search: [rayanyedaly.github.io/samesight](http
 - [Getting started](docs/getting-started.md)
 - [The policy language](docs/policy.md)
 - [The CLIs](docs/cli.md)
+- [Lint rules](docs/rules/index.md): what each rule catches, with an example and the fix
 - [The verifier and audit mode](docs/verify.md)
 - [How sync configs leak](docs/how-sync-configs-leak.md): the patterns lint and audit catch
 - [CI and the GitHub Action](docs/ci.md): lint and audit on pull requests

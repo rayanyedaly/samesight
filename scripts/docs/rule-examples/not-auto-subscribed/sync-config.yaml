@@ -1,0 +1,6 @@
+config:
+  edition: 3
+
+streams:
+  notebook_notes:
+    query: SELECT * FROM notes WHERE notebook_id = subscription.parameter('notebook_id') AND owner_id = auth.user_id()

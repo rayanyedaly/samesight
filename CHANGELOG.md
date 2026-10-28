@@ -2,6 +2,12 @@
 
 The four npm packages (`samesight`, `@samesight/verify`, `@samesight/supabase`, `@samesight/next`) share one version, and the GitHub Action at the repository root is released under the same tag (`v0.1.0`). Before 1.0, a minor version may change the policy language or the generated output; each such change is listed here with what to do.
 
+## Unreleased
+
+### samesight
+
+- Lint's SARIF help links (each rule's `helpUri` in `--format sarif`) now open the rule's page on the docs site, `https://rayanyedaly.github.io/samesight/rules/<id>`, with an example, what lint prints on it, the fix and what audit does with it. The rule headings in `docs/cli.md` that 0.1.0 links to stay.
+
 ## 0.1.0 (2026-10-28)
 
 The first published release. Each npm package carries the MIT license (`LICENSE`).
