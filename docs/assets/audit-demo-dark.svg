@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="894" height="792" viewBox="0 0 894 792" role="img" aria-label="Terminal output of npx samesight audit --project upstream --sync-config upstream/sync-config.planted.yaml --runs 3 --time-limit 60 --seed 1842: audit reports devices holding rows RLS refuses their users. FAILED: 1 failing, 3 warnings (100s)">
+<svg xmlns="http://www.w3.org/2000/svg" width="894" height="792" viewBox="0 0 894 792" role="img" aria-label="Terminal output of npx samesight audit --project upstream --sync-config upstream/sync-config.planted.yaml --runs 3 --time-limit 60 --seed 1842: audit reports devices holding rows RLS refuses their users. FAILED: 1 failing, 3 warnings (90s)">
 <title>samesight audit catching a planted sync config leak (dark)</title>
 <desc>$ npx samesight audit --project upstream --sync-config upstream/sync-config.planted.yaml --runs 3 --time-limit 60 --seed 1842
 
@@ -22,8 +22,8 @@ Claims
 ok    claims: no rule reads a token claim other than the user id
 
 Differential (4 users, 1 datasets)
-FAIL  differential: devices and RLS disagree (seed 1842, shrunk 5 times to 3 rows; shrinking stopped at the time limit):
-    leak: u1 received lists 5a3e5a3e-e925… (owner_id u0); RLS returns no such row for this user
+FAIL  differential: devices and RLS disagree (seed 1842, shrunk 6 times to 3 rows; shrinking stopped at the time limit):
+    leak: u1 received lists 5a3e5a3e-c272… (owner_id u0); RLS returns no such row for this user
       sent by    stream user_data, queries[0]
                  SELECT * FROM lists
       refused by policy &quot;owned lists&quot; on lists
@@ -34,7 +34,7 @@ FAIL  differential: devices and RLS disagree (seed 1842, shrunk 5 times to 3 row
 
 (Coverage and Write path sections left out of this capture)
 
-FAILED: 1 failing, 3 warnings (100s)</desc>
+FAILED: 1 failing, 3 warnings (90s)</desc>
 <style>
 text{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono','DejaVu Sans Mono',monospace;font-size:13px;fill:#e6edf3;white-space:pre}
 .b{font-weight:bold}.dim{fill:#9198a1}.red{fill:#ff7b72}.green{fill:#56d364}.yellow{fill:#e3b341}.accent{fill:#79c0ff}
@@ -63,9 +63,9 @@ text{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberatio
 <text x="20" y="425" xml:space="preserve"><tspan class="b">Claims</tspan></text>
 <text x="20" y="444" xml:space="preserve"><tspan class="green">ok</tspan>    claims: no rule reads a token claim other than the user id</text>
 <text x="20" y="482" xml:space="preserve"><tspan class="b">Differential (4 users, 1 datasets)</tspan></text>
-<text x="20" y="501" xml:space="preserve"><tspan class="red">FAIL</tspan>  differential: devices and RLS disagree (seed 1842, shrunk 5 times to 3 rows; shrinking stopped at the</text>
+<text x="20" y="501" xml:space="preserve"><tspan class="red">FAIL</tspan>  differential: devices and RLS disagree (seed 1842, shrunk 6 times to 3 rows; shrinking stopped at the</text>
 <text x="20" y="520" xml:space="preserve">      time limit):</text>
-<text x="20" y="539" xml:space="preserve">    <tspan class="red">leak</tspan>: u1 received lists 5a3e5a3e-e925… (owner_id u0); RLS returns no such row for this user</text>
+<text x="20" y="539" xml:space="preserve">    <tspan class="red">leak</tspan>: u1 received lists 5a3e5a3e-c272… (owner_id u0); RLS returns no such row for this user</text>
 <text x="20" y="558" xml:space="preserve">      <tspan class="dim">sent by</tspan>    stream user_data, queries[0]</text>
 <text x="20" y="577" xml:space="preserve">                 SELECT * FROM lists</text>
 <text x="20" y="596" xml:space="preserve">      <tspan class="dim">refused by</tspan> policy &quot;owned lists&quot; on lists</text>
@@ -75,5 +75,5 @@ text{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberatio
 <text x="20" y="672" xml:space="preserve">      <tspan class="dim">replay</tspan>     samesight-verify audit --project upstream --sync-config upstream/sync-config.planted.yaml \</text>
 <text x="20" y="691" xml:space="preserve">                 --runs 3 --time-limit 60 --seed 1842</text>
 <text x="20" y="729" xml:space="preserve"><tspan class="dim">(Coverage and Write path sections left out of this capture)</tspan></text>
-<text x="20" y="767" xml:space="preserve"><tspan class="red b">FAILED: 1 failing</tspan>, 3 warnings (100s)</text>
+<text x="20" y="767" xml:space="preserve"><tspan class="red b">FAILED: 1 failing</tspan>, 3 warnings (90s)</text>
 </svg>

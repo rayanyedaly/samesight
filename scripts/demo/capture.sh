@@ -14,9 +14,10 @@
 #
 #   bash scripts/demo/capture.sh --trim <file>   trims a saved NO_COLOR run instead of running one
 #
-# The first line shows the command as a user runs it, `npx samesight audit`, with the
-# flags of the run; the run itself is `samesight-verify audit`, which it forwards to, so the
-# replay line it prints names samesight-verify. Trimming, and nothing else:
+# It runs the built `samesight audit`, which forwards to the demo's @samesight/verify; the
+# first line shows it as a user runs it, `npx samesight audit`, with the flags of the run.
+# The replay line is printed by samesight-verify, so it names samesight-verify. Trimming,
+# and nothing else:
 #
 #   - progress lines ("  19s  starting PowerSync ...") are dropped;
 #   - run row ids (5a3e5a3e-xxxx-xxxx-xxxx-xxxxxxxxxxxx) are shortened to 5a3e5a3e-xxxx…;
@@ -94,7 +95,7 @@ err=$(mktemp)
 trap 'rm -f "$raw" "$err"' EXIT
 # Plain text, whatever FORCE_COLOR the shell sets. Docker's pull progress goes to stderr.
 set +e
-NO_COLOR=1 pnpm exec samesight-verify audit "${flags[@]}" >"$raw" 2>"$err"
+NO_COLOR=1 node "$root/packages/samesight/dist/cli.js" audit "${flags[@]}" >"$raw" 2>"$err"
 code=$?
 set -e
 if [ "$code" -ne 1 ] || ! grep -qE "^ *leak: u[0-9]+ .*received lists " "$raw"; then
