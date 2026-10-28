@@ -42,6 +42,8 @@ jobs:
       # The docs show what the built CLI prints on the planted corpus configs.
       - run: pnpm build:packages
       - run: node scripts/docs/leaks.mjs --check
+      # The terminal capture's SVGs are what scripts/demo/render.mjs makes of its transcript.
+      - run: node scripts/demo/render.mjs --check
 
   package:
     name: packed packages (${{ matrix.os }})
