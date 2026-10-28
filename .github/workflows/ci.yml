@@ -41,7 +41,8 @@ jobs:
       - run: pnpm --filter quickstart policy:check
       # The leak guide's blocks match the built tools: lint's output on the planted corpus
       # configs, what audit prints before it reads the database (verify's checkSyncConfig,
-      # which audit runs), and the excerpt of the recorded audit run in docs/assets.
+      # which audit runs), and the excerpt of the recorded audit run in docs/assets. Each
+      # lint rule's page shows its example and lint's real output on it.
       - run: pnpm build:packages
       - run: node scripts/docs/leaks.mjs --check
       # The terminal capture's SVGs are what scripts/demo/render.mjs makes of its transcript.
