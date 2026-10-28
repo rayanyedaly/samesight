@@ -72,6 +72,14 @@ describe("findSupabase", () => {
     expect(await findSupabase(docker([...copy, ...stack("todo", dir)]), dir)).toMatchObject({ db: "supabase_db_todo", network: "supabase_network_todo" });
   });
 
+  it("says where to add a missing project_id", async () => {
+    const dir = project("todo");
+    writeFileSync(join(dir, "supabase", "config.toml"), "[api]\nport = 54321\n");
+    await expect(findSupabase(docker(stack("todo", dir)), dir)).rejects.toThrow(
+      `${join(dir, "supabase", "config.toml")} has no project_id; add project_id = "..." at the top of supabase/config.toml (supabase init writes it)`,
+    );
+  });
+
   it("falls back to the project_id label when no container names this directory", async () => {
     const dir = project("todo");
     expect(await findSupabase(docker(stack("todo", "/moved/since")), dir)).toMatchObject({ db: "supabase_db_todo" });

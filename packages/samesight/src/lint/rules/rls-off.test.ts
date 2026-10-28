@@ -55,18 +55,18 @@ describe("samesight lint with migrations", () => {
     const found = run(dir);
     expect([found.status, found.stdout]).toEqual([0, expect.stringMatching(/sync-config.yaml:8 {2}warning {2}Notes is synced/)]);
     const missing = run(dir, "--migrations", "elsewhere");
-    expect([missing.status, missing.stderr]).toEqual([2, expect.stringMatching(/No migrations directory at elsewhere/)]);
+    expect([missing.status, missing.stderr]).toEqual([2, expect.stringMatching(/^samesight: no migrations directory at elsewhere; check the path given to --migrations$/m)]);
     mkdirSync(join(dir, "supabase", "migrations", "broken.sql"));
     const broken = run(dir);
-    expect([broken.status, broken.stderr]).toEqual([2, expect.stringMatching(/Cannot read the migrations in supabase\/migrations: EISDIR/)]);
-    // The default path, not a flag: no word about --migrations.
+    expect([broken.status, broken.stderr]).toEqual([2, expect.stringMatching(/^samesight: cannot read the migrations in supabase\/migrations: EISDIR.*; fix it, or pass --migrations with another directory$/m)]);
+    // The default path, not a flag: --migrations is offered, not blamed.
     const plain = tempDir();
     writeFileSync(join(plain, "sync-config.yaml"), config);
     mkdirSync(join(plain, "supabase"));
     writeFileSync(join(plain, "supabase", "migrations"), "");
     const notDir = run(plain);
-    expect([notDir.status, notDir.stderr]).toEqual([2, expect.stringMatching(/supabase\/migrations is not a directory\.$/m)]);
+    expect([notDir.status, notDir.stderr]).toEqual([2, expect.stringMatching(/^samesight: supabase\/migrations is not a directory; make it the directory of .sql migrations, or pass --migrations <dir>$/m)]);
     const file = run(dir, "--migrations", "supabase/migrations/1_init.sql");
-    expect([file.status, file.stderr]).toEqual([2, expect.stringMatching(/1_init.sql is not a directory; --migrations takes the directory/)]);
+    expect([file.status, file.stderr]).toEqual([2, expect.stringMatching(/^samesight: supabase\/migrations\/1_init.sql is not a directory; --migrations takes the directory/m)]);
   });
 });

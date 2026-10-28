@@ -7,6 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { isReady } from "./autostart/powersync.ts";
 import { assertLocalTargets } from "./guard.ts";
 
 export interface Stack {
@@ -35,9 +36,12 @@ export function parseEnv(text: string): Record<string, string> {
 }
 
 export function stackFromStatus(status: Record<string, string>, powersync: string, env: NodeJS.ProcessEnv = process.env): Stack {
+  // Every key it lacks, named at once.
+  const missing: string[] = [];
   const pick = (...names: string[]) => {
     for (const n of names) if (status[n]) return status[n];
-    throw new Error(`supabase status prints none of ${names.join(", ")}; is the stack running?`);
+    missing.push(names.join(" or "));
+    return "";
   };
   const stack: Stack = {
     db: pick("DB_URL"),
@@ -47,8 +51,21 @@ export function stackFromStatus(status: Record<string, string>, powersync: strin
     powersync,
     ...(status.JWT_SECRET ? { jwtSecret: status.JWT_SECRET } : {}),
   };
+  if (missing.length) {
+    throw new Error(`supabase status -o env prints no ${missing.join(", ")}; run supabase status to see what the CLI reports (is the stack running?)`);
+  }
   assertLocalTargets({ db: stack.db, http: { "Supabase API": stack.api, PowerSync: stack.powersync } }, env);
   return stack;
+}
+
+/**
+ * Policy mode's PowerSync service, asked once, on its readiness probe, before the run
+ * makes anything: a service that is not there would otherwise fail every dataset, late.
+ */
+export async function assertPowerSync(url: string, ready: (url: string) => Promise<boolean> = isReady): Promise<void> {
+  if (!(await ready(url.replace(/\/+$/, "")))) {
+    throw new Error(`PowerSync is not reachable at ${url}; start it (docker compose up powersync) or pass --powersync <url>`);
+  }
 }
 
 /**

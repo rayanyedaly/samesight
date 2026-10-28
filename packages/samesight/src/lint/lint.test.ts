@@ -102,7 +102,7 @@ describe("samesight lint", () => {
     const dir = tempDir();
     const none = run(dir);
     expect(none.status).toBe(2);
-    expect(none.stderr).toMatch(/No sync config found/);
+    expect(none.stderr).toMatch(/^samesight: no sync config found \(tried .*\); name one: samesight lint <file>$/m);
     writeFileSync(join(dir, "sync-config.yaml"), streams);
     const clean = run(dir);
     expect([clean.status, clean.stdout.trim()]).toEqual([0, "No problems found."]);
@@ -110,7 +110,14 @@ describe("samesight lint", () => {
     const bad = run(dir, "sync-config.yaml", "bad.yaml");
     expect(bad.status).toBe(2);
     expect(bad.stdout).toBe("");
-    expect(bad.stderr).toMatch(/bad.yaml: cannot be read as a sync config.*\n1 of 2 file\(s\) could not be read/);
+    expect(bad.stderr).toMatch(/^samesight: bad.yaml: cannot be read as a sync config: .*; fix the YAML, or name another file\n1 of 2 file\(s\) could not be read/m);
+    // A file that is not there is a path to fix, not YAML.
+    const gone = run(dir, "gone.yaml");
+    expect([gone.status, gone.stderr]).toEqual([2, expect.stringMatching(/^samesight: gone.yaml: cannot be read as a sync config: ENOENT.*; check the path, or name another file$/m)]);
+    // A YAML error ends with the line it points at: the fix goes below it.
+    writeFileSync(join(dir, "broken.yaml"), "streams:\n  a: b: c\n");
+    const broken = run(dir, "broken.yaml");
+    expect([broken.status, broken.stderr]).toEqual([2, expect.stringMatching(/^samesight: broken.yaml: cannot be read as a sync config: .* at line 2, column 6:\n\n {2}a: b: c\n {5}\^\nfix the YAML, or name another file\n/m)]);
     // Findings in the readable file still print; the unreadable one still fails the run.
     writeFileSync(join(dir, "open.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
     const mixed = run(dir, "open.yaml", "bad.yaml");
@@ -124,7 +131,7 @@ describe("samesight lint", () => {
     const allowed = run(dir, "--allow", "unscoped-query:customers");
     expect([allowed.status, allowed.stdout]).toEqual([0, "No problems found.\n1 finding allowed by --allow\n"]);
     const typo = run(dir, "--allow", "unscoped-querry");
-    expect([typo.status, typo.stderr]).toEqual([2, expect.stringMatching(/--allow names no rule unscoped-querry/)]);
+    expect([typo.status, typo.stderr]).toEqual([2, expect.stringMatching(/^samesight: --allow names no rule unscoped-querry; the rules are /)]);
   });
 
   it("prints one JSON object on stdout with --format json, keeping notes on stderr", () => {
@@ -146,7 +153,7 @@ describe("samesight lint", () => {
       exitCode: 2,
     });
     const xml = run(dir, "--format", "xml");
-    expect([xml.status, xml.stderr]).toEqual([2, '--format must be text, json, sarif or github, not "xml"\n']);
+    expect([xml.status, xml.stderr]).toEqual([2, 'samesight: --format must be text, json, sarif or github, not "xml"\n']);
   });
 
   it("prints one SARIF log with --format sarif, with the same exit codes", () => {
