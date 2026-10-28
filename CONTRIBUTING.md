@@ -49,4 +49,25 @@ All packages share one version.
 
 The release workflow checks that the tag matches every package, runs the checks, the unit tests and the smoke test, publishes with npm provenance, and creates the GitHub release. A version with a prerelease part (`0.2.0-rc.1`) is published under the `next` tag.
 
-The workflow needs an `NPM_TOKEN` secret in a GitHub environment named `npm`, with publish rights on `samesight` and the `@samesight` npm organization.
+The workflow publishes with npm trusted publishing and uses no npm token. A build job runs the checks and packs the tarballs. A separate publish job, the only one allowed an OIDC token, publishes them in dependency order. A rerun after a partial publish skips the versions npm already has.
+
+Setting it up:
+
+1. **When:** right before tagging the first release that uses it. npm expires a trusted publisher that has not published within 2 days of being created; an expired one has to be deleted and created again.
+2. **On npmjs.com,** for each package (`samesight`, `@samesight/supabase`, `@samesight/verify`, `@samesight/next`), go to the package's Settings, then Trusted Publisher, then GitHub Actions:
+   - Organization or user: `rayanyedaly`
+   - Repository: `samesight`
+   - Workflow filename: `release.yml`
+   - Environment name: `npm`
+   - Allowed actions: allow `npm publish`, not only staged publishing.
+3. **On GitHub,** in Settings, Environments, `npm`:
+   - Set the deployment branches and tags to Selected branches and tags, click Add deployment branch or tag rule, set Ref type to Tag and the name pattern to `v*`. Only release tags can then reach the publish job. The workflow reads no secrets from the environment.
+   - Optional, stricter: add yourself as a required reviewer on the environment, so each publish waits for your approval (leave Prevent self-review off, or you cannot approve your own release), and add a tag ruleset limiting who can create `v*` tags.
+4. **After the first release published this way:**
+   - in each package's Settings, Publishing access, choose "Require two-factor authentication and disallow tokens" (trusted publishing keeps working);
+   - revoke the old npm token;
+   - delete the `NPM_TOKEN` secret from the `npm` environment.
+
+If only the publish job is rerun, its tarballs come from the build job's artifact. GitHub allows reruns for 30 days after a run starts, and the artifact is kept for 30 days (less if the repository's artifact retention is shorter). After that, delete the tag and push it again, or release a new version.
+
+A package that has never been published cannot be given a trusted publisher. A new package's first version has to be published once with a token or by hand.
