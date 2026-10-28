@@ -59,7 +59,7 @@ Options:
   -v, --version     print the version
   -h, --help        print this help
 
-Docs: https://github.com/rayanyedaly/samesight#readme
+Docs: https://rayanyedaly.github.io/samesight/
 `;
 
 async function main(argv: string[]): Promise<number> {

@@ -18,7 +18,7 @@ npx samesight audit --project . --sync-config sync-config.yaml
 
 ![samesight audit on the to-do list demo with a leak planted: it fails, names the stream query that sent another user's list, the RLS policy that refused it, and the filter to add](https://raw.githubusercontent.com/rayanyedaly/samesight/main/docs/assets/audit-demo-light.svg)
 
-[How sync configs leak](https://github.com/rayanyedaly/samesight/blob/main/docs/how-sync-configs-leak.md) walks through the patterns, and [CI and the GitHub Action](https://github.com/rayanyedaly/samesight/blob/main/docs/ci.md) runs both on pull requests.
+[How sync configs leak](https://rayanyedaly.github.io/samesight/how-sync-configs-leak) walks through the patterns, and [CI and the GitHub Action](https://rayanyedaly.github.io/samesight/ci) runs both on pull requests.
 
 ## One policy for both sides
 
@@ -58,12 +58,12 @@ Pair it with [`@samesight/verify`](https://www.npmjs.com/package/@samesight/veri
 
 Needs Node 22.18 or newer: the policy file is loaded as TypeScript with Node's type stripping, with no build step.
 
-- [Getting started](https://github.com/rayanyedaly/samesight/blob/main/docs/getting-started.md)
-- [The policy language](https://github.com/rayanyedaly/samesight/blob/main/docs/policy.md)
-- [The CLI](https://github.com/rayanyedaly/samesight/blob/main/docs/cli.md)
-- [The verifier and audit mode](https://github.com/rayanyedaly/samesight/blob/main/docs/verify.md)
-- [How sync configs leak](https://github.com/rayanyedaly/samesight/blob/main/docs/how-sync-configs-leak.md)
-- [CI and the GitHub Action](https://github.com/rayanyedaly/samesight/blob/main/docs/ci.md)
+- [Getting started](https://rayanyedaly.github.io/samesight/getting-started)
+- [The policy language](https://rayanyedaly.github.io/samesight/policy)
+- [The CLI](https://rayanyedaly.github.io/samesight/cli)
+- [The verifier and audit mode](https://rayanyedaly.github.io/samesight/verify)
+- [How sync configs leak](https://rayanyedaly.github.io/samesight/how-sync-configs-leak)
+- [CI and the GitHub Action](https://rayanyedaly.github.io/samesight/ci)
 
 `samesight/compiler` exposes the compiler's internals for the verifier. It is not a stable API before 1.0.
 
