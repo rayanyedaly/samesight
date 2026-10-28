@@ -254,6 +254,34 @@ step("samesight audit finds a global samesight-verify on the PATH", () => {
     if (doc.tool !== "samesight-verify" || !/no sync config at .*nowhere\.yaml/.test(doc.error)) throw new Error(`samesight audit --json: ${e.stdout}`);
   }
 });
+const throughCmd = "samesight audit runs a samesight-verify.cmd with no package beside it through cmd.exe";
+if (win) {
+  step(throughCmd, () => {
+    // As pnpm, yarn and volta install globally: a shim with no node_modules beside it, which
+    // samesight runs through cmd.exe. Its directory's spaces and parentheses, and the
+    // argument's & % ( ), must reach samesight-verify as they are.
+    const dir = join(work, "shim dir (x86)");
+    mkdirSync(dir);
+    const script = join(cli, "node_modules", "@samesight", "verify", "dist", "cli.js");
+    writeFileSync(join(dir, "samesight-verify.cmd"), `@"${process.execPath}" "${script}" %*\r\n`);
+    const name = "nowhere & 100% (x).yaml";
+    try {
+      const out = samesightAlone(lib, dir, "audit", "--json", "--sync-config", name);
+      throw new Error(`audit passed with no sync config:\n${out}`);
+    } catch (e) {
+      if (e.status !== 2) throw e;
+      let doc;
+      try {
+        doc = JSON.parse(e.stdout);
+      } catch {}
+      if (doc?.tool !== "samesight-verify" || !String(doc.error).includes(name)) {
+        throw new Error(`samesight audit --json through cmd.exe:\nstdout:\n${e.stdout}\nstderr:\n${e.stderr}`);
+      }
+    }
+  });
+} else {
+  console.log(`- ${throughCmd} ... skipped (Windows only)`);
+}
 step("every package ships its license", () => {
   for (const [dir, pkg] of [[cli, "samesight"], [cli, "@samesight/verify"], [lib, "@samesight/supabase"], [lib, "@samesight/next"]]) {
     // The root's text exactly: a package's own copy is what ships, so it must not drift.

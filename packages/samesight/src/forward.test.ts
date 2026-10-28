@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { constants, tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { besideShim, cmdLine, findVerify, forwardAudit, type Lookups, onPath, quoteForCmd } from "./forward.ts";
 
 /** A package.json naming a samesight-verify script, and that script. */
@@ -16,6 +16,10 @@ function verifyPackage(dir: string, bin: string | Record<string, string> = { "sa
 
 const none: Lookups = { project: () => undefined, own: () => undefined, path: () => undefined };
 
+/** Why a shim cmd.exe would expand part of the path of is not run. */
+const refusal = (shim: string) =>
+  `cannot run ${shim} safely through cmd.exe (its path holds % or !); install @samesight/verify in the project instead: npm install -D @samesight/verify`;
+
 describe("findVerify", () => {
   const root = mkdtempSync(join(tmpdir(), "samesight-forward-"));
   afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -26,7 +30,7 @@ describe("findVerify", () => {
   it("takes the project's install first, then samesight's own, then the PATH", () => {
     const all: Lookups = { project: () => project, own: () => own, path: () => "/bin/samesight-verify" };
     expect(findVerify(all, "linux")).toEqual({ command: process.execPath, args: [join(root, "project/dist/cli.js")], shell: false });
-    expect(findVerify({ ...all, project: () => undefined }, "linux")?.args).toEqual([join(root, "own/dist/cli.js")]);
+    expect(findVerify({ ...all, project: () => undefined }, "linux")).toMatchObject({ args: [join(root, "own/dist/cli.js")] });
     expect(findVerify({ ...none, path: () => "/bin/samesight-verify" }, "linux")).toEqual({ command: "/bin/samesight-verify", args: [], shell: false });
     // A shim with no package beside it runs through cmd.exe.
     const shim = join(root, "nowhere/samesight-verify.cmd");
@@ -38,7 +42,7 @@ describe("findVerify", () => {
     const broken = join(root, "broken");
     mkdirSync(broken);
     writeFileSync(join(broken, "package.json"), JSON.stringify({ bin: { "samesight-verify": "./gone.js" } }));
-    expect(findVerify({ ...none, project: () => join(broken, "package.json"), own: () => own }, "linux")?.args).toEqual([join(root, "own/dist/cli.js")]);
+    expect(findVerify({ ...none, project: () => join(broken, "package.json"), own: () => own }, "linux")).toMatchObject({ args: [join(root, "own/dist/cli.js")] });
     expect(findVerify({ ...none, project: () => join(root, "nowhere/package.json") })).toBeUndefined();
   });
 
@@ -68,6 +72,41 @@ describe("findVerify", () => {
     });
     // Elsewhere the command on the PATH runs as it is.
     expect(findVerify({ ...none, path: () => shim }, "linux")).toEqual({ command: shim, args: [], shell: false });
+  });
+
+  it("refuses to run a shim through cmd.exe when its path holds % or !", () => {
+    for (const shim of [join(root, "100%/samesight-verify.cmd"), join(root, "%USERPROFILE%/samesight-verify.cmd"), join(root, "hi!/samesight-verify.cmd")]) {
+      expect(findVerify({ ...none, path: () => shim }, "win32")).toBe(refusal(shim));
+      expect(findVerify({ ...none, path: () => shim }, "linux")).toEqual({ command: shim, args: [], shell: false });
+    }
+    // With its package beside it, the shim's script runs without cmd.exe, whatever the path.
+    const prefix = join(root, "50% off!");
+    verifyPackage(join(prefix, "node_modules/@samesight/verify"));
+    expect(findVerify({ ...none, path: () => join(prefix, "samesight-verify.cmd") }, "win32")).toEqual({
+      command: process.execPath,
+      args: [join(prefix, "node_modules/@samesight/verify/dist/cli.js")],
+      shell: false,
+    });
+  });
+});
+
+describe("forwardAudit with a shim it will not run", () => {
+  it("says why and exits 2, with a --json document, running nothing", async () => {
+    const shim = "C:\\Users\\%USERNAME%\\npm\\samesight-verify.cmd";
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let code: number;
+    let printed: { out: string; err: string };
+    try {
+      code = await forwardAudit(["--json"], { ...none, path: () => shim }, "win32");
+      printed = { out: stdout.mock.calls.map((c) => String(c[0])).join(""), err: stderr.mock.calls.map((c) => String(c[0])).join("") };
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+    expect(code).toBe(2);
+    expect(printed.err).toBe(`samesight: ${refusal(shim)}\n`);
+    expect(JSON.parse(printed.out)).toMatchObject({ tool: "samesight", mode: "audit", result: "incomplete", exitCode: 2, error: refusal(shim) });
   });
 });
 
