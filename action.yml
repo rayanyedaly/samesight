@@ -27,7 +27,7 @@ inputs:
     required: false
     default: "."
   version:
-    description: "The samesight version to install from npm (default: the version of this action's own release), or installed to use samesight and samesight-verify already on the PATH"
+    description: "The npm version of samesight (lint) or @samesight/verify (audit) to install (default: the version in this action's packages/samesight/package.json), or installed to use the command already on the PATH"
     required: false
     default: ""
   node-version:
