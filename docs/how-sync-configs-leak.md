@@ -4,7 +4,7 @@ PowerSync replicates your tables with a database role that bypasses row level se
 
 This page shows four ways that happens. Each comes from [`corpus/planted/`](../corpus/planted): a sync config from one of PowerSync's public demos with one line changed, as [`corpus/SOURCES.md`](../corpus/SOURCES.md) records. Every one of them passes PowerSync's own validator, which warns about only one of them (the client parameter), so each is a config PowerSync would deploy.
 
-For each pattern you see the changed lines, why RLS does not stop it, what `samesight lint` prints (generated from the corpus by `scripts/docs/leaks.mjs`), and what `samesight-verify audit` says. Where audit's answer needs no database, the block shows what audit prints before it reads one, computed by audit's own code; the rest comes from a recorded run. `scripts/docs/leaks.mjs` keeps every block in step.
+For each pattern you see the changed lines, why RLS does not stop it, what `samesight lint` prints (generated from the corpus by `scripts/docs/leaks.mjs`), and what `samesight-verify audit` says. Where audit's answer needs no database, the block shows what audit prints from the sync config alone, computed by audit's own code (for the `user_metadata` check, as if no RLS policy read it too); the to-do list excerpt comes from a recorded run, and the parameter query's audit answer is described, not run. `scripts/docs/leaks.mjs` keeps every block in step.
 
 ## A query without an owner filter
 

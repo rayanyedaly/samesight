@@ -65,6 +65,10 @@ Docs: https://github.com/rayanyedaly/samesight#readme
 async function main(argv: string[]): Promise<number> {
   // Its flags are samesight-verify's, so they are not read here.
   if (argv[0] === "audit") return forwardAudit(argv.slice(1));
+  if (auditAfterFlags(argv)) {
+    console.error("samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help");
+    return 2;
+  }
   const { positionals, values } = flags(argv);
   const command = positionals[0];
   if (values.version) {
@@ -77,11 +81,6 @@ async function main(argv: string[]): Promise<number> {
   }
   // Lint needs no policy: it is for any PowerSync project.
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
-  // Run as audit only when it comes first (above): after a flag, its flags would be read as samesight's.
-  if (command === "audit") {
-    console.error("samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help");
-    return 2;
-  }
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);
@@ -159,23 +158,33 @@ const COMMANDS = ["init", "generate", "check", "doctor", "explain", "lint", "aud
  */
 function flags(argv: string[]) {
   try {
-    return parseArgs({
-      args: argv,
-      allowPositionals: true,
-      options: {
-        policy: { type: "string" },
-        db: { type: "string" },
-        table: { type: "string" },
-        migrations: { type: "string" },
-        allow: { type: "string", multiple: true },
-        format: { type: "string" },
-        help: { type: "boolean", short: "h" },
-        version: { type: "boolean", short: "v" },
-      },
-    });
+    return parseArgs({ args: argv, allowPositionals: true, options: OPTIONS });
   } catch (e) {
     throw flagError(e, "samesight --help");
   }
+}
+
+const OPTIONS = {
+  policy: { type: "string" },
+  db: { type: "string" },
+  table: { type: "string" },
+  migrations: { type: "string" },
+  allow: { type: "string", multiple: true },
+  format: { type: "string" },
+  help: { type: "boolean", short: "h" },
+  version: { type: "boolean", short: "v" },
+} as const;
+
+/**
+ * Audit given after a flag (`samesight --sync-config x.yaml audit`): it runs only when it
+ * comes first, since after a flag its flags would be read as samesight's. Read loosely, so
+ * an audit flag samesight does not know still gets this answer, not "unknown option".
+ */
+function auditAfterFlags(argv: string[]): boolean {
+  if (!argv.includes("audit")) return false;
+  const { positionals } = parseArgs({ args: argv, allowPositionals: true, strict: false, options: OPTIONS });
+  const first = positionals.findIndex((p) => p === "audit" || COMMANDS.includes(p));
+  return first >= 0 && positionals[first] === "audit";
 }
 
 /** Node's message for a flag parseArgs refuses, without its hint about '--', and the help to see. */

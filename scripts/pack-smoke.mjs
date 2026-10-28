@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,9 +125,13 @@ step("samesight-verify --json writes its report on exit 2", () => {
  * node_modules/.bin, as npx would add, so `samesight audit` finds samesight-verify by
  * resolving the package, or not at all.
  */
+// A PATH holding node alone: a samesight-verify installed globally beside node is not on it.
+const nodeOnly = join(work, "node-only");
+mkdirSync(nodeOnly);
+symlinkSync(process.execPath, join(nodeOnly, "node"));
 function samesightAlone(dir, ...a) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== "PATH"));
-  return run("node", [join(dir, "node_modules/samesight/dist/cli.js"), ...a], { cwd: dir, env: { ...env, PATH: dirname(process.execPath) } });
+  return run("node", [join(dir, "node_modules/samesight/dist/cli.js"), ...a], { cwd: dir, env: { ...env, PATH: nodeOnly } });
 }
 
 step("samesight audit runs samesight-verify audit", () => {

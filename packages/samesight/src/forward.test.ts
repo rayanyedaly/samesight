@@ -92,7 +92,7 @@ describe("quoteForCmd", () => {
 
   it("makes one command line of the shim and its arguments", () => {
     expect(cmdLine("C:\\Program Files (x86)\\npm\\samesight-verify.cmd", ["audit", "--json"])).toBe(
-      'C:\\Program^ Files^ ^(x86^)\\npm\\samesight-verify.cmd ^^^"audit^^^" ^^^"--json^^^"',
+      '"C:\\Program Files (x86)\\npm\\samesight-verify.cmd" ^^^"audit^^^" ^^^"--json^^^"',
     );
   });
 });
