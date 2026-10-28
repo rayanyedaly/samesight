@@ -256,7 +256,8 @@ step("samesight audit finds a global samesight-verify on the PATH", () => {
 });
 step("every package ships its license", () => {
   for (const [dir, pkg] of [[cli, "samesight"], [cli, "@samesight/verify"], [lib, "@samesight/supabase"], [lib, "@samesight/next"]]) {
-    expectIn(readFileSync(join(dir, "node_modules", pkg, "LICENSE"), "utf8"), "MIT License", `${pkg} LICENSE`);
+    // The root's text exactly: a package's own copy is what ships, so it must not drift.
+    if (readFileSync(join(dir, "node_modules", pkg, "LICENSE"), "utf8") !== readFileSync(join(ROOT, "LICENSE"), "utf8")) throw new Error(`${pkg} LICENSE differs from the root LICENSE`);
   }
 });
 step("node imports samesight", () =>
