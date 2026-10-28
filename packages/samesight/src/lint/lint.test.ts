@@ -145,6 +145,45 @@ describe("samesight lint", () => {
       notes: 0,
       exitCode: 2,
     });
-    expect(run(dir, "--format", "xml").status).toBe(2);
+    const xml = run(dir, "--format", "xml");
+    expect([xml.status, xml.stderr]).toEqual([2, '--format must be text, json, sarif or github, not "xml"\n']);
+  });
+
+  it("prints one SARIF log with --format sarif, with the same exit codes", () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
+    writeFileSync(join(dir, "bad.yaml"), "streams: [1]\n");
+    const sarif = (...args: string[]) => {
+      const out = run(dir, ...args, "--format", "sarif");
+      const log = JSON.parse(out.stdout);
+      return { status: out.status, stderr: out.stderr, run: log.runs[0], version: log.version };
+    };
+    const failed = sarif();
+    expect([failed.status, failed.version, failed.run.tool.driver.name]).toEqual([1, "2.1.0", "samesight"]);
+    expect(failed.stderr).toMatch(/note: no supabase\/migrations here/);
+    expect(failed.run.results).toEqual([
+      expect.objectContaining({ ruleId: "unscoped-query", level: "error", locations: [{ physicalLocation: { artifactLocation: { uri: "sync-config.yaml" }, region: { startLine: 6, startColumn: 12 } } }] }),
+    ]);
+    expect(failed.run.invocations).toEqual([{ executionSuccessful: true }]);
+    const allowed = sarif("--allow", "unscoped-query");
+    expect([allowed.status, allowed.run.results[0].suppressions]).toEqual([0, [{ kind: "external", justification: "allowed with --allow" }]]);
+    const bad = sarif("sync-config.yaml", "bad.yaml");
+    expect([bad.status, bad.run.invocations[0].executionSuccessful, bad.run.results.length]).toEqual([2, false, 1]);
+    expect(bad.stderr).toMatch(/bad.yaml: cannot be read as a sync config/);
+  });
+
+  it("prints GitHub workflow commands with --format github, with the same exit codes", () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
+    writeFileSync(join(dir, "bad.yaml"), "streams: [1]\n");
+    const failed = run(dir, "--format", "github");
+    expect([failed.status, failed.stdout]).toEqual([
+      1,
+      "::error file=sync-config.yaml,line=6,col=12,title=samesight unscoped-query::stream all, query sends every row of customers to every user: nothing in it reads the requesting user (auth.user_id()) or a token claim\n",
+    ]);
+    const allowed = run(dir, "--allow", "unscoped-query", "--format", "github");
+    expect([allowed.status, allowed.stdout]).toEqual([0, "::notice::1 finding allowed by --allow\n"]);
+    const bad = run(dir, "bad.yaml", "--format", "github");
+    expect([bad.status, bad.stdout]).toEqual([2, "::error file=bad.yaml::could not read: the sync config has no streams: section\n"]);
   });
 });
