@@ -105,11 +105,11 @@ Inspection (tenant column tenantId)
 
 ### Get started with a policy
 
-You need Node 22.18 or newer, the Supabase CLI in the project (`npm i -D supabase`) or on your PATH with a local stack (`npx supabase start`), and Docker for the PowerSync service.
+You need Node 22.18 or newer, the Supabase CLI (in the project with `npm i -D supabase`, or on your PATH), a local stack (`npx supabase start`), and Docker for the PowerSync service.
 
 ```bash
 npm install samesight @samesight/supabase
-npm install -D @samesight/verify
+npm install -D @samesight/verify supabase
 
 npx samesight init         # drafts samesight.policy.ts from your local database
 npx supabase gen types typescript --local --schema public > supabase/types.ts
@@ -164,8 +164,8 @@ pnpm smoke                                   # pack, install with npm, use as a 
 pnpm --filter fieldbook stack:up             # Supabase + PowerSync for the stack tests
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout, the test tiers and how releases are cut.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout, the test tiers and how releases are cut, and [SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 
-MIT. The PowerSync service image (FSL-1.1-ALv2) is never bundled or redistributed: the examples run it for local development and CI, and `samesight-verify audit` pulls the official image and runs it on your machine.
+MIT, except the third-party sync configs in `corpus/`, which keep their own licenses (CC0 1.0 or Apache 2.0, as [`corpus/SOURCES.md`](corpus/SOURCES.md) lists). The PowerSync service image (FSL-1.1-ALv2) is never bundled or redistributed: the examples run it for local development and CI, and `samesight-verify audit` pulls the official image and runs it on your machine.
