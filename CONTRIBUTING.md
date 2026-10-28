@@ -49,7 +49,7 @@ All packages share one version.
 
 The release workflow checks that the tag matches every package, runs the checks, the unit tests and the smoke test, publishes with npm provenance, and creates the GitHub release. A version with a prerelease part (`0.2.0-rc.1`) is published under the `next` tag.
 
-The workflow publishes with npm trusted publishing, so no npm token is stored. A build job runs the checks and packs the tarballs. A separate publish job, the only one allowed an OIDC token, publishes them in dependency order. A rerun after a partial publish skips the versions npm already has.
+The workflow publishes with npm trusted publishing and uses no npm token. A build job runs the checks and packs the tarballs. A separate publish job, the only one allowed an OIDC token, publishes them in dependency order. A rerun after a partial publish skips the versions npm already has.
 
 Setting it up:
 
@@ -60,10 +60,14 @@ Setting it up:
    - Workflow filename: `release.yml`
    - Environment name: `npm`
    - Allowed actions: allow `npm publish`, not only staged publishing.
-3. **On GitHub,** in Settings, Environments, `npm`: under Deployment branches and tags, choose Selected branches and tags and add the tag rule `v*`. Only release tags can then reach the publish job. The environment needs no secrets.
+3. **On GitHub,** in Settings, Environments, `npm`:
+   - Under Deployment branches, choose Selected branches and tags, click Add deployment branch or tag rule, set Ref type to Tag and the name pattern to `v*`. Only release tags can then reach the publish job. The workflow reads no secrets from the environment.
+   - Optional, stricter: add yourself as a required reviewer on the environment, so each publish waits for your approval, and add a tag ruleset limiting who can create `v*` tags.
 4. **After the first release published this way:**
    - in each package's Settings, Publishing access, choose "Require two-factor authentication and disallow tokens" (trusted publishing keeps working);
    - revoke the old npm token;
    - delete the `NPM_TOKEN` secret from the `npm` environment.
+
+If only the publish job is rerun, its tarballs come from the build job's artifact, which is kept for 30 days; after that, rerun all jobs.
 
 A package that has never been published cannot be given a trusted publisher. A new package's first version has to be published once with a token or by hand.

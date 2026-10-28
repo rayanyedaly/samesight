@@ -48,12 +48,12 @@ jobs:
           for p in samesight supabase verify next; do
             (cd "packages/$p" && pnpm pack --pack-destination "$RUNNER_TEMP/packs/$p")
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages
           path: ${{ runner.temp }}/packs
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
 
   publish:
     needs: build
@@ -63,12 +63,16 @@ jobs:
       contents: write # the GitHub release
       id-token: write # npm trusted publishing and provenance
     steps:
+      # Only for .nvmrc: no repository code runs here, and no git credentials are kept.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      # Fails on a download whose digest does not match the upload.
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: ${{ runner.temp }}/packs
@@ -89,7 +93,8 @@ jobs:
           for p in samesight supabase verify next; do
             tgz=$(ls "$RUNNER_TEMP/packs/$p"/*.tgz)
             id=$(tar -xOzf "$tgz" package/package.json | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { const m = JSON.parse(s); console.log(`${m.name}@${m.version}`); })')
-            # A rerun after a partial publish skips what npm already has.
+            # A rerun after a partial publish skips what npm already has. For a new version
+            # npm view prints an E404 here, which is expected.
             if npm view "$id" version > /dev/null; then
               echo "$id is already on npm"
               continue
