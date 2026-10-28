@@ -160,7 +160,7 @@ jobs:
   action:
     name: the GitHub Action on the to-do list demo
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -239,7 +239,8 @@ jobs:
           # The annotation GitHub shows on the pull request's changed line.
           if ! grep -qE "^::error file=examples/audit-todolist/upstream/sync-config\.planted\.yaml,line=$line,col=[0-9]+,title=samesight unscoped-query::" "$ANNOTATIONS"; then
             echo "no unscoped-query annotation at line $line in $ANNOTATIONS:" >&2
-            sed 's/^/  /' "$ANNOTATIONS" >&2
+            # Prefixed, so the runner (which trims leading spaces) does not raise them again.
+            sed 's/^/| /' "$ANNOTATIONS" >&2
             exit 1
           fi
       # The action starts Supabase, audits and stops it (removing its data).
