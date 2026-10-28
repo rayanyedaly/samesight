@@ -63,7 +63,7 @@ describe("formatSarif", () => {
       name: "not-auto-subscribed",
       shortDescription: { text: "A stream devices get only when the app subscribes, which audit does not test." },
       fullDescription: { text: expect.stringMatching(/^A stream that is not auto_subscribe /) },
-      helpUri: "https://github.com/rayanyedaly/samesight/blob/main/docs/cli.md#not-auto-subscribed",
+      helpUri: "https://rayanyedaly.github.io/samesight/rules/not-auto-subscribed",
       defaultConfiguration: { level: "note" },
     });
   });

@@ -1,0 +1,7 @@
+config:
+  edition: 3
+
+streams:
+  project_tasks:
+    auto_subscribe: true
+    query: SELECT * FROM tasks WHERE project_id = connection.parameter('project_id')

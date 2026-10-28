@@ -1,0 +1,7 @@
+config:
+  edition: 3
+
+streams:
+  my_notes:
+    auto_subscribe: true
+    query: SELECT * FROM notes INNER JOIN notebooks ON notes.notebook_id = notebooks.id WHERE notebooks.owner_id = auth.user_id()

@@ -1,9 +1,10 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { RULE_NAMES } from "./lint.ts";
 import { RULE_INFO } from "./rule-info.ts";
 
-const docs = readFileSync(new URL("../../../../docs/cli.md", import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(`../../../../${path}`, import.meta.url), "utf8");
+const docs = read("docs/cli.md");
 
 /** The anchor GitHub gives a heading: lowercase, punctuation dropped, spaces to hyphens. */
 const slug = (heading: string) =>
@@ -25,12 +26,26 @@ describe("RULE_INFO", () => {
     }
   });
 
-  it("links each rule to its own heading in docs/cli.md", () => {
+  it("links each rule to its page on the docs site, built from docs/rules/<id>.md", () => {
+    const index = read("docs/rules/index.md");
+    for (const [id, info] of Object.entries(RULE_INFO)) {
+      expect(info.help, id).toBe(`https://rayanyedaly.github.io/samesight/rules/${id}`);
+      expect(existsSync(new URL(`../../../../docs/rules/${id}.md`, import.meta.url)), id).toBe(true);
+      const page = read(`docs/rules/${id}.md`);
+      expect(page.split("\n")[0], id).toBe(`# ${id}`);
+      expect(page, id).toMatch(new RegExp(`^Level: ${info.level}\\b`, "m"));
+      // The page may put names in code; the words are RULE_INFO's.
+      expect(page.replace(/`/g, ""), id).toContain(info.summary);
+      expect(index, id).toContain(`](${id}.md)`);
+    }
+  });
+
+  it("keeps each rule's heading in docs/cli.md, which 0.1.0's links point to", () => {
     expect(slug("`unscoped-query`")).toBe("unscoped-query");
     expect(slug("Exit codes, and --allow")).toBe("exit-codes-and---allow");
-    for (const [id, info] of Object.entries(RULE_INFO)) {
-      expect(info.help, id).toBe(`https://github.com/rayanyedaly/samesight/blob/main/docs/cli.md#${id}`);
+    for (const id of Object.keys(RULE_INFO)) {
       expect(anchors, id).toContain(id);
+      expect(docs, id).toContain(`](rules/${id}.md)`);
     }
   });
 });
