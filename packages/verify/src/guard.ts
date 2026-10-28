@@ -58,10 +58,11 @@ export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = pr
     try {
       parsed = new URL(url);
     } catch {
-      problems.push(`${name}: "${url}" is not a URL; ${toUrl}`);
+      // Up to its last @ left out: a value pasted from elsewhere can carry a password.
+      problems.push(`${name}: "${url.replace(/^.*@/, "…@")}" is not a URL; ${toUrl}`);
       continue;
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") problems.push(`${name}: ${url} is not an http(s) URL; ${toUrl}`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") problems.push(`${name}: a ${parsed.protocol} URL is not an http(s) URL; ${toUrl}`);
     else if (!LOCAL_HOSTS.has(parsed.hostname)) {
       problems.push(`${name}: ${parsed.hostname} is not this machine; ${flag ? `point ${flag} at localhost or 127.0.0.1` : FROM_STATUS}`);
     }
