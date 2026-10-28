@@ -26,7 +26,7 @@ features:
     link: /verify#audit-mode
     linkText: Audit mode
   - title: Policy
-    details: One policy file generates both the RLS migration and the PowerSync sync streams, and `samesight check` fails CI if either drifts from it.
+    details: One policy file generates both the RLS migration and the PowerSync sync streams, and <code>samesight check</code> fails CI if either drifts from it.
     link: /getting-started
     linkText: Getting started
 ---

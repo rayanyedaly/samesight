@@ -37,7 +37,8 @@ describe("RULE_INFO", () => {
       // The page may put names in code; the words are RULE_INFO's.
       expect(page.replace(/`/g, ""), id).toContain(info.summary);
       // Its row in the index: the link, the level, the summary.
-      const row = index.split("\n").find((line) => line.includes(`](${id}.md)`));
+      const row = index.split("\n").find((line) => line.startsWith("|") && line.includes(`](${id}.md)`));
+      expect(row, id).toBeDefined();
       const cells = (row ?? "").split("|").map((cell) => cell.trim().replace(/`/g, ""));
       expect(cells[2], id).toMatch(new RegExp(`^${info.level}\\b`));
       expect(cells[3], id).toBe(info.summary);

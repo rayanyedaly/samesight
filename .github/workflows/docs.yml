@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   build:
-    # Forks have no Pages site of their own to publish to.
+    # The site's base path and links name this repository's Pages site, not a fork's.
     if: github.repository == 'rayanyedaly/samesight'
     runs-on: ubuntu-latest
     timeout-minutes: 15
