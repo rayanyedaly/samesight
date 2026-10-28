@@ -82,14 +82,26 @@ describe("samesight audit", () => {
     // With --json, stdout still carries one document, as samesight-verify's would.
     const json = await cli(["audit", "--json"], dir, { PATH: "" });
     expect([json.code, json.stderr]).toEqual([2, `${NOT_FOUND}\n`]);
-    expect(JSON.parse(json.stdout)).toEqual({ tool: "samesight", mode: "audit", result: "incomplete", exitCode: 2, sections: [], error: NOT_FOUND.replace(/^samesight: /, "") });
+    expect(JSON.parse(json.stdout)).toEqual({
+      tool: "samesight",
+      version: 1,
+      mode: "audit",
+      result: "incomplete",
+      exitCode: 2,
+      durationMs: expect.any(Number),
+      sections: [],
+      error: NOT_FOUND.replace(/^samesight: /, ""),
+    });
   });
 
   it("refuses audit after a flag, which would read audit's flags as samesight's", { timeout: 30_000 }, async () => {
     const message = "samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help\n";
-    for (const args of [["--policy", "x.ts", "audit"], ["--", "audit"]]) {
+    for (const args of [["--policy", "x.ts", "audit"], ["--", "audit"], ["--sync-config", "x.yaml", "audit"], ["--db", "x", "audit", "--json"]]) {
       const result = await cli(args);
       expect([result.code, result.stderr]).toEqual([2, message]);
     }
+    // An audit that is another command's argument is that command's business.
+    const lint = await cli(["lint", "audit", "--bogus"]);
+    expect([lint.code, lint.stderr]).toEqual([2, "samesight: unknown option '--bogus'; see samesight --help\n"]);
   });
 });

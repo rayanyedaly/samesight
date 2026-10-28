@@ -116,9 +116,13 @@ export function quoteForCmd(arg: string): string {
   return quoted.replace(CMD_META, "^$1").replace(CMD_META, "^$1");
 }
 
-/** The command line cmd.exe runs for a .cmd shim and its arguments. */
+/**
+ * The command line cmd.exe runs for a .cmd shim and its arguments. The shim's path is
+ * quoted, not caret-escaped, so one with spaces (C:\Users\Jo Smith\...) is found; a
+ * Windows path cannot hold a quote.
+ */
 export function cmdLine(shim: string, args: string[]): string {
-  return [shim.replace(CMD_META, "^$1"), ...args.map(quoteForCmd)].join(" ");
+  return [`"${shim}"`, ...args.map(quoteForCmd)].join(" ");
 }
 
 /** The signals that end a run: passed on to the child, which removes what its run made. */
@@ -171,12 +175,13 @@ export function forwardAudit(rest: string[], lookups: Lookups = LOOKUPS): Promis
 /**
  * Says why audit could not run, and returns its exit code, 2. With --json, stdout still carries one
  * document, as samesight-verify's would: the fields of its report schema that samesight
- * can fill, under its own name (no toolVersion or $schema without verify to name them).
+ * can fill, under its own name (no toolVersion or $schema without verify to name them), so it
+ * does not validate against that schema.
  */
 function unable(message: string, rest: string[]): number {
   process.stderr.write(`samesight: ${message}\n`);
   if (rest.some((a) => a === "--json" || a.startsWith("--json="))) {
-    const doc = { tool: "samesight", mode: "audit", result: "incomplete", exitCode: 2, sections: [], error: message };
+    const doc = { tool: "samesight", version: 1, mode: "audit", result: "incomplete", exitCode: 2, durationMs: Math.round(performance.now()), sections: [], error: message };
     process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
   }
   return 2;
