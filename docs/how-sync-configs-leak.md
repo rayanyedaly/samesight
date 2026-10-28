@@ -160,7 +160,7 @@ npx samesight lint powersync/sync-config.yaml --migrations supabase/migrations
 Lint knows the patterns above and a few more, but it cannot prove a config is safe. Audit tests the rows. With your local Supabase stack running (`npx supabase start`) and Docker, it starts its own PowerSync service on your sync config and compares every device with RLS:
 
 ```bash
-npm install -D samesight @samesight/verify
+npm install -D samesight @samesight/verify supabase
 npx samesight audit --sync-config powersync/sync-config.yaml
 ```
 
