@@ -11,7 +11,7 @@ npx samesight lint sync-config.yaml --migrations supabase/migrations
 Audit the rows themselves: test users, generated rows and a real PowerSync device per user, each device's rows compared with what RLS returns for the same user. `samesight audit` runs `samesight-verify audit`, so it needs [`@samesight/verify`](https://www.npmjs.com/package/@samesight/verify) installed, the project's local Supabase stack and Docker:
 
 ```bash
-npm install -D samesight @samesight/verify
+npm install -D samesight @samesight/verify supabase
 npx supabase start
 npx samesight audit --project . --sync-config sync-config.yaml
 ```

@@ -5,7 +5,7 @@ PowerSync replicates with a role that bypasses Postgres row level security, so t
 Audit a project with hand-written RLS and a hand-written sync config, with no Samesight policy. It needs the project's local Supabase stack and Docker. `samesight audit`, from the [`samesight`](https://www.npmjs.com/package/samesight) CLI, forwards to `samesight-verify audit`:
 
 ```bash
-npm install -D samesight @samesight/verify
+npm install -D samesight @samesight/verify supabase
 npx supabase start
 npx samesight audit --project . --sync-config sync-config.yaml
 # the same run: npx samesight-verify audit --project . --sync-config sync-config.yaml

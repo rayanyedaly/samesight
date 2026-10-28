@@ -18,10 +18,10 @@ Lint the sync config and the SQL migrations for known leak patterns. It reads fi
 npx samesight lint sync-config.yaml --migrations supabase/migrations
 ```
 
-Then audit the rows themselves. Audit signs up test users, generates rows, syncs a real PowerSync device per user and compares every row each device got with what RLS returns for the same user. It needs the project's local Supabase stack and Docker (it starts a PowerSync service of its own for the run and removes it afterwards), and `@samesight/verify` installed next to `samesight`:
+Then audit the rows themselves. Audit signs up test users, generates rows, syncs a real PowerSync device per user and compares every row each device got with what RLS returns for the same user. It needs the project's local Supabase stack and Docker (it starts a PowerSync service of its own for the run and removes it afterwards), and `@samesight/verify` installed next to `samesight`, with the Supabase CLI in the project or on your PATH:
 
 ```bash
-npm install -D samesight @samesight/verify
+npm install -D samesight @samesight/verify supabase
 npx supabase start
 npx samesight audit --project . --sync-config sync-config.yaml
 ```

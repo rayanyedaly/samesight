@@ -7,7 +7,7 @@ Samesight ships a GitHub Action at the root of its repository, `rayanyedaly/same
 
 A common setup is lint on every pull request and audit on pull requests that change the sync config or the migrations.
 
-> Samesight is not released on npm until 0.1.0 (the `samesight` name holds a 0.0.0 placeholder with no command). Until then the action has nothing to install. By default it installs the version in its own `packages/samesight/package.json`: at a release tag (`@v0.1.0`) that is the release itself; at a branch or commit SHA it is whatever that file names, which may be older than the action or not published yet. The examples below name `0.1.0`, the first release.
+> By default the action installs the version in its own `packages/samesight/package.json`: at a release tag (`@v0.1.0`) that is the release itself; at a branch or commit SHA it is whatever that file names, which may be older than the action or not published. The examples below name `0.1.0`, the first release.
 
 ## Lint with annotations
 
@@ -212,4 +212,4 @@ A finding that is deliberate, such as a table public by design, can be accepted 
 
 **An alert does not show on the pull request.** Code scanning shows an alert on a pull request only when its lines are in the diff. The alert is still listed in the Security tab.
 
-**The install step fails.** `version` must name a version published on npm. Before the first release there is none, so the install step fails and says so.
+**The install step fails.** `version` must name a version published on npm; when it does not, the install step fails and says so.
