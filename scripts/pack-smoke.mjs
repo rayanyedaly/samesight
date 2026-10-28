@@ -120,6 +120,16 @@ step("samesight-verify --json writes its report on exit 2", () => {
     }
   }
 });
+step("samesight audit runs samesight-verify audit", () => {
+  try {
+    samesight("audit", "--json", "--sync-config", "nowhere.yaml");
+    throw new Error("audit passed with no sync config");
+  } catch (e) {
+    if (e.status !== 2) throw e;
+    const doc = JSON.parse(e.stdout);
+    if (doc.exitCode !== 2 || !/no sync config/.test(doc.error)) throw new Error(`samesight audit --json: ${e.stdout}`);
+  }
+});
 step("the report schema is exported", () => {
   const code = 'import s from "@samesight/verify/schema/report.schema.json" with { type: "json" }; console.log(Object.keys(s.$defs).join(" "));';
   expectIn(run("node", ["--input-type=module", "-e", code], { cwd: cli }), "Finding RowReport", "schema export");
