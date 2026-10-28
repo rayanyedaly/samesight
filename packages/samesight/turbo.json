@@ -3,7 +3,15 @@
   "extends": ["//"],
   "tasks": {
     "test": {
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/corpus/**", "$TURBO_ROOT$/docs/cli.md"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/corpus/**",
+        "$TURBO_ROOT$/docs/cli.md",
+        "$TURBO_ROOT$/examples/fieldbook/samesight.policy.ts",
+        "$TURBO_ROOT$/examples/audit-roles/package.json",
+        "$TURBO_ROOT$/packages/verify/package.json",
+        "$TURBO_ROOT$/packages/verify/src/**"
+      ]
     }
   }
 }

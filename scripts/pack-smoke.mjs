@@ -15,7 +15,7 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -120,9 +120,19 @@ step("samesight-verify --json writes its report on exit 2", () => {
     }
   }
 });
+/**
+ * The installed samesight CLI, run by node with only node's own directory on the PATH: no
+ * node_modules/.bin, as npx would add, so `samesight audit` finds samesight-verify by
+ * resolving the package, or not at all.
+ */
+function samesightAlone(dir, ...a) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== "PATH"));
+  return run("node", [join(dir, "node_modules/samesight/dist/cli.js"), ...a], { cwd: dir, env: { ...env, PATH: dirname(process.execPath) } });
+}
+
 step("samesight audit runs samesight-verify audit", () => {
   try {
-    samesight("audit", "--json", "--sync-config", "nowhere.yaml");
+    samesightAlone(cli, "audit", "--json", "--sync-config", "nowhere.yaml");
     throw new Error("audit passed with no sync config");
   } catch (e) {
     if (e.status !== 2) throw e;
@@ -213,6 +223,17 @@ step("node imports @samesight/supabase", () => {
     { cwd: lib },
   );
   expectIn(out, "function function", "import");
+});
+step("samesight audit without @samesight/verify says how to install it", () => {
+  try {
+    samesightAlone(lib, "audit", "--json");
+    throw new Error("audit ran with no @samesight/verify installed");
+  } catch (e) {
+    if (e.status !== 2) throw e;
+    expectIn(e.stderr, "npm install -D @samesight/verify", "install hint");
+    const doc = JSON.parse(e.stdout);
+    if (doc.exitCode !== 2 || doc.result !== "incomplete" || !doc.error.includes("@samesight/verify")) throw new Error(`samesight audit --json: ${e.stdout}`);
+  }
 });
 step("node imports samesight", () =>
   expectIn(run("node", ["--input-type=module", "-e", 'import { definePolicy } from "samesight"; console.log(typeof definePolicy);'], { cwd: lib }), "function", "import"),

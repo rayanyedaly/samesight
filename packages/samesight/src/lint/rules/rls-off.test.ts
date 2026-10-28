@@ -45,7 +45,7 @@ describe("samesight lint with migrations", () => {
   const cli = fileURLToPath(new URL("../../cli.ts", import.meta.url));
   const run = (cwd: string, ...args: string[]) => spawnSync(process.execPath, [cli, "lint", ...args], { cwd, encoding: "utf8" });
 
-  it("reads supabase/migrations by default, takes --migrations, and says when it has none", () => {
+  it("reads supabase/migrations by default, takes --migrations, and says when it has none", { timeout: 30_000 }, () => {
     const dir = tempDir();
     writeFileSync(join(dir, "sync-config.yaml"), config);
     const none = run(dir);

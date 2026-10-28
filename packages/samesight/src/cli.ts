@@ -77,6 +77,11 @@ async function main(argv: string[]): Promise<number> {
   }
   // Lint needs no policy: it is for any PowerSync project.
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
+  // Run as audit only when it comes first (above): after a flag, its flags would be read as samesight's.
+  if (command === "audit") {
+    console.error("samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help");
+    return 2;
+  }
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);

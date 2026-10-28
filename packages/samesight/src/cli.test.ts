@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +45,23 @@ describe("samesight exit codes", () => {
     const existing = await cli(["init", "--policy", join(dir, "samesight.policy.ts")]);
     expect([existing.code, existing.stderr]).toEqual([2, `samesight: ${join(dir, "samesight.policy.ts")} already exists; edit it, or remove it to start again\n`]);
   });
+
+  it("says to generate first when there is no schema snapshot, and exits 1 on a policy that does not compile", { timeout: 30_000 }, async () => {
+    // Fieldbook's policy, from a directory of its own: no snapshot beside it.
+    const dir = mkdtempSync(join(tmpdir(), "samesight-cli-test-"));
+    const fieldbook = new URL("../../../examples/fieldbook/samesight.policy.ts", import.meta.url).href;
+    writeFileSync(join(dir, "samesight.policy.mjs"), `export { default } from ${JSON.stringify(fieldbook)};\n`);
+    const policy = ["--policy", join(dir, "samesight.policy.mjs")];
+    for (const command of ["check", "explain"]) {
+      const result = await cli([command, ...policy]);
+      expect([result.code, result.stderr]).toEqual([2, `samesight: no schema snapshot at ${join(dir, "samesight/schema.json")}; run samesight generate first\n`]);
+    }
+    // A snapshot with none of the policy's tables.
+    mkdirSync(join(dir, "samesight"));
+    writeFileSync(join(dir, "samesight/schema.json"), JSON.stringify({ tables: [] }));
+    const result = await cli(["explain", ...policy]);
+    expect([result.code, result.stderr]).toEqual([1, expect.stringMatching(/^samesight: the policy does not compile:\n {2}- .*Membership/)]);
+  });
 });
 
 describe("samesight audit", () => {
@@ -62,5 +79,17 @@ describe("samesight audit", () => {
     const dir = mkdtempSync(join(tmpdir(), "samesight-cli-test-"));
     const result = await cli(["audit", "--help"], dir, { PATH: "" });
     expect([result.code, result.stderr, result.stdout]).toEqual([2, `${NOT_FOUND}\n`, ""]);
+    // With --json, stdout still carries one document, as samesight-verify's would.
+    const json = await cli(["audit", "--json"], dir, { PATH: "" });
+    expect([json.code, json.stderr]).toEqual([2, `${NOT_FOUND}\n`]);
+    expect(JSON.parse(json.stdout)).toEqual({ tool: "samesight", mode: "audit", result: "incomplete", exitCode: 2, sections: [], error: NOT_FOUND.replace(/^samesight: /, "") });
+  });
+
+  it("refuses audit after a flag, which would read audit's flags as samesight's", { timeout: 30_000 }, async () => {
+    const message = "samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help\n";
+    for (const args of [["--policy", "x.ts", "audit"], ["--", "audit"]]) {
+      const result = await cli(args);
+      expect([result.code, result.stderr]).toEqual([2, message]);
+    }
   });
 });
