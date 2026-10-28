@@ -109,7 +109,7 @@ Audit options (a project with hand-written RLS and sync config, no policy file):
 
 Needs the project's local Supabase stack running (supabase start); the policy mode also needs
 its PowerSync service, and audit needs Docker unless given --powersync or --static.
-Docs: https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme
+Docs: https://rayanyedaly.github.io/samesight/verify
 `;
 
 /**

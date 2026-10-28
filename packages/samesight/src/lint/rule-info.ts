@@ -12,13 +12,17 @@ export interface RuleInfo {
   description: string;
   /** The rule's level; for rules whose level varies by finding, the highest it gives. */
   level: LintLevel;
-  /** The rule's section of docs/cli.md. */
+  /**
+   * The rule's page on the docs site, built from docs/rules/<id>.md: an example, what lint
+   * prints on it, the fix and what audit does with it. 0.1.0 linked to the rule's heading
+   * in docs/cli.md instead, which stays for those links.
+   */
   help: string;
 }
 
-const DOCS = "https://github.com/rayanyedaly/samesight/blob/main/docs/cli.md";
+const DOCS = "https://rayanyedaly.github.io/samesight/rules";
 
-const rule = (id: string, level: LintLevel, summary: string, description: string): [string, RuleInfo] => [id, { summary, description, level, help: `${DOCS}#${id}` }];
+const rule = (id: string, level: LintLevel, summary: string, description: string): [string, RuleInfo] => [id, { summary, description, level, help: `${DOCS}/${id}` }];
 
 /** Keyed by rule name, in the order lint runs the rules. */
 export const RULE_INFO: Readonly<Record<string, RuleInfo>> = Object.fromEntries([

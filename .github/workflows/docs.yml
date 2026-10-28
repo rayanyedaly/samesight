@@ -1,0 +1,64 @@
+# Builds the docs site (VitePress, from docs/) and publishes it to GitHub Pages, at
+# https://rayanyedaly.github.io/samesight/, when the docs change on main.
+#
+# Only the deploy job can write to Pages or ask for an OIDC token: the build job, which
+# installs and runs the dependencies' code, can only read the repository. Pages must be set
+# to deploy from GitHub Actions once (Settings, Pages, Source), or the run fails.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      # The sidebar lists the lint rules from here.
+      - packages/samesight/src/lint/rule-info.ts
+      - package.json
+      - pnpm-lock.yaml
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer run waits rather than cancelling one halfway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # The site's base path and links name this repository's Pages site, not a fork's.
+    if: github.repository == 'rayanyedaly/samesight'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      # No dependency cache in a build that is published: it comes from a clean install.
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      # Fails on a link to a missing page or file, as on pull requests.
+      - run: pnpm docs:build
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write # the deployment
+      id-token: write # proves to Pages that the artifact comes from this run
+    steps:
+      - uses: actions/deploy-pages@v5
+        id: deployment

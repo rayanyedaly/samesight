@@ -120,11 +120,19 @@ npx samesight-verify       # prove devices and RLS agree, against the local stac
 
 The [getting started guide](docs/getting-started.md) walks through it, including the Supabase hook and the PowerSync service.
 
+## Why I built this
+
+I built an EMR and patient management system for a developing country: an offline-first mobile app for patients, and a web dashboard for doctors and clinics, on cloud-hosted Postgres with PowerSync syncing to the devices. Patient records are PII and PHI, and the sync config decided which of them landed on which phone. I worried that one wrong filter would put a patient's data on someone else's device, and I didn't want to check by hand every time I changed the backend or the sync engine. So I wrote a small script I could run whenever I needed it.
+
+Then I thought other PowerSync developers might have the same worry, or have had it already. Why not build something that works for any PowerSync project? Samesight is that script, grown up. Lint reads any PowerSync sync config; audit and the policy compiler work with Supabase today. [The longer story](docs/why.md).
+
+Rayan
+
 ## Packages
 
 | Package | What it is |
 | --- | --- |
-| [`samesight`](packages/samesight) | The `samesight` CLI: `lint` and `audit` for any PowerSync sync config (`audit` runs `samesight-verify audit`), and `init`, `generate`, `check`, `doctor` and `explain` for a policy. Also the policy language and the compiler. |
+| [`samesight`](packages/samesight) | The `samesight` CLI: `lint` for any PowerSync sync config, and `audit` for one in a Supabase project (`audit` runs `samesight-verify audit`), and `init`, `generate`, `check`, `doctor` and `explain` for a policy. Also the policy language and the compiler. |
 | [`@samesight/verify`](packages/verify) | `samesight-verify`: static and catalog checks, the differential test, forged writes and the mutation test; `audit` for projects without a policy. |
 | [`@samesight/supabase`](packages/supabase) | A PowerSync connector for Supabase: one atomic `apply_batch` call per transaction, error classification, and refused writes kept instead of lost. |
 | [`@samesight/next`](packages/next) | For Next.js: a per-user encrypted local database, offline unlock, idle lock, safe sign-out, and sync status UI. |
@@ -133,9 +141,13 @@ Lint needs only `samesight`; audit needs `@samesight/verify` installed too, and 
 
 ## Docs
 
+The docs are also a website, with search: [rayanyedaly.github.io/samesight](https://rayanyedaly.github.io/samesight/).
+
+- [Why I built this](docs/why.md)
 - [Getting started](docs/getting-started.md)
 - [The policy language](docs/policy.md)
 - [The CLIs](docs/cli.md)
+- [Lint rules](docs/rules/index.md): what each rule catches, with an example and the fix
 - [The verifier and audit mode](docs/verify.md)
 - [How sync configs leak](docs/how-sync-configs-leak.md): the patterns lint and audit catch
 - [CI and the GitHub Action](docs/ci.md): lint and audit on pull requests

@@ -1,0 +1,7 @@
+config:
+  edition: 3
+
+streams:
+  team_documents:
+    auto_subscribe: true
+    query: SELECT * FROM documents WHERE team_id = auth.parameter('user_metadata') ->> 'team_id'
