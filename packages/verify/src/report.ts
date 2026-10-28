@@ -117,6 +117,11 @@ export function formatFindings(findings: Finding[], color = false): string {
     .join("\n");
 }
 
+/** A section as the CLI prints it: its title, then its findings' lines. */
+export function formatSection(title: string, findings: Finding[], color = false): string {
+  return `${title}\n${formatFindings(findings, color)}`;
+}
+
 export function failed(findings: Finding[]): boolean {
   return findings.some((f) => f.status === "fail");
 }
