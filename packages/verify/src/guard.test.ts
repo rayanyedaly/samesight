@@ -42,12 +42,23 @@ describe("assertLocalTargets", () => {
     );
     expect(refusal({ PowerSync: "127.0.0.1:8080" })).toBe('  - PowerSync: "127.0.0.1:8080" is not a URL; pass --powersync an http(s) URL on localhost or 127.0.0.1');
     expect(refusal({ PowerSync: "localhost:8080" })).toBe('  - PowerSync: "localhost:8080" is not an http(s) URL; pass --powersync an http(s) URL on localhost or 127.0.0.1');
-    expect(refusal({ PowerSync: "file:///etc/passwd" })).toBe('  - PowerSync: "file:///etc/passwd" is not an http(s) URL; pass --powersync an http(s) URL on localhost or 127.0.0.1');
+    expect(refusal({ PowerSync: "file:///etc/passwd" })).toBe("  - PowerSync: the value given is not an http(s) URL; pass --powersync an http(s) URL on localhost or 127.0.0.1");
+    expect(refusal({ PowerSync: "http://u:secret@127.0.0.1:8080" })).toBe(
+      '  - PowerSync: "http://127.0.0.1:8080/…" carries a user name or password; drop user:password@ from --powersync',
+    );
     // Never a password or a token from the value, whichever branch refuses it.
-    expect(refusal({ PowerSync: "http://u:secret@[bad" })).toBe('  - PowerSync: "…@[bad" is not a URL; pass --powersync an http(s) URL on localhost or 127.0.0.1');
-    expect(refusal({ PowerSync: "u:secret@127.0.0.1:8080" })).toBe('  - PowerSync: "…@127.0.0.1:8080" is not an http(s) URL; pass --powersync an http(s) URL on localhost or 127.0.0.1');
-    for (const value of ["http://u:sec\nret@[bad", "http://host:99999/?apikey=secret", "postgres://u:secret@127.0.0.1/x"]) {
-      expect(refusal({ PowerSync: value })).not.toMatch(/secret|sec\n|ret@/);
+    for (const value of [
+      "http://u:secret@[bad",
+      "u:secret@127.0.0.1:8080",
+      "u:secret",
+      "secret",
+      "http://u:sec\nret@[bad",
+      "http://host:99999/?apikey=secret",
+      "postgres://u:secret@127.0.0.1/x",
+      "ftp://u:secret@127.0.0.1",
+    ]) {
+      // The whole message, every line of it.
+      expect(() => assertLocalTargets({ db: local.db, http: { PowerSync: value }, flags }, {})).toThrow(/^(?![\s\S]*(?:sec|ret@))/);
     }
     expect(refusal({ "Supabase API": "https://abc.supabase.co" })).toBe(`  - Supabase API: abc.supabase.co is not this machine; ${status}`);
     expect(refusal({}, "postgresql://u:p@db.abc.supabase.co:5432/postgres")).toBe(

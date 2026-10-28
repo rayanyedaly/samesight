@@ -65,7 +65,7 @@ export function stackFromStatus(status: Record<string, string>, powersync: strin
  */
 export async function assertPowerSync(url: string, ready: (url: string) => Promise<boolean> = isReady): Promise<void> {
   if (!(await ready(url.replace(/\/+$/, "")))) {
-    throw new Error(`PowerSync is not reachable at ${shown(url)}; start it (docker compose up powersync) or pass --powersync <url>`);
+    throw new Error(`PowerSync is not reachable at ${shown(url) ?? "the --powersync URL"}; start it (docker compose up powersync) or pass --powersync <url>`);
   }
 }
 

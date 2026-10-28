@@ -70,5 +70,9 @@ describe("assertPowerSync", () => {
     await expect(assertPowerSync("http://127.0.0.1:1")).rejects.toThrow(
       "PowerSync is not reachable at http://127.0.0.1:1; start it (docker compose up powersync) or pass --powersync <url>",
     );
+    // Its address as shown, with no token from the query.
+    await expect(assertPowerSync("http://127.0.0.1:1/?token=secret", async () => false)).rejects.toThrow(
+      "PowerSync is not reachable at http://127.0.0.1:1/…; start it",
+    );
   });
 });

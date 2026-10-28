@@ -30,7 +30,7 @@ function removeNamed(said: string) {
     found++;
   }
   // Each caller's message names one: none found means the copy would be left behind unseen.
-  expect(found).toBeGreaterThan(0);
+  expect(found, `no kept copy named in: ${said}`).toBeGreaterThan(0);
 }
 
 function project(content: string) {

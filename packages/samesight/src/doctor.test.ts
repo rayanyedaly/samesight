@@ -6,7 +6,7 @@ describe("doctor's replication role check", () => {
     expect(replicationRole(undefined)).toEqual({
       status: "fail",
       check: "replication role",
-      detail: "powersync_role does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset",
+      detail: "powersync_role does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset (which resets the local data)",
     });
     // Applying the migration again would not change a role that exists.
     expect(replicationRole({ replication: true, bypassrls: false, login: true }).detail).toBe(

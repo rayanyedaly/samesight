@@ -34,7 +34,7 @@ export async function doctor(url: string, ir: IR, latestVersion: string | null):
     } else add("fail", "migration", "no generated migration yet; run `samesight generate`");
 
     const hook = await scalar<boolean>(client, `select to_regprocedure('samesight.custom_access_token_hook(jsonb)') is not null`);
-    add(hook ? "ok" : "fail", "token hook", hook ? "samesight.custom_access_token_hook exists" : "missing; apply the migration");
+    add(hook ? "ok" : "fail", "token hook", hook ? "samesight.custom_access_token_hook exists" : "missing; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset (which resets the local data)");
 
     const tables = await client.query<{ name: string; rls: boolean; identity: string }>(
       `select c.relname as name, c.relrowsecurity as rls, c.relreplident as identity
@@ -82,7 +82,7 @@ export async function doctor(url: string, ir: IR, latestVersion: string | null):
 export function replicationRole(r: { replication: boolean; bypassrls: boolean; login: boolean } | undefined): Finding {
   const check = "replication role";
   // The generated migration creates the role; one that already exists it leaves as it is.
-  if (!r) return { status: "fail", check, detail: `${REPLICATION_ROLE} does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset` };
+  if (!r) return { status: "fail", check, detail: `${REPLICATION_ROLE} does not exist; apply the migration samesight generate writes (supabase migration up), or, if it is already applied, supabase db reset (which resets the local data)` };
   if (!r.replication || !r.bypassrls) {
     return {
       status: "fail",
