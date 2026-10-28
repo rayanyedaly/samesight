@@ -1,6 +1,6 @@
 # Changelog
 
-All four packages (`samesight`, `@samesight/verify`, `@samesight/supabase`, `@samesight/next`) share one version. Before 1.0, a minor version may change the policy language or the generated output; each such change is listed here with what to do.
+The four npm packages (`samesight`, `@samesight/verify`, `@samesight/supabase`, `@samesight/next`) share one version, and the GitHub Action at the repository root is released under the same tag (`v0.1.0`). Before 1.0, a minor version may change the policy language or the generated output; each such change is listed here with what to do.
 
 ## 0.1.0
 
@@ -74,3 +74,12 @@ The first published release.
 - `createEncryptedStore`: a per-user encrypted PowerSync database keyed from the sign-in password.
 - `SamesightProvider` and `useSamesight`: offline unlock, an idle lock that also counts time the device slept, sign-out that counts the queue and unacknowledged refused writes, and a recovery screen that names the loss.
 - `SyncStatusChip`, `RejectedWritesBanner`, `ConfirmDialog` and `styles.css`.
+
+### Docs, examples and corpus
+
+- The README opens with lint and audit, the two commands to run on an existing project, and a capture of `samesight audit` failing on the to-do list demo with a leak planted (`docs/assets/audit-demo-light.svg` and `audit-demo-dark.svg`). The package READMEs for `samesight` and `@samesight/verify` open the same way.
+- [How sync configs leak](docs/how-sync-configs-leak.md): one section per pattern in the planted corpus: a missing owner filter, an unbound parameter query, a client parameter and `user_metadata`.
+- `corpus/real`: eleven sync configs copied byte for byte from PowerSync's public demos, streams and legacy sync rules, with each one's source commit, license and SHA-256 in [`corpus/SOURCES.md`](corpus/SOURCES.md). A test snapshots what audit's sync config parser makes of each.
+- `corpus/planted`: four of them with one line changed so they leak, each with a header comment naming the change and the lint rule that must catch it, and a test that it does. Each still passes PowerSync's own validator.
+- [`examples/audit-todolist`](examples/audit-todolist): audit on PowerSync's Supabase to-do list demo, fetched at a pinned commit and hash-checked. In CI it must pass as published, with every policy and stream seen allowing and refusing a row, and fail on a planted leak; the same rules written as legacy sync rules must pass and fail the same way.
+- [`examples/audit-roles`](examples/audit-roles): hand-written RLS and sync streams that read a role and an org from `app_metadata` and a team from an access token hook. In CI audit must see every rule both allowing and refusing a row, and catch two planted leaks.
