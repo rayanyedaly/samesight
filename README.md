@@ -105,7 +105,7 @@ Inspection (tenant column tenantId)
 
 ### Get started with a policy
 
-You need Node 22.18 or newer, the Supabase CLI (in the project with `npm i -D supabase`, or on your PATH), a local stack (`npx supabase start`), and Docker for the PowerSync service.
+You need Node 22.18 or newer, the Supabase CLI in the project (the `npm install -D` line below adds it) with a local stack (`npx supabase start`), and Docker for the PowerSync service.
 
 ```bash
 npm install samesight @samesight/supabase
