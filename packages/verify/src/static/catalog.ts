@@ -170,7 +170,7 @@ export async function checkCatalog(client: pg.Client, m: Manifest, publication: 
     [HOOK],
   );
   const h = hook[0];
-  if (!h?.exists) add("fail", "token hook", `${HOOK} does not exist`);
+  if (!h?.exists) add("fail", "token hook", `${HOOK} does not exist; run samesight generate, then apply the migration (supabase migration up)`);
   else if (!h.auth_admin) add("fail", "token hook", "supabase_auth_admin cannot execute it, so tokens carry no tenant");
   else if (h.others?.length) add("fail", "token hook", `${h.others.join(", ")} can execute it and forge claims for any user`);
   else add("ok", "token hook", "only supabase_auth_admin can execute it");
@@ -186,7 +186,9 @@ export async function checkCatalog(client: pg.Client, m: Manifest, publication: 
     [publication],
   );
   const pb = pub[0];
-  if (!pb) add("fail", "publication", `${publication} does not exist`);
+  if (!pb) {
+    add("fail", "publication", `${publication} does not exist; run samesight generate, then apply the migration (supabase migration up), which creates it with the synced tables`);
+  }
   else if (pb.all) add("fail", "publication", `${publication} is FOR ALL TABLES; list the synced tables`);
   else {
     const want = synced.map((n) => `public.${n}`);

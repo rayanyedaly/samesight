@@ -36,7 +36,12 @@ export interface Targets {
   db: string;
   /** HTTP services: the Supabase API (Auth, REST) and the PowerSync service. */
   http: Record<string, string>;
+  /** The flag that sets an HTTP service, by name, for the fix a refusal names; one without is read from supabase status. */
+  flags?: Record<string, string>;
 }
+
+/** The fix for an address read from supabase status, which only a stack on this machine changes. */
+const FROM_STATUS = "it comes from supabase status: run the project's local stack on this machine (supabase start)";
 
 /** Throws, listing every problem, unless each target is local and the environment is not a deployment. */
 export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = process.env): void {
@@ -44,18 +49,22 @@ export function assertLocalTargets(targets: Targets, env: NodeJS.ProcessEnv = pr
   try {
     assertLocal(targets.db);
   } catch (e) {
-    problems.push(`database: ${(e as Error).message}`);
+    problems.push(`database: ${(e as Error).message}; ${FROM_STATUS}`);
   }
   for (const [name, url] of Object.entries(targets.http)) {
+    const flag = targets.flags?.[name];
+    const toUrl = flag ? `pass ${flag} an http(s) URL on localhost or 127.0.0.1` : FROM_STATUS;
     let parsed: URL;
     try {
       parsed = new URL(url);
     } catch {
-      problems.push(`${name}: "${url}" is not a URL`);
+      problems.push(`${name}: "${url}" is not a URL; ${toUrl}`);
       continue;
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") problems.push(`${name}: ${url} is not an http(s) URL`);
-    else if (!LOCAL_HOSTS.has(parsed.hostname)) problems.push(`${name}: ${parsed.hostname} is not this machine`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") problems.push(`${name}: ${url} is not an http(s) URL; ${toUrl}`);
+    else if (!LOCAL_HOSTS.has(parsed.hostname)) {
+      problems.push(`${name}: ${parsed.hostname} is not this machine; ${flag ? `point ${flag} at localhost or 127.0.0.1` : FROM_STATUS}`);
+    }
   }
   const nodeEnv = env.NODE_ENV ?? "development";
   if (nodeEnv !== "development" && nodeEnv !== "test") {
