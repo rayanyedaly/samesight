@@ -20,8 +20,8 @@ Claims
 ok    claims: no rule reads a token claim other than the user id
 
 Differential (4 users, 1 datasets)
-FAIL  differential: devices and RLS disagree (seed 1842, shrunk 5 times to 3 rows; shrinking stopped at the time limit):
-    leak: u1 received lists 5a3e5a3e-e925… (owner_id u0); RLS returns no such row for this user
+FAIL  differential: devices and RLS disagree (seed 1842, shrunk 6 times to 3 rows; shrinking stopped at the time limit):
+    leak: u1 received lists 5a3e5a3e-c272… (owner_id u0); RLS returns no such row for this user
       sent by    stream user_data, queries[0]
                  SELECT * FROM lists
       refused by policy "owned lists" on lists
@@ -32,4 +32,4 @@ FAIL  differential: devices and RLS disagree (seed 1842, shrunk 5 times to 3 row
 
 (Coverage and Write path sections left out of this capture)
 
-FAILED: 1 failing, 3 warnings (100s)
+FAILED: 1 failing, 3 warnings (90s)
