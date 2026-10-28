@@ -141,6 +141,8 @@ Lint needs only `samesight`; audit needs `@samesight/verify` installed too, and 
 
 ## Docs
 
+The docs are also a website, with search: [rayanyedaly.github.io/samesight](https://rayanyedaly.github.io/samesight/).
+
 - [Why I built this](docs/why.md)
 - [Getting started](docs/getting-started.md)
 - [The policy language](docs/policy.md)

@@ -32,9 +32,9 @@ With a policy, it runs:
 
 It refuses to run against anything but this machine: every address must be local, `NODE_ENV` must be `development` or `test`, and hosting platform variables must be absent. It reads addresses and keys from `supabase status`, using the Supabase CLI in `node_modules/.bin` or on your PATH. Needs Node 22.18 or newer, and Docker when audit starts PowerSync.
 
-- [The verifier and audit mode](https://github.com/rayanyedaly/samesight/blob/main/docs/verify.md)
-- [How sync configs leak](https://github.com/rayanyedaly/samesight/blob/main/docs/how-sync-configs-leak.md)
-- [CI and the GitHub Action](https://github.com/rayanyedaly/samesight/blob/main/docs/ci.md)
-- [Getting started](https://github.com/rayanyedaly/samesight/blob/main/docs/getting-started.md)
+- [The verifier and audit mode](https://rayanyedaly.github.io/samesight/verify)
+- [How sync configs leak](https://rayanyedaly.github.io/samesight/how-sync-configs-leak)
+- [CI and the GitHub Action](https://rayanyedaly.github.io/samesight/ci)
+- [Getting started](https://rayanyedaly.github.io/samesight/getting-started)
 
 MIT

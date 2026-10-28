@@ -4,7 +4,7 @@
   "description": "Catches PowerSync sync configs that send devices rows Supabase RLS refuses, by syncing headless devices on your local stack: audit and policy verification",
   "license": "MIT",
   "author": "Rayan Yedaly",
-  "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/verify#readme",
+  "homepage": "https://rayanyedaly.github.io/samesight/verify",
   "bugs": "https://github.com/rayanyedaly/samesight/issues",
   "repository": {
     "type": "git",

@@ -4,7 +4,7 @@
   "description": "Catches PowerSync sync configs that send devices rows Supabase RLS refuses: lint, audit, and one policy for both",
   "license": "MIT",
   "author": "Rayan Yedaly",
-  "homepage": "https://github.com/rayanyedaly/samesight/tree/main/packages/samesight#readme",
+  "homepage": "https://rayanyedaly.github.io/samesight/",
   "bugs": "https://github.com/rayanyedaly/samesight/issues",
   "repository": {
     "type": "git",
