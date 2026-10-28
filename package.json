@@ -13,6 +13,9 @@
     "typecheck": "turbo typecheck",
     "test": "turbo test --concurrency=1",
     "smoke": "node scripts/pack-smoke.mjs",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "format": "biome format --write ."
   },
   "devDependencies": {
@@ -21,6 +24,7 @@
     "supabase": "^2.122.0",
     "turbo": "^2.11.10",
     "typescript": "^7.0.2",
+    "vitepress": "1.6.4",
     "vitest": "^5.0.5"
   }
 }
