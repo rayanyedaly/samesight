@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished } from "vitest";
 import { fieldbookPolicy, fieldbookSchema } from "./fixtures/fieldbook.ts";
 import { nextVersion, outputPaths, plan } from "./generate.ts";
 import { assertLocal, DEFAULT_DB_URL, projectDbUrl } from "./introspect.ts";
@@ -29,6 +29,7 @@ describe("assertLocal", () => {
 describe("projectDbUrl", () => {
   it("reads the [db] port from supabase/config.toml", () => {
     const dir = mkdtempSync(join(tmpdir(), "samesight-db-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
     expect(projectDbUrl(dir)).toBe(DEFAULT_DB_URL);
     mkdirSync(join(dir, "supabase"));
     writeFileSync(join(dir, "supabase", "config.toml"), '[api]\nport = 56321\n\n[db]\n# The port\nport = 56322 # local\nshadow_port = 56320\n');
@@ -55,6 +56,7 @@ describe("nextVersion", () => {
 
 describe("plan", () => {
   const root = mkdtempSync(join(tmpdir(), "samesight-"));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
   const now = new Date("2026-10-25T20:00:00Z");
 
   it("writes a new migration only when the output changes", () => {
