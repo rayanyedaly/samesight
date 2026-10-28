@@ -78,11 +78,12 @@ The exit code is 0 when nothing failed, 1 when a check found something, and 2 wh
 
 ## Audit mode
 
-`samesight-verify audit` runs the same differential on a project that has no Samesight policy: its own RLS (whatever `pg_policies` says) against its own sync config. It is the quickest way to find out whether an existing Supabase and PowerSync app leaks, and it needs only the project's local Supabase stack and Docker:
+`samesight-verify audit` runs the same differential on a project that has no Samesight policy: its own RLS (whatever `pg_policies` says) against its own sync config. It is the quickest way to find out whether an existing Supabase and PowerSync app leaks, and it needs only the project's local Supabase stack, Docker, and the Supabase CLI in the project or on your PATH:
 
 ```bash
+npm install -D @samesight/verify supabase
 npx supabase start
-npx @samesight/verify audit --sync-config powersync/sync-config.yaml
+npx samesight-verify audit --sync-config powersync/sync-config.yaml
 ```
 
 You do not need to run PowerSync yourself, or have run it locally before: once the sync config and catalog checks pass, audit starts one for the run on the sync config you give it, and removes it at the end (see [what audit starts and removes](#what-audit-starts-and-removes)). To audit a PowerSync service you run yourself, pass `--powersync <url>`.
