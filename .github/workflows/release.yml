@@ -5,8 +5,10 @@
 # test pass on the tagged commit. Packages carry npm provenance, which links each
 # tarball to this workflow run.
 #
-# Needs an NPM_TOKEN secret: an npm automation token, or a granular token with publish
-# rights on samesight and the @samesight scope.
+# Publishes with npm trusted publishing: no npm token is stored. Each of the four packages
+# names this repository, this workflow (release.yml) and the "npm" environment as its
+# trusted publisher on npmjs.com, and npm trades this run's OIDC token for a one-time
+# publish credential.
 name: Release
 
 on:
@@ -22,7 +24,7 @@ jobs:
     environment: npm
     permissions:
       contents: write # the GitHub release
-      id-token: write # npm provenance
+      id-token: write # npm trusted publishing and provenance
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,7 +36,6 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-          registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: node scripts/version.mjs --check "$GITHUB_REF_NAME"
       - run: pnpm typecheck
@@ -42,16 +43,28 @@ jobs:
       - run: pnpm test
       - run: pnpm --filter fieldbook policy:check
       - run: pnpm smoke
-      # prepack builds each package; workspace:^ ranges become the released version.
+      # Trusted publishing is npm's own: npm 11.5.1 or newer, on Node 22.14 or newer.
+      - run: npm install --global "npm@^11.5.1" && npm --version
+      # pnpm packs each package (prepack builds it, and workspace:^ ranges become the
+      # released version); npm publishes the tarball, with provenance.
       # A version with a prerelease part (0.2.0-rc.1) goes to the "next" tag, not "latest".
       - name: Publish
         run: |
           tag=latest
           case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
-          pnpm publish --recursive --filter "./packages/*" --access public --tag "$tag" --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            # A rerun after a partial publish skips what npm already has.
+            if npm view "$name@$version" version > /dev/null 2>&1; then
+              echo "$name@$version is already on npm"
+              continue
+            fi
+            out="$RUNNER_TEMP/packs/$(basename "$dir")"
+            mkdir -p "$out"
+            (cd "$dir" && pnpm pack --pack-destination "$out" > /dev/null)
+            npm publish "$out"/*.tgz --access public --tag "$tag" --provenance
+          done
       - name: GitHub release
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/CHANGELOG.md)." $([[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease)
         env:
