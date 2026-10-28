@@ -105,14 +105,14 @@ Inspection (tenant column tenantId)
 
 ### Get started with a policy
 
-You need Node 22.18 or newer, the Supabase CLI with a local stack (`supabase start`), and Docker for the PowerSync service.
+You need Node 22.18 or newer, the Supabase CLI in the project (`npm i -D supabase`) or on your PATH with a local stack (`npx supabase start`), and Docker for the PowerSync service.
 
 ```bash
 npm install samesight @samesight/supabase
 npm install -D @samesight/verify
 
 npx samesight init         # drafts samesight.policy.ts from your local database
-supabase gen types typescript --local --schema public > supabase/types.ts
+npx supabase gen types typescript --local --schema public > supabase/types.ts
 npx samesight generate     # migration, sync streams, client schema
 npx samesight explain      # who can do what, in plain words
 npx samesight-verify       # prove devices and RLS agree, against the local stack

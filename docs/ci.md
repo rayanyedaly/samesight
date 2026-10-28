@@ -105,7 +105,7 @@ jobs:
 
 In audit mode the action:
 
-1. installs the Supabase CLI;
+1. installs the Supabase CLI (unless `version: installed` finds one on the PATH);
 2. runs `supabase start` in `project` (or uses the stack when one is already running there, and leaves it running), starting only Postgres, Auth, REST and the gateway (`exclude` lists the services it leaves out);
 3. runs `samesight-verify audit`, which starts its own PowerSync service in Docker and removes it at the end;
 4. adds the Markdown report to the job summary;
