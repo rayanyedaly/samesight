@@ -39,6 +39,10 @@ Start the stacks with `pnpm --filter fieldbook stack:up` (then `seed`), `pnpm --
 
 When an emitter's output changes on purpose, update the golden files in `packages/samesight/src/emit/__golden__` and regenerate Fieldbook (`pnpm --filter fieldbook policy:generate` with its stack up), and say in the changelog what users must do.
 
+## Docs site
+
+`docs/` is also a VitePress site. `pnpm docs:dev` previews it; CI builds it on every pull request, and a dead link fails the build. The Docs workflow publishes it to GitHub Pages, at https://rayanyedaly.github.io/samesight/, when the docs change on main. Before the first deploy, the owner sets Settings, Pages, Source to "GitHub Actions" once.
+
 ## Releasing
 
 All packages share one version.
