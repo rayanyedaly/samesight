@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,22 +121,21 @@ step("samesight-verify --json writes its report on exit 2", () => {
   }
 });
 /**
- * The installed samesight CLI, run by node with only node's own directory on the PATH: no
- * node_modules/.bin, as npx would add, so `samesight audit` finds samesight-verify by
- * resolving the package, or not at all.
+ * The installed samesight CLI, run by node with the PATH given: with an empty directory, no
+ * node_modules/.bin, as npx would add, and not even a samesight-verify installed globally
+ * beside node, so `samesight audit` finds samesight-verify by resolving the package, or not
+ * at all. run() starts node by its own path; NODE_PATH goes too.
  */
-// A PATH holding node alone: a samesight-verify installed globally beside node is not on it.
-const nodeOnly = join(work, "node-only");
-mkdirSync(nodeOnly);
-symlinkSync(process.execPath, join(nodeOnly, "node"));
-function samesightAlone(dir, ...a) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== "PATH"));
-  return run("node", [join(dir, "node_modules/samesight/dist/cli.js"), ...a], { cwd: dir, env: { ...env, PATH: nodeOnly } });
+const emptyPath = join(work, "empty-path");
+mkdirSync(emptyPath);
+function samesightAlone(dir, path, ...a) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !["PATH", "NODE_PATH"].includes(k.toUpperCase())));
+  return run("node", [join(dir, "node_modules/samesight/dist/cli.js"), ...a], { cwd: dir, env: { ...env, PATH: path } });
 }
 
 step("samesight audit runs samesight-verify audit", () => {
   try {
-    samesightAlone(cli, "audit", "--json", "--sync-config", "nowhere.yaml");
+    samesightAlone(cli, emptyPath, "audit", "--json", "--sync-config", "nowhere.yaml");
     throw new Error("audit passed with no sync config");
   } catch (e) {
     if (e.status !== 2) throw e;
@@ -230,13 +229,29 @@ step("node imports @samesight/supabase", () => {
 });
 step("samesight audit without @samesight/verify says how to install it", () => {
   try {
-    samesightAlone(lib, "audit", "--json");
+    samesightAlone(lib, emptyPath, "audit", "--json");
     throw new Error("audit ran with no @samesight/verify installed");
   } catch (e) {
     if (e.status !== 2) throw e;
     expectIn(e.stderr, "npm install -D @samesight/verify", "install hint");
     const doc = JSON.parse(e.stdout);
     if (doc.exitCode !== 2 || doc.result !== "incomplete" || !doc.error.includes("@samesight/verify")) throw new Error(`samesight audit --json: ${e.stdout}`);
+  }
+});
+step("samesight audit finds a global samesight-verify on the PATH", () => {
+  // npm's global layout: <prefix>/bin/samesight-verify, or on Windows <prefix>\samesight-verify.cmd
+  // beside <prefix>\node_modules, which samesight runs by its script, without cmd.exe.
+  const prefix = join(work, "global");
+  run("npm", ["install", "--global", "--prefix", prefix, "--no-audit", "--no-fund", "--loglevel=error", tarball.samesight, tarball.verify], { cwd: work });
+  // node's own directory last, for the Unix script's `#!/usr/bin/env node`.
+  const path = [win ? prefix : join(prefix, "bin"), dirname(process.execPath)].join(win ? ";" : ":");
+  try {
+    samesightAlone(lib, path, "audit", "--json", "--sync-config", "nowhere.yaml");
+    throw new Error("audit passed with no sync config");
+  } catch (e) {
+    if (e.status !== 2) throw e;
+    const doc = JSON.parse(e.stdout);
+    if (doc.tool !== "samesight-verify" || !/no sync config/.test(doc.error)) throw new Error(`samesight audit --json: ${e.stdout}`);
   }
 });
 step("node imports samesight", () =>
