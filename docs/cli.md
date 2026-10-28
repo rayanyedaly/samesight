@@ -24,7 +24,7 @@ Every command exits 0 when it passes, 1 when it found something (a stale file, a
 | `--table <name>` | `explain` only: one table. |
 | `--migrations <dir>` | `lint` only: the SQL migrations to read RLS from. Default: `supabase/migrations`, when it exists. |
 | `--allow <rule>[:<name>]` | `lint` only: accept a rule's findings, all of them or those about one stream, bucket, table or policy. Repeatable. |
-| `--format <text\|json>` | `lint` only: `json` prints one JSON object on stdout, each finding with its 1-based `line` and `column` where known; notes stay on stderr. |
+| `--format <text\|json\|sarif\|github>` | `lint` only: `json` prints one JSON object on stdout, each finding with its 1-based `line` and `column` where known; `sarif` one SARIF 2.1.0 log; `github` GitHub Actions annotations. Notes stay on stderr, and the exit code is the same in every format. |
 | `-v`, `--version` | |
 | `-h`, `--help` | |
 
@@ -114,6 +114,8 @@ Lint proves nothing about what reaches a device: it flags known mistakes in seco
 Warnings do not fail the run, but each one needs a decision: a warning can be a real leak (`deleted = false` filters rows yet sends every undeleted one to everyone; `auth.user_id() IN (SELECT id FROM profiles)` admits every user, not admins). Fix it, or accept it as below. A finding that is deliberate, such as a table public by design, can be accepted with `--allow unscoped-query:customers` (by stream, bucket, table or policy name) or `--allow not-auto-subscribed` (a whole rule). Allowed findings are counted in the output, never dropped silently, and a misspelt rule name is an error.
 
 Exit codes: `0` when nothing is an error (warnings and notes do not fail a run), `1` on any error, `2` when a file cannot be read, no sync config is found or an option is wrong.
+
+For CI, `--format sarif` prints one SARIF 2.1.0 log for GitHub code scanning (`github/codeql-action/upload-sarif`), which shows a finding on a pull request when its line is part of the change. Each result names its rule, with a link to the rule's section below, its file (relative paths stay relative) and, when known, its line and column; findings `--allow` accepted are included as suppressed, and files that could not be read are reported as tool notifications. On a private repository, code scanning needs GitHub Code Security. `--format github` needs nothing: it prints one workflow command per finding (`::error file=sync-config.yaml,line=6,col=12,title=samesight unscoped-query::...`, `::warning` and `::notice` for the others), which GitHub Actions shows as annotations on the run and on the pull request's changed lines. Allowed findings are counted in one `::notice`, not printed.
 
 The rules, each with its level and what it catches:
 

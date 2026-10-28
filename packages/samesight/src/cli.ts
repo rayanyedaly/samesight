@@ -15,9 +15,11 @@ import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
-import { applyAllow, exitCode, formatLint, type LintFinding, sortFindings } from "./lint/finding.ts";
+import { applyAllow, exitCode, formatLint, type LintFinding, sortFindings, type Unreadable } from "./lint/finding.ts";
+import { formatGithub } from "./lint/github.ts";
 import { findSyncConfig, lintSyncConfig, MIGRATIONS_DIR, RULE_NAMES, SYNC_CONFIG_FILES } from "./lint/lint.ts";
 import { type Migrations, readMigrations } from "./lint/migrations.ts";
+import { formatSarif } from "./lint/sarif.ts";
 import { loadPolicy, POLICY_FILES, resolvePolicyPath, tsIsModule } from "./load.ts";
 import type { Policy } from "./policy.ts";
 import type { SchemaInfo } from "./schema.ts";
@@ -47,8 +49,9 @@ Options:
   --allow <rule>[:<name>]
                     lint: accept a rule's findings, all of them or those about one stream,
                     bucket, table or policy; repeatable
-  --format <text|json>
-                    lint: text (default) or one JSON object on stdout, notes on stderr
+  --format <text|json|sarif|github>
+                    lint: text (default), one JSON object, one SARIF 2.1.0 log, or GitHub
+                    Actions annotations, on stdout; notes on stderr
   -v, --version     print the version
   -h, --help        print this help
 
@@ -150,10 +153,12 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-/** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read. */
+const FORMATS = ["text", "json", "sarif", "github"];
+
+/** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read; in every format. */
 function lint(given: string[], migrationsDir: string | undefined, allow: string[], format: string): number {
-  if (format !== "text" && format !== "json") {
-    console.error(`--format must be text or json, not "${format}"`);
+  if (!FORMATS.includes(format)) {
+    console.error(`--format must be text, json, sarif or github, not "${format}"`);
     return 2;
   }
   // A misspelt rule would allow nothing and look like it worked.
@@ -179,7 +184,7 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
     }
   } else console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run; pass --migrations <dir> to check them`);
   const findings: LintFinding[] = [];
-  const unreadable: { file: string; error: string }[] = [];
+  const unreadable: Unreadable[] = [];
   for (const file of found) {
     try {
       findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file, undefined, migrations));
@@ -194,6 +199,15 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
     const count = (level: string) => kept.filter((f) => f.level === level).length;
     const report = { files: found, rlsChecked: migrations !== undefined, findings: sortFindings(kept), allowed: sortFindings(allowed), unreadable, errors: count("error"), warnings: count("warning"), notes: count("info"), exitCode: code };
     console.log(JSON.stringify(report, null, 2));
+    return code;
+  }
+  if (format === "sarif") {
+    console.log(JSON.stringify(formatSarif({ kept, allowed, unreadable }, VERSION), null, 2));
+    return code;
+  }
+  if (format === "github") {
+    const out = formatGithub({ kept, allowed, unreadable });
+    if (out) console.log(out);
     return code;
   }
   // "No problems found" would be false for a file that was never checked.

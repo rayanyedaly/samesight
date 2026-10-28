@@ -20,6 +20,25 @@ export interface LintFinding {
   subjects?: string[];
 }
 
+/** A file that could not be read as a sync config, and why. */
+export interface Unreadable {
+  file: string;
+  error: string;
+}
+
+/** What one lint run found, as the report formats take it. */
+export interface LintRun {
+  /** Findings --allow did not accept. */
+  kept: LintFinding[];
+  allowed: LintFinding[];
+  unreadable: Unreadable[];
+}
+
+/** A file as SARIF and GitHub annotations name it: forward slashes, no leading ./. */
+export function repoPath(file: string): string {
+  return file.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+}
+
 const ORDER: Record<LintLevel, number> = { error: 0, warning: 1, info: 2 };
 
 /** Sorted by file, then line (file-wide findings first), then level. */
