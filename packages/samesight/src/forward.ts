@@ -77,8 +77,11 @@ export function besideShim(shim: string): string | undefined {
   return existsSync(pkg) ? pkg : undefined;
 }
 
-/** How to run samesight-verify, or undefined when it is nowhere to be found. */
-export function findVerify(lookups: Lookups = LOOKUPS, platform: NodeJS.Platform = process.platform): Command | undefined {
+/**
+ * How to run samesight-verify; why it cannot be run safely, when that is so; or undefined
+ * when it is nowhere to be found.
+ */
+export function findVerify(lookups: Lookups = LOOKUPS, platform: NodeJS.Platform = process.platform): Command | string | undefined {
   for (const find of [lookups.project, lookups.own]) {
     const pkg = find();
     const bin = pkg && binOf(pkg);
@@ -89,7 +92,11 @@ export function findVerify(lookups: Lookups = LOOKUPS, platform: NodeJS.Platform
   // The shim's own script, run by this Node, needs no cmd.exe; the shim itself does.
   const pkg = besideShim(bin);
   const script = pkg && binOf(pkg);
-  return script ? { command: process.execPath, args: [script], shell: false } : { command: bin, args: [], shell: true };
+  if (script) return { command: process.execPath, args: [script], shell: false };
+  // cmd.exe expands %NAME% (and !NAME! with delayed expansion) even inside the quotes
+  // cmdLine puts around the shim's path, where no caret can escape it.
+  if (/[%!]/.test(bin)) return `cannot run ${bin} safely through cmd.exe (its path holds % or !); install @samesight/verify in the project instead: npm install -D @samesight/verify`;
+  return { command: bin, args: [], shell: true };
 }
 
 /** What cmd.exe acts on outside quotes; a caret before one makes it literal. */
@@ -119,7 +126,7 @@ export function quoteForCmd(arg: string): string {
 /**
  * The command line cmd.exe runs for a .cmd shim and its arguments. The shim's path is
  * quoted, not caret-escaped, so one with spaces (C:\Users\Jo Smith\...) is found; a
- * Windows path cannot hold a quote.
+ * Windows path cannot hold a quote, and findVerify refuses one with % or !.
  */
 export function cmdLine(shim: string, args: string[]): string {
   return [`"${shim}"`, ...args.map(quoteForCmd)].join(" ");
@@ -137,9 +144,10 @@ const SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
  * once. On Windows, where kill() ends a process outright, the console's Ctrl+C, Ctrl+Break
  * and close already reach the child, so they are only ignored here.
  */
-export function forwardAudit(rest: string[], lookups: Lookups = LOOKUPS): Promise<number> {
-  const found = findVerify(lookups);
+export function forwardAudit(rest: string[], lookups: Lookups = LOOKUPS, platform: NodeJS.Platform = process.platform): Promise<number> {
+  const found = findVerify(lookups, platform);
   if (!found) return Promise.resolve(unable(MISSING, rest));
+  if (typeof found === "string") return Promise.resolve(unable(found, rest));
   const args = [...found.args, "audit", ...rest];
   return new Promise((done) => {
     // Listening before the child starts: a signal that comes as it starts is handled on the
