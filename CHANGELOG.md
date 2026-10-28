@@ -58,6 +58,10 @@ The first published release.
 - `--report <file>` writes the findings as Markdown for an issue: a heading per row with a table of who received it, what sent it, which policies decided and the likely fix, the query's SQL in a `sql` block and the replay command. It is written on exits 0, 1 and 2, with the error on 2.
 - The offline checks are exported for use in tests.
 
+### GitHub Action
+
+- A composite action at the repository root (`uses: rayanyedaly/samesight@<ref>`): `mode: lint` writes pull request annotations and a SARIF file, uploaded to code scanning with `upload-sarif: true`; `mode: audit` starts the Supabase services audit needs, runs `samesight-verify audit` and adds its Markdown report to the job summary. See [CI and the GitHub Action](docs/ci.md).
+
 ### @samesight/supabase
 
 - `SupabaseConnector`: one `apply_batch` call per transaction, taken out of the queue only when `apply_batch` confirms how many ops it applied; failures sorted into retry, reauth, stuck and reject, where only Postgres's judgements on the data (constraints, RLS, `apply_batch` refusals) reject and anything else is held; `onStuck` for batches that keep failing; refused writes recorded locally before they leave the queue; no uploads under another user's session.

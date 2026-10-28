@@ -204,7 +204,7 @@ On Next.js, [`@samesight/next`](../packages/next) adds a per-user encrypted stor
 npx samesight check
 ```
 
-`check` regenerates every file from the saved schema snapshot, with no database, and fails if anything on disk differs from what the policy produces. Put it next to your type check. If your CI can run Docker, run the verifier there too; [Fieldbook's CI job](../.github/workflows/ci.yml) starts the stack and runs `samesight-verify --mutate` in under five minutes.
+`check` regenerates every file from the saved schema snapshot, with no database, and fails if anything on disk differs from what the policy produces. Put it next to your type check. If your CI can run Docker, run the verifier there too; [Fieldbook's CI job](../.github/workflows/ci.yml) starts the stack and runs `samesight-verify --mutate` in under five minutes. To lint the sync config on every pull request, with findings on the changed lines, use the [GitHub Action](ci.md).
 
 ## 10. Ship
 
