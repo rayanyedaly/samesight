@@ -1,10 +1,12 @@
-import { existsSync, statSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type DefaultTheme, defineConfig, type MarkdownRenderer } from "vitepress";
+import llmstxt from "vitepress-plugin-llms";
 import { RULE_INFO } from "../../packages/samesight/src/lint/rule-info.ts";
 
 const REPO = "https://github.com/rayanyedaly/samesight";
+const BASE = "/samesight/";
 
 const docsDir = fileURLToPath(new URL("..", import.meta.url));
 const repoDir = resolve(docsDir, "..");
@@ -24,6 +26,14 @@ const isInside = (dir: string, path: string) => {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
 
+/** The file a relative link on a page points at, and its anchor; undefined for other links. */
+function relativeLink(href: string, page: string): { target: string; rest: string } | undefined {
+  if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith("/") || href.startsWith("#")) return undefined;
+  const cut = href.search(/[?#]/);
+  const path = cut < 0 ? href : href.slice(0, cut);
+  return { target: resolve(dirname(page), decodeURIComponent(path)), rest: cut < 0 ? "" : href.slice(cut) };
+}
+
 /**
  * Where a relative link should point on the site. The docs link to the rest of the
  * repository with relative paths (../examples/fieldbook) so they work on GitHub; the site
@@ -32,11 +42,9 @@ const isInside = (dir: string, path: string) => {
  * undefined for links the site serves.
  */
 function siteHref(href: string, page: string): string | undefined {
-  if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith("/") || href.startsWith("#")) return undefined;
-  const cut = href.search(/[?#]/);
-  const path = cut < 0 ? href : href.slice(0, cut);
-  const rest = cut < 0 ? "" : href.slice(cut);
-  const target = resolve(dirname(page), decodeURIComponent(path));
+  const link = relativeLink(href, page);
+  if (!link) return undefined;
+  const { target, rest } = link;
   const exists = existsSync(target);
   if (isInside(docsDir, target)) {
     const servedFile = !exists || statSync(target).isDirectory() || /\.(md|html)$/.test(target);
@@ -64,15 +72,66 @@ function repoLinks(md: MarkdownRenderer): void {
   });
 }
 
+/**
+ * The Markdown copies the llms plugin writes (one .md per page, and llms-full.txt with every
+ * page) keep the pages' relative links, though llms-full.txt sits at the root and a folder's
+ * index.md is written as the folder's name (rules/index.md as rules.md). Point the links the
+ * site does not serve at GitHub, as repoLinks does for the HTML, and make links to pages
+ * absolute, to the Markdown copy.
+ */
+function llmsLinks(outDir: string): void {
+  // The page a copy was made from: cli.md from cli.md, rules.md from rules/index.md.
+  const source = (copy: string) => {
+    const page = resolve(docsDir, copy);
+    return existsSync(page) ? page : resolve(docsDir, copy.replace(/\.md$/, ""), "index.md");
+  };
+  for (const file of readdirSync(outDir, { recursive: true, encoding: "utf8" })) {
+    const full = file === "llms-full.txt";
+    if (!full && (!file.endsWith(".md") || file.startsWith(`assets${sep}`))) continue;
+    let page = source(file);
+    let fenced = false;
+    const lines = readFileSync(join(outDir, file), "utf8")
+      .split("\n")
+      .map((line) => {
+        // In llms-full.txt each page's section starts with its url: "url: /samesight/cli.md".
+        if (full && line.startsWith(`url: ${BASE}`) && line.endsWith(".md")) page = source(line.slice(`url: ${BASE}`.length));
+        if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+        if (fenced) return line;
+        return line.replace(/\]\(([^)\s]+)\)/g, (whole, href: string) => {
+          const url = siteHref(href, page) ?? copyHref(href, page);
+          return url ? `](${url})` : whole;
+        });
+      });
+    writeFileSync(join(outDir, file), lines.join("\n"));
+  }
+}
+
+/** The Markdown copy a relative link to a page points at: cli.md#lint is /samesight/cli.md#lint. */
+function copyHref(href: string, page: string): string | undefined {
+  const link = relativeLink(href, page);
+  if (!link) return undefined;
+  let path = relative(docsDir, link.target).split(sep).join("/");
+  if (existsSync(link.target) && statSync(link.target).isDirectory()) path = path ? `${path}/index.md` : "index.md";
+  if (!path.endsWith(".md")) return undefined;
+  // The home page has no Markdown copy; another folder's index.md is copied as the folder's name.
+  if (path === "index.md") return `${BASE}${link.rest}`;
+  return `${BASE}${encodeURI(path.replace(/\/index\.md$/, ".md"))}${link.rest}`;
+}
+
 export default defineConfig({
   title: "Samesight",
   description: "Catches PowerSync sync configs that send devices rows your database refuses",
-  base: "/samesight/",
+  base: BASE,
   cleanUrls: true,
   lastUpdated: false,
   markdown: {
     config: repoLinks,
   },
+  vite: {
+    // llms.txt, llms-full.txt and a Markdown copy of each page, for coding agents.
+    plugins: [llmstxt()],
+  },
+  buildEnd: (site) => llmsLinks(site.outDir),
   themeConfig: {
     nav: [
       { text: "Guide", link: "/how-sync-configs-leak" },
