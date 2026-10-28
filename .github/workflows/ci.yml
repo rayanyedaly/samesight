@@ -4,6 +4,7 @@
 # fast signal. `package` packs the npm packages and uses them from outside the workspace, on Linux
 # and Windows. `verify` starts Fieldbook's local stack (Supabase and PowerSync, in Docker) and
 # runs the database tests and the full verifier, mutation test included, against it.
+# `action` runs the repo's own GitHub Action (action.yml) on the to-do list demo.
 name: CI
 
 on:
@@ -148,6 +149,138 @@ jobs:
         run: timeout 600 pnpm run verify:rules
       # Every auto-started container, role and slot, every run user and every run row must be
       # gone after the runs above, and the demo's own publication untouched.
+      - name: nothing left behind
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/left-behind.sh supabase_db_react-supabase-todolist powersync all
+      - if: failure()
+        run: docker logs supabase_db_react-supabase-todolist --tail 100 || true
+      - if: always()
+        run: pnpm --filter audit-todolist stack:down
+
+  action:
+    name: the GitHub Action on the to-do list demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # version: installed runs what is on the PATH: the workspace CLIs (linked into the
+      # quickstart, which depends on both) and the pinned Supabase CLI.
+      - run: |
+          echo "$GITHUB_WORKSPACE/examples/quickstart/node_modules/.bin" >> "$GITHUB_PATH"
+          echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+      # The demo as published, and a copy whose lists query lost its owner filter (as in
+      # verify-planted.sh).
+      - name: fetch the demo and plant a leak
+        run: |
+          bash examples/audit-todolist/scripts/fetch.sh
+          cd examples/audit-todolist/upstream
+          sed 's/^\( *- SELECT \* FROM lists\) WHERE owner_id = auth.user_id()$/\1/' sync-config.yaml > sync-config.planted.yaml
+          if cmp -s sync-config.yaml sync-config.planted.yaml; then
+            echo "the lists query was not found; has the demo changed?" >&2
+            exit 1
+          fi
+      # The steps below pass version: installed; this checks the version the action installs by
+      # default, read with action.yml's own sed.
+      - name: the action's default version is its own packages' version
+        run: |
+          read=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' packages/samesight/package.json | head -n 1)
+          want=$(node -p 'require("./packages/samesight/package.json").version')
+          verify=$(node -p 'require("./packages/verify/package.json").version')
+          if [ -z "$read" ] || [ "$read" != "$want" ] || [ "$want" != "$verify" ]; then
+            echo "action.yml would install '$read'; samesight is $want and @samesight/verify $verify" >&2
+            exit 1
+          fi
+      - name: lint on the demo as published
+        uses: ./
+        with:
+          mode: lint
+          version: installed
+          sync-config: examples/audit-todolist/upstream/sync-config.yaml
+          project: examples/audit-todolist/upstream
+      - name: lint on the planted copy
+        id: lint_planted
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: lint
+          version: installed
+          sync-config: examples/audit-todolist/upstream/sync-config.planted.yaml
+          project: examples/audit-todolist/upstream
+      - name: the planted lint failed, with its annotation and SARIF result at the planted line
+        env:
+          OUTCOME: ${{ steps.lint_planted.outcome }}
+          EXIT_CODE: ${{ steps.lint_planted.outputs.exit-code }}
+          SARIF: ${{ steps.lint_planted.outputs.sarif-file }}
+          ANNOTATIONS: ${{ steps.lint_planted.outputs.annotations-file }}
+        run: |
+          planted=examples/audit-todolist/upstream/sync-config.planted.yaml
+          line=$(grep -n '^ *- SELECT \* FROM lists$' "$planted" | cut -d: -f1)
+          if [ "$OUTCOME" != failure ] || [ "$EXIT_CODE" != 1 ]; then
+            echo "the planted lint ended $OUTCOME with exit code '$EXIT_CODE', not failure with 1" >&2
+            exit 1
+          fi
+          node -e '
+          const [file, line] = process.argv.slice(1);
+          const sarif = JSON.parse(require("node:fs").readFileSync(file, "utf8"));
+          const hit = sarif.runs.flatMap((r) => r.results ?? []).find((r) => r.ruleId === "unscoped-query" &&
+            r.locations?.some((l) => l.physicalLocation?.region?.startLine === Number(line) &&
+              l.physicalLocation.artifactLocation?.uri?.endsWith("sync-config.planted.yaml")));
+          if (!hit) {
+            console.error(`no unscoped-query result at sync-config.planted.yaml line ${line} in ${file}`);
+            process.exit(1);
+          }
+          ' "$SARIF" "$line"
+          # The annotation GitHub shows on the pull request's changed line.
+          if ! grep -qE "^::error file=examples/audit-todolist/upstream/sync-config\.planted\.yaml,line=$line,col=[0-9]+,title=samesight unscoped-query::" "$ANNOTATIONS"; then
+            echo "no unscoped-query annotation at line $line in $ANNOTATIONS:" >&2
+            # Prefixed, so the runner (which trims leading spaces) does not raise them again.
+            sed 's/^/| /' "$ANNOTATIONS" >&2
+            exit 1
+          fi
+      # The action starts Supabase, audits and stops it (removing its data).
+      - name: audit on the demo as published
+        timeout-minutes: 15
+        uses: ./
+        with:
+          mode: audit
+          version: installed
+          sync-config: examples/audit-todolist/upstream/sync-config.yaml
+          project: examples/audit-todolist/upstream
+          args: --runs 4 --seed 7
+      # Started here instead, so the action uses it as it is and leaves it running for the
+      # check below.
+      - run: pnpm --filter audit-todolist stack:up
+      - name: audit on the planted copy
+        id: audit_planted
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: ./
+        with:
+          mode: audit
+          version: installed
+          sync-config: examples/audit-todolist/upstream/sync-config.planted.yaml
+          project: examples/audit-todolist/upstream
+          args: --runs 3 --time-limit 60
+      - name: the planted audit failed on the lists leak
+        env:
+          OUTCOME: ${{ steps.audit_planted.outcome }}
+          EXIT_CODE: ${{ steps.audit_planted.outputs.exit-code }}
+          REPORT: ${{ steps.audit_planted.outputs.report-file }}
+        run: |
+          if [ "$OUTCOME" != failure ] || [ "$EXIT_CODE" != 1 ]; then
+            echo "the planted audit ended $OUTCOME with exit code '$EXIT_CODE', not failure with 1" >&2
+            exit 1
+          fi
+          if ! grep -qE "^### leak: u[0-9]+ .*received lists .*; RLS returns no such row" "$REPORT"; then
+            echo "the report at '$REPORT' lacks the planted lists leak" >&2
+            exit 1
+          fi
       - name: nothing left behind
         if: ${{ !cancelled() }}
         run: bash scripts/ci/left-behind.sh supabase_db_react-supabase-todolist powersync all

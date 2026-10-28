@@ -14,7 +14,9 @@ The first published release.
 - `samesight check` for CI, with no database; `samesight doctor` against the local database and `supabase/config.toml` (the access token hook turned on, an Auth signing key).
 - Read rules can go through another table with `col("id").in(rowsOf("project_members", "project_id", col("user_id").eq(claim.user)))`, for sharing and assignment tables: a CTE in the streams, a subquery under that table's RLS in Postgres.
 - Shared tables: `tenant: null` for reference data every tenant reads the same way (plans, countries, labels). Role-gated, never tenant-gated, and read-only to clients.
-- `samesight lint` checks any PowerSync sync config (sync streams or sync rules), and the project's SQL migrations when present, for known leak patterns, with no database, PowerSync or policy file: rows every user receives (`unscoped-query`), rows picked by client parameters (`client-scoped`), access decided by `user_metadata`, queries audit cannot check (one device table name holding two tables' rows included), on-demand streams audit does not test, synced tables without RLS (`rls-off`) and policies that let any client or any signed-in user through (`rls-open`). `--allow` accepts a deliberate finding, `--format json` is for CI.
+- `samesight lint` checks any PowerSync sync config (sync streams or sync rules), and the project's SQL migrations when present, for known leak patterns, with no database, PowerSync or policy file: rows every user receives (`unscoped-query`), rows picked by client parameters (`client-scoped`), access decided by `user_metadata`, queries audit cannot check (one device table name holding two tables' rows included), on-demand streams audit does not test, synced tables without RLS (`rls-off`) and policies that let any client or any signed-in user through (`rls-open`). `--allow` accepts a deliberate finding; `--format json`, `sarif` and `github` are for CI.
+- Each lint rule has a summary, a description, a level and a link to its own heading in `docs/cli.md` (`RULE_INFO`). Findings carry the column a query starts at besides its line, and `--format json` gives it as `column`.
+- `samesight lint --format sarif` prints one SARIF 2.1.0 log for GitHub code scanning (allowed findings as suppressed results, unreadable files as tool notifications), and `--format github` prints GitHub Actions annotations. The exit codes are the same in every format.
 - `samesight init` drafts a compiling policy from the local database: the membership and tenant tables, each table's tenant column and the role values. Without a database it writes a template.
 - `samesight explain` prints the compiled policy in plain words: a role by operation matrix, each rule, the columns clients write and those each role never receives.
 - Policy files load as `samesight.policy.ts` or `samesight.policy.mts`, with a clear error for a CommonJS package and for Node without TypeScript support.
@@ -55,6 +57,10 @@ The first published release.
 - `--json` (both modes) writes one JSON report to stdout, with the text on stderr, on exits 0, 1 and 2: the result and exit code, the `--seed` given, each section's findings and the differential's row reports. Its JSON Schema ships as `@samesight/verify/schema/report.schema.json`.
 - `--report <file>` writes the findings as Markdown for an issue: a heading per row with a table of who received it, what sent it, which policies decided and the likely fix, the query's SQL in a `sql` block and the replay command. It is written on exits 0, 1 and 2, with the error on 2.
 - The offline checks are exported for use in tests.
+
+### GitHub Action
+
+- A composite action at the repository root (`uses: rayanyedaly/samesight@<ref>`): `mode: lint` writes pull request annotations and a SARIF file, uploaded to code scanning with `upload-sarif: true`; `mode: audit` starts the Supabase services audit needs, runs `samesight-verify audit` and adds its Markdown report to the job summary. See [CI and the GitHub Action](docs/ci.md).
 
 ### @samesight/supabase
 

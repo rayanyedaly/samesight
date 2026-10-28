@@ -24,7 +24,7 @@ Every command exits 0 when it passes, 1 when it found something (a stale file, a
 | `--table <name>` | `explain` only: one table. |
 | `--migrations <dir>` | `lint` only: the SQL migrations to read RLS from. Default: `supabase/migrations`, when it exists. |
 | `--allow <rule>[:<name>]` | `lint` only: accept a rule's findings, all of them or those about one stream, bucket, table or policy. Repeatable. |
-| `--format <text\|json>` | `lint` only: `json` prints one JSON object on stdout; notes stay on stderr. |
+| `--format <text\|json\|sarif\|github>` | `lint` only: `json` prints one JSON object on stdout, each finding with its 1-based `line` and `column` where known; `sarif` one SARIF 2.1.0 log; `github` GitHub Actions annotations. Notes stay on stderr, and the exit code is the same in every format. |
 | `-v`, `--version` | |
 | `-h`, `--help` | |
 
@@ -109,21 +109,57 @@ powersync/sync-rules.yaml:17  warning  policy "members read" on workspace (supab
 
 That is PowerSync's Trello demo with a made-up migration. Its third parameter query reads `WHERE visibility = "Public"`. Double quotes name a column, not a string, so it reads nothing from the token and filters by no fixed value, and lint fails it; most likely it was meant to list public workspaces, which written as `'Public'` would be the "fixed filters" warning for data public by design.
 
-| Rule | Level | Catches |
-| --- | --- | --- |
-| `unscoped-query` | error, or warning when fixed values or a check on who is asking (a role, an admin list) filter the rows | Rows every user receives: a stream query no token value limits, directly, through a CTE or through a subquery; a sync rules data query no bucket parameter limits; a parameter query whose bucket parameters, as the data queries use them, come from neither the token nor the client. A token value counts only where a row is compared with it (`owner_id = auth.user_id()`): `OR true`, `IS NOT NULL`, `NOT IN`, an outer join's `ON`, the token compared with a client value or mixed with one (`coalesce(subscription.parameter('u'), auth.user_id())`), and a claim every signed-in Supabase user passes (`role` or `aud` = `'authenticated'`) or every non-anonymous one (`is_anonymous` = false), however cast, do not. Neither does a row compared with a claim that tells no user apart (`public_to = auth.parameter('role')`, `iss`, `aal`), nor a client value checked IN a set, even the user's own (it only proves the set is not empty: write `org_id IN (SELECT org_id FROM members WHERE user_id = auth.user_id())` instead). A set with a `UNION`, or one that selects a client value, never counts, and a set tested by the token or a literal counts only when it selects a column (`SELECT DISTINCT user_id FROM admins`), not a fixed value. A fixed check on `iss`, `aal` or `amr`, which many or all users pass, only warns. Lint does not relate the tables of a join inside a set, so `org_id IN (SELECT o.id FROM orgs o, members m WHERE m.user_id = auth.user_id())` passes it; `samesight-verify audit`, which tests the rows, does not. It warns instead of failing when a row's column is compared with a fixed value or is used alone, as a flag (`status = 'public'`, `is_public`), not with a value the client picks; when the rows go to whoever passes a check on who is asking, such as a role claim, `auth.user_id() IN (SELECT user_id FROM admins)`, or a literal in a set of the user's own rows (`'admin' IN (SELECT role FROM user_roles WHERE user_id = auth.user_id())`); and, in sync rules, when every parameter query of a bucket with open data gives no bucket parameters and admits only users passing a fixed check on their own row or token (`is_admin = true`). Lint cannot tell a role from any other fixed check, so each warning says what to confirm. |
-| `client-scoped` | error, or warning beside a check on who is asking | Rows picked by what the client sends (`subscription.parameter()`, `connection.parameter()`, `request.parameters()`, `user_parameters`) and not limited by a token value too, so any client can ask for any rows. A token check in an `OR` branch beside the client value does not bound it, and a sync rules parameter that selects a client value is reported even where the user's own rows bound it (select the column instead: `SELECT org_id FROM members WHERE ...`). Beside a check on who is asking it warns: only users who pass can ask. |
-| `user-metadata` | error | Access decided by the token's `user_metadata`, which every Supabase user can set on themselves: read in a stream CTE or sync rules parameter query, or in the conditions of a query whose rows are synced. Selecting it into synced rows decides nothing and passes. |
-| `unreadable-query` | warning | A query `samesight-verify audit` cannot attribute to one table, so it would refuse to check it. |
-| `not-auto-subscribed` | info | A stream devices get only when the app subscribes, which audit does not test. |
-| `rls-off` | warning | A synced table whose migrations never enable row level security, which leaves it open through the Supabase API unless its grants to `anon` and `authenticated` were revoked. Needs migrations. |
-| `rls-open` | warning | A permissive policy on a synced table that lets `anon`, `authenticated` or `public` through with `using (true)` or `with check (true)`. Needs migrations. |
-
 Lint proves nothing about what reaches a device: it flags known mistakes in seconds. `samesight-verify audit` tests the rows. The migrations reader is best-effort: it follows plain DDL (`alter table` enabling or disabling row level security, renaming the table or moving it out of `public`, `create policy`, `alter policy`, `drop policy`, `drop table`) in file order, and does not see RLS changed inside functions, `DO` blocks or dynamic SQL. Without migrations, `rls-off` and `rls-open` do not run, and lint says so.
 
 Warnings do not fail the run, but each one needs a decision: a warning can be a real leak (`deleted = false` filters rows yet sends every undeleted one to everyone; `auth.user_id() IN (SELECT id FROM profiles)` admits every user, not admins). Fix it, or accept it as below. A finding that is deliberate, such as a table public by design, can be accepted with `--allow unscoped-query:customers` (by stream, bucket, table or policy name) or `--allow not-auto-subscribed` (a whole rule). Allowed findings are counted in the output, never dropped silently, and a misspelt rule name is an error.
 
 Exit codes: `0` when nothing is an error (warnings and notes do not fail a run), `1` on any error, `2` when a file cannot be read, no sync config is found or an option is wrong.
+
+For CI, `--format sarif` prints one SARIF 2.1.0 log for GitHub code scanning (`github/codeql-action/upload-sarif`), which shows a finding on a pull request when its line is part of the change. Each result names its rule, with a link to the rule's section below, its file (relative paths stay relative) and, when known, its line and column; findings `--allow` accepted are included as suppressed, and files that could not be read are reported as tool notifications. On a private repository, code scanning needs GitHub Code Security. `--format github` needs nothing: it prints one workflow command per finding (`::error file=sync-config.yaml,line=6,col=12,title=samesight unscoped-query::...`, `::warning` and `::notice` for the others), which GitHub Actions shows as annotations on the run and on the pull request's changed lines. Allowed findings are counted in one `::notice`, not printed.
+
+The rules, each with its level and what it catches:
+
+#### `unscoped-query`
+
+Level: error, or warning when fixed values or a check on who is asking (a role, an admin list) filter the rows.
+
+Rows every user receives: a stream query no token value limits, directly, through a CTE or through a subquery; a sync rules data query no bucket parameter limits; a parameter query whose bucket parameters, as the data queries use them, come from neither the token nor the client. A token value counts only where a row is compared with it (`owner_id = auth.user_id()`): `OR true`, `IS NOT NULL`, `NOT IN`, an outer join's `ON`, the token compared with a client value or mixed with one (`coalesce(subscription.parameter('u'), auth.user_id())`), and a claim every signed-in Supabase user passes (`role` or `aud` = `'authenticated'`) or every non-anonymous one (`is_anonymous` = false), however cast, do not. Neither does a row compared with a claim that tells no user apart (`public_to = auth.parameter('role')`, `iss`, `aal`), nor a client value checked IN a set, even the user's own (it only proves the set is not empty: write `org_id IN (SELECT org_id FROM members WHERE user_id = auth.user_id())` instead). A set with a `UNION`, or one that selects a client value, never counts, and a set tested by the token or a literal counts only when it selects a column (`SELECT DISTINCT user_id FROM admins`), not a fixed value. A fixed check on `iss`, `aal` or `amr`, which many or all users pass, only warns. Lint does not relate the tables of a join inside a set, so `org_id IN (SELECT o.id FROM orgs o, members m WHERE m.user_id = auth.user_id())` passes it; `samesight-verify audit`, which tests the rows, does not. It warns instead of failing when a row's column is compared with a fixed value or is used alone, as a flag (`status = 'public'`, `is_public`), not with a value the client picks; when the rows go to whoever passes a check on who is asking, such as a role claim, `auth.user_id() IN (SELECT user_id FROM admins)`, or a literal in a set of the user's own rows (`'admin' IN (SELECT role FROM user_roles WHERE user_id = auth.user_id())`); and, in sync rules, when every parameter query of a bucket with open data gives no bucket parameters and admits only users passing a fixed check on their own row or token (`is_admin = true`). Lint cannot tell a role from any other fixed check, so each warning says what to confirm.
+
+#### `client-scoped`
+
+Level: error, or warning beside a check on who is asking.
+
+Rows picked by what the client sends (`subscription.parameter()`, `connection.parameter()`, `request.parameters()`, `user_parameters`) and not limited by a token value too, so any client can ask for any rows. A token check in an `OR` branch beside the client value does not bound it, and a sync rules parameter that selects a client value is reported even where the user's own rows bound it (select the column instead: `SELECT org_id FROM members WHERE ...`). Beside a check on who is asking it warns: only users who pass can ask.
+
+#### `user-metadata`
+
+Level: error.
+
+Access decided by the token's `user_metadata`, which every Supabase user can set on themselves: read in a stream CTE or sync rules parameter query, or in the conditions of a query whose rows are synced. Selecting it into synced rows decides nothing and passes.
+
+#### `unreadable-query`
+
+Level: warning.
+
+A query `samesight-verify audit` cannot attribute to one table, so it would refuse to check it.
+
+#### `not-auto-subscribed`
+
+Level: info.
+
+A stream devices get only when the app subscribes, which audit does not test.
+
+#### `rls-off`
+
+Level: warning.
+
+A synced table whose migrations never enable row level security, which leaves it open through the Supabase API unless its grants to `anon` and `authenticated` were revoked. Needs migrations.
+
+#### `rls-open`
+
+Level: warning.
+
+A permissive policy on a synced table that lets `anon`, `authenticated` or `public` through with `using (true)` or `with check (true)`. Needs migrations.
 
 ## `samesight-verify`
 

@@ -21,14 +21,20 @@ import { userMetadata } from "./rules/user-metadata.ts";
 /** Where projects keep their sync config, tried in order when no file is named. */
 export const SYNC_CONFIG_FILES = ["sync-config.yaml", "sync-rules.yaml", "powersync/sync-config.yaml", "powersync/sync-rules.yaml"];
 
+/** 1-based, as findings give them. */
+export interface Position {
+  line: number;
+  column: number;
+}
+
 export interface LintContext {
   file: string;
   text: string;
   config: SyncConfig;
   /** The project's migrations as read, when lint was given or found them. */
   migrations?: Migrations;
-  /** The line a query starts on, found by its YAML string; undefined when it cannot be placed. */
-  lineOf: (sql: string) => number | undefined;
+  /** Where a query starts, found by its YAML string; undefined when it cannot be placed. */
+  lineOf: (sql: string) => Position | undefined;
 }
 
 /** A rule: what it finds in one sync config, and its name, as findings and --allow use it. */
@@ -37,6 +43,8 @@ export type LintRule = ((context: LintContext) => LintFinding[]) & { readonly ru
 export function defineRule(name: string, run: (context: LintContext) => LintFinding[]): LintRule {
   return Object.assign(run, { ruleName: name });
 }
+
+export { RULE_INFO, type RuleInfo } from "./rule-info.ts";
 
 export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed, rlsOff, rlsOpen];
 
@@ -61,30 +69,37 @@ export function findSyncConfig(dir: string): string | undefined {
 const collapse = (s: string) => s.replace(/\s+/g, " ").trim();
 
 /**
- * Finds the 1-based line where a query starts in `text`: the line of the YAML string that
- * holds it (its first content line, for a | or > block), matched with all spacing collapsed.
- * Comments and keys never match, and neither does a longer query that starts the same
- * way. A query written twice is placed at its first copy; one that is no string in the
- * file has no line.
+ * Finds where a query starts in `text`: the 1-based line and column of the YAML string
+ * that holds it (its first content line, for a | or > block), matched with all spacing
+ * collapsed. Comments and keys never match, and neither does a longer query that starts
+ * the same way. A query written twice is placed at its first copy; one that is no string
+ * in the file has no position.
  */
-export function lineFinder(text: string): (sql: string) => number | undefined {
+export function lineFinder(text: string): (sql: string) => Position | undefined {
   const lines = new LineCounter();
   const doc = parseDocument(text, { lineCounter: lines });
-  const at = new Map<string, number>();
+  const at = new Map<string, Position>();
   visit(doc, {
     Scalar(_, node) {
       if (typeof node.value !== "string" || !node.range) return;
       const key = collapse(node.value);
       if (!key || at.has(key)) return;
-      const block = node.type === Scalar.BLOCK_LITERAL || node.type === Scalar.BLOCK_FOLDED;
-      const blank = block ? (/^\n*/.exec(node.value)?.[0].length ?? 0) + 1 : 0;
-      at.set(key, lines.linePos(node.range[0]).line + blank);
+      const start = lines.linePos(node.range[0]);
+      if (node.type !== Scalar.BLOCK_LITERAL && node.type !== Scalar.BLOCK_FOLDED) {
+        at.set(key, { line: start.line, column: start.col });
+        return;
+      }
+      // A block starts at its | or >; the query at the first content line's indentation.
+      const line = start.line + (/^\n*/.exec(node.value)?.[0].length ?? 0) + 1;
+      const indent = / */y;
+      indent.lastIndex = lines.lineStarts[line - 1] ?? 0;
+      at.set(key, { line, column: (indent.exec(text)?.[0].length ?? 0) + 1 });
     },
   });
   return (sql) => at.get(collapse(sql));
 }
 
-/** The 1-based line where `sql` starts in `text`; see lineFinder. */
-export function lineOf(text: string, sql: string): number | undefined {
+/** Where `sql` starts in `text`; see lineFinder. */
+export function lineOf(text: string, sql: string): Position | undefined {
   return lineFinder(text)(sql);
 }
