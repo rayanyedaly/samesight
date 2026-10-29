@@ -441,7 +441,7 @@ describe("overloads and wrappers two levels deep", () => {
   });
 });
 
-describe("review fixes to negation, cast lists, calls and overloads", () => {
+describe("negation, cast lists, calls and overloads", () => {
   const role = "((auth.jwt() -> 'app_metadata'::text) ->> 'role'::text)";
   it.each([
     [`(false = (${role} = 'admin'::text))`, true],
@@ -487,7 +487,7 @@ describe("review fixes to negation, cast lists, calls and overloads", () => {
   });
 });
 
-describe("callsIn's plpgsql scan, second review", () => {
+describe("callsIn's plpgsql scan, with quotes and IS tests", () => {
   it("reads E'' strings with doubled and escaped quotes, and skips quoted names whole", () => {
     expect(callsIn("begin x := E'a''b\\'c'; perform secret(); end")).toEqual(["secret"]);
     expect(callsIn('begin x := "it\'s"; perform f(); end')).toEqual(["f"]);
