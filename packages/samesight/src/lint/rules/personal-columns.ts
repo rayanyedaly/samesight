@@ -15,7 +15,7 @@
 
 import { type ExposedColumn, type ExposedQuery, exposureMap, type Schema } from "../../exposure/map.ts";
 import type { PersonalCategory, PersonalMatch } from "../../exposure/personal.ts";
-import { type Audience, audienceText } from "../audience.ts";
+import { AUDIENCE_ORDER, type Audience, audienceText } from "../audience.ts";
 import type { LintFinding, LintLevel } from "../finding.ts";
 import { defineRule, type LintRule } from "../lint.ts";
 
@@ -23,6 +23,8 @@ const RULE = "personal-columns";
 
 /** Each audience wider than the row's owner. */
 const LEVEL: Record<Exclude<Audience["kind"], "owner">, LintLevel> = { group: "warning", fixed: "warning", role: "info", client: "info", everyone: "info" };
+
+const rank = (a: Audience) => AUDIENCE_ORDER.indexOf(a.kind);
 
 /** What a column of each category holds, for messages. */
 const HOLDS: Record<PersonalCategory, string> = {
@@ -78,8 +80,10 @@ export const personalColumns: LintRule = defineRule(RULE, ({ file, config, migra
   for (const { table, queries } of map.tables) {
     for (const q of queries) {
       if (q.audience.kind === "owner") continue;
-      // Every audience wider than the owner, widest first: a bucket's group path besides its role check.
-      const reach = [...new Set([q.audience, ...q.paths.map((p) => p.audience)].filter((a) => a.kind !== "owner").map(to))];
+      // A bucket's ways in, each beyond the owner (its group path besides its role check), widest
+      // first; else the query's one audience. Owners named by different columns are a group.
+      const paths = q.paths.length > 1 ? [...new Set(q.paths.map((p) => p.audience).filter((a) => a.kind !== "owner").sort((x, y) => rank(y) - rank(x)).map(to))] : [];
+      const reach = paths.length ? paths : [to(q.audience)];
       const fine = level(q) === "info" && q.audience.kind === "role" ? "fine if only users meant to see it (such as admins) pass that check" : "fine if they need it";
       for (const c of q.columns.items) {
         if (!c.personal) continue;

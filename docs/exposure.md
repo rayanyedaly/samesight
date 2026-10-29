@@ -132,7 +132,7 @@ The audiences, narrowest first. The map reads them from the sync config, as lint
 - **whichever rows a client asks for**: a parameter the client sends picks the rows, so any client can ask for any.
 - **every user**: nothing limits the rows.
 
-Owner is claimed only where each row surely goes to one user: the user id itself compared with a column of the row, or of the one parent row it points at by key, in every `OR` branch. Anything less certain gets the wider audience, never the narrower.
+Owner is claimed only where each row surely goes to one user: the user id itself compared with a column of the row, or of the one parent row it points at by key, in every `OR` branch. A group is claimed only where the token is compared plainly with the row: a token read mixed with more (a literal in its `IN` list, a `CASE`, an `IS NULL` test) can let users through with no tie to the row, so the map says every user. Anything less certain gets the wider audience, never the narrower.
 
 ## How personal columns are found
 

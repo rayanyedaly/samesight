@@ -161,7 +161,7 @@ streams:
         "  to       members of the row's group, through claim org_id",
         "  columns  all columns (no migrations read, so not known), plus contact (from email) [contact]",
         "",
-        "1 table. 1 likely personal column reaches users other than the row's owner: members.contact. Not every column sent from members is known.",
+        "1 table. 1 likely personal column reaches users other than the row's owner: members.email. Not every column sent from members is known.",
         MATCHED_BY,
       ].join("\n"),
     );
@@ -294,5 +294,22 @@ streams:
     const unplaced = exposureJson([{ ...config, lineOf: () => undefined }], { files: ["sync-config.yaml"], migrations: "supabase/migrations", unreadable: [] });
     expect(unplaced.maps[0]?.tables[0]?.queries[0]).not.toHaveProperty("line");
     expect(unplaced.migrations).toBe("supabase/migrations");
+  });
+});
+
+describe("the summary's names", () => {
+  it("names a renamed column by the table's column it sends, not its name on the device", () => {
+    const schema = schemaOf("create table profiles (id uuid primary key, org_id uuid, phone text, email text);");
+    const out = text(
+      `config:
+  edition: 3
+streams:
+  s:
+    auto_subscribe: true
+    query: SELECT id, phone AS email FROM profiles WHERE org_id = auth.parameter('org_id')
+`,
+      schema,
+    );
+    expect(out).toContain("reaches users other than the row's owner: profiles.phone.");
   });
 });

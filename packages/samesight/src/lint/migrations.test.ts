@@ -277,3 +277,30 @@ comment on column private."Users".mobile is 'nor this one';`,
     expect(quickstart.get("tasks")?.columns.find((c) => c.name === "created_at")?.type).toBe("timestamptz");
   });
 });
+
+describe("escaped string comments", () => {
+  it("reads E'...' with backslash escapes, so a marker in one counts", () => {
+    const m = applyMigrations([
+      { file: "0.sql", sql: "create table t (id uuid, email text, note text); comment on column t.email is E'samesight:not-personal'; comment on column t.note is E'it\\\\s a ''note'' \\\\\\\\ done';" },
+    ]);
+    expect(m.tables.get("t")?.columns.map((c) => c.comment)).toEqual([undefined, "samesight:not-personal", "it\\s a 'note' \\\\ done"]);
+  });
+});
+
+describe("primary key constraints", () => {
+  const key = (...sql: string[]) => applyMigrations(sql.map((x, n) => ({ file: `${n}.sql`, sql: x }))).tables.get("lists")?.primaryKey;
+
+  it("drops the key with its constraint, by the name given or the one Postgres gives", () => {
+    expect(key("create table lists (id uuid primary key, owner_id uuid);", "alter table lists drop constraint lists_pkey;")).toEqual([]);
+    expect(key("create table lists (id uuid, constraint pk primary key (id));", "alter table lists drop constraint if exists pk cascade;")).toEqual([]);
+    expect(key("create table lists (id uuid);", "alter table lists add primary key (id);", "alter table lists drop constraint lists_pkey;")).toEqual([]);
+  });
+
+  it("keeps the key when another constraint is dropped, or the key's is renamed first", () => {
+    expect(key("create table lists (id uuid primary key, owner_id uuid unique);", "alter table lists drop constraint lists_owner_id_key;")).toEqual(["id"]);
+    expect(key("create table lists (id uuid primary key);", "alter table lists rename constraint lists_pkey to pk;", "alter table lists drop constraint lists_pkey;")).toEqual(["id"]);
+    expect(key("create table lists (id uuid primary key);", "alter table lists rename constraint lists_pkey to pk;", "alter table lists drop constraint pk;")).toEqual([]);
+    // Postgres names the key when it is made: a later table rename keeps lists_pkey.
+    expect(key("create table todo_lists (id uuid primary key);", "alter table todo_lists rename to lists;", "alter table lists drop constraint todo_lists_pkey;")).toEqual([]);
+  });
+});

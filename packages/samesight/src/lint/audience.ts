@@ -168,10 +168,58 @@ const isSub = (path: string[]) => path.length === 1 && path[0] === "sub";
  * cast or in parentheses: not mixed with anything, nor given a fallback.
  */
 function isUserId(side: Token[], dialect: "streams" | "rules"): boolean {
+  const read = tokenRead(side, dialect);
+  return read !== undefined && isSub(read.path);
+}
+
+/** The one token read a side is and nothing else (a claim or the user id, cast or in parentheses), with its path. */
+function tokenRead(side: Token[], dialect: "streams" | "rules"): { path: string[] } | undefined {
   const text = sqlText(side);
   const { reads, unreadable } = claimReads(text, dialect);
   const [read] = reads;
-  return reads.length === 1 && unreadable.length === 0 && read?.text === text && read.fallback === undefined && isSub(read.path);
+  return reads.length === 1 && unreadable.length === 0 && read?.text === text && read.fallback === undefined ? read : undefined;
+}
+
+/**
+ * Whether a term the access analysis counts as tying rows to the user does so plainly. It
+ * also counts terms where the token is only part of what is compared, whose rows can reach
+ * any user: a literal beside it in a list (owner_id IN (auth.user_id(), 'system')), a CASE
+ * with branches that do not read it, or the comparison itself tested again
+ * (owner_id = auth.user_id() IS NULL). Those tie nothing here, so the audience comes out
+ * wider. A set (IN a subquery or stream CTE) is plain when its own rows are tied plainly.
+ */
+function plainTie(term: Token[], ctes: Map<string, string>, dialect: "streams" | "rules", seen = new Set<string>()): boolean {
+  const top = topLevel(term);
+  // = ... IS NULL, IS NOT TRUE, ISNULL: a test of the comparison, not the comparison.
+  if (top.some((i) => word(term[i], "is") || word(term[i], "isnull") || word(term[i], "notnull"))) return false;
+  if (term.some((x) => word(x, "case"))) return false;
+  const at = top.find((i) => isIn(term, i));
+  if (at === undefined) return true;
+  const rest = term.slice(at + 1);
+  if (sym(rest[0], "(") && word(rest[1], "select") && closing(rest, 0) === rest.length - 1) return plainSet(rest.slice(1, -1), ctes, dialect, seen);
+  const cte = rest.length === 1 && isName(rest[0]) ? ctesByName(ctes).get((rest[0] as Token).text.toLowerCase()) : undefined;
+  if (cte) return plainCte(cte, ctes, dialect, seen);
+  // A list of the token's own: org_id IN auth.parameter('org_ids').
+  if (!sym(rest[0], "(")) return readsToken(rest);
+  // A list: owner_id IN (auth.user_id(), x), or auth.user_id() IN (owner_id, editor_id). No literal among them.
+  if (closing(rest, 0) !== rest.length - 1) return false;
+  return splitTop(rest.slice(1, -1), (x) => sym(x, ",")).every((item) => !literal(item));
+}
+
+/** Whether a set's rows are tied to the user plainly: by its own conditions, or by the stream CTE it reads. */
+function plainSet(t: Token[], ctes: Map<string, string>, dialect: "streams" | "rules", seen: Set<string>): boolean {
+  const mark: Tied = { kind: "group", via: "" };
+  if (tied(t, (term) => (limitsByToken(term, ctes) && plainTie(term, ctes, dialect, seen) ? mark : undefined)) !== undefined) return true;
+  const from = topLevel(t).find((i) => word(t[i], "from"));
+  const source = from === undefined ? undefined : t[from + 1];
+  const cte = isName(source) ? ctesByName(ctes).get((source as Token).text.toLowerCase()) : undefined;
+  return cte !== undefined && plainCte(cte, ctes, dialect, seen);
+}
+
+/** Whether a stream CTE's rows are tied plainly; a CTE that reads itself, round a loop, is not. */
+function plainCte(cte: { name: string; sql: string }, ctes: Map<string, string>, dialect: "streams" | "rules", seen: Set<string>): boolean {
+  const t = seen.has(cte.name) ? null : tokens(cte.sql);
+  return t != null && plainSet(t, ctes, dialect, new Set([...seen, cte.name]));
 }
 
 /** The column a term compares with the user id: owner_id in owner_id = auth.user_id(). */
@@ -344,13 +392,17 @@ export function streamAudience(sql: string, ctes: Map<string, string>, keys?: (t
   const key = keyOf(keys);
   const scope = scopeOf(sql);
   // A term ties the rows where the access analysis says so, which also refuses sets a UNION
-  // widens or a client value fills; then it names an owner, or else a group.
+  // widens or a client value fills; then it names an owner, or else a group, when it ties
+  // them plainly.
   const leaf = (term: Token[]): Tied | undefined => {
     if (!limitsByToken(term, ctes)) return undefined;
-    return (scope && ownerTerm(term, t, scope, ctes, key)) ?? { kind: "group", via: via(term, ctes) };
+    const owner = scope && ownerTerm(term, t, scope, ctes, key);
+    if (owner) return owner;
+    return plainTie(term, ctes, "streams") ? { kind: "group", via: via(term, ctes) } : undefined;
   };
-  // The token limits the rows, so some term ties them; "the token" is only a safe fallback.
-  return tied(t, leaf) ?? { kind: "group", via: "the token" };
+  // The token is read, but no term ties the rows plainly (owner_id IN (auth.user_id(),
+  // 'system')): some rows may reach every user, so say so rather than guess narrower.
+  return tied(t, leaf) ?? { kind: "everyone" };
 }
 
 /** An owner parameter: the user id itself, or the key of a table whose rows it selects are the user's own. */
@@ -383,6 +435,42 @@ function ownerParameters(sql: string, p: ParameterQuery, key: Key): Map<string, 
     else if (scope && c && own(c, scope) && c.column === key(scope.table) && rows?.kind === "owner") out.set(n, { table: scope.table, column: rows.column });
   }
   return out;
+}
+
+/**
+ * Whether a data query and its parameter query tie rows to the user plainly: the data query
+ * compares a row's value (=) with a bucket parameter the token decides, and that parameter is
+ * a token value with no CASE (SELECT token_parameters.user_id AS uid), or a column of rows the
+ * parameter query ties plainly (SELECT org_id FROM members WHERE user_id = token_parameters.user_id).
+ * owner_id IN (bucket.uid, 'system'), or a parameter query reading
+ * owner_id IN (token_parameters.user_id, 'system'), may reach every user.
+ */
+function plainBucket(data: Token[], parameterSql: string, p: ParameterQuery): boolean {
+  const pt = tokens(parameterSql);
+  if (!pt) return false;
+  const end = topLevel(pt).find((i) => word(pt[i], "from") || word(pt[i], "where"));
+  const plain = new Set<string>();
+  const rowsTied = p.rows === "token" && plainSet(pt, new Map(), "rules", new Set());
+  for (const item of splitTop(pt.slice(1, end), (x) => sym(x, ","))) {
+    const as = topLevel(item).find((i) => word(item[i], "as"));
+    const name = as !== undefined ? item[as + 1] : item.at(-1);
+    if (!isName(name)) continue;
+    const n = (name as Token).text.toLowerCase();
+    const value = as !== undefined ? item.slice(0, as) : item;
+    const source = p.parameters.get(n);
+    // A token value, but no CASE that may pick something else; or a column of rows tied plainly.
+    if ((source === "token" && !value.some((x) => word(x, "case"))) || (source === "rows" && rowsTied && columnOf(value) !== undefined)) plain.add(n);
+  }
+  const mark: Tied = { kind: "group", via: "" };
+  // A row compared (=) with the parameter alone; not with it IN a list beside a literal, nor a test of the comparison.
+  const leaf = (term: Token[]): Tied | undefined => {
+    const s = equality(term);
+    if (!s || topLevel(term).some((i) => word(term[i], "is"))) return undefined;
+    const [a, b] = [bucketParameter(s[0]), bucketParameter(s[1])];
+    const row = (side: Token[]) => !literal(side) && !side.some((x) => word(x, "bucket"));
+    return (a !== undefined && plain.has(a) && row(s[1])) || (b !== undefined && plain.has(b) && row(s[0])) ? mark : undefined;
+  };
+  return tied(data, leaf) !== undefined;
 }
 
 /** The bucket parameter a side is and nothing else: bucket.list_id. */
@@ -442,7 +530,9 @@ export function bucketAudiences(
       if (dataLimitedBy(d.sql, (n) => parameterSource(p, n) === "token")) {
         const scope = scopeOf(d.sql);
         const owner = scope && tied(t, (term) => bucketOwner(term, scope, owners, key));
-        return owner?.kind === "owner" ? owner : { kind: "group", via: label };
+        if (owner?.kind === "owner") return owner;
+        // As for streams: the rows reach a group only where both queries tie them plainly.
+        return plainBucket(t, sql, p) ? { kind: "group", via: label } : { kind: "everyone" };
       }
       if (dataLimitedBy(d.sql, (n) => parameterSource(p, n) !== "nobody")) return { kind: "client" };
       if (checksClaim(sql)) return { kind: "role" };

@@ -136,7 +136,7 @@ const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? on
  */
 function summary(map: ExposureMap): string {
   const shared = map.tables.flatMap((t) => t.queries.filter((q) => q.audience.kind !== "owner").map((q) => ({ table: t.table, q })));
-  const personal = [...new Set(shared.flatMap(({ table, q }) => q.columns.items.filter((c) => c.personal).map((c) => `${table}.${c.name}`)))];
+  const personal = [...new Set(shared.flatMap(({ table, q }) => q.columns.items.filter((c) => c.personal).flatMap((c) => (c.from.length ? c.from : [c.name]).map((f) => `${table}.${f}`))))];
   const unknown = [...new Set(shared.filter(({ q }) => !q.columns.complete).map(({ table }) => table))];
   const unread = map.unread.length ? `, and ${count(map.unread.length, "query", "queries")} that could not be read` : "";
   const found = personal.length

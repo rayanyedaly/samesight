@@ -191,6 +191,17 @@ step("samesight lint catches a leak", () => {
     rmSync(join(cli, "leaky.yaml"));
   }
 });
+step("samesight exposure maps who receives which columns", () => {
+  // Fieldbook's own config, with the copied migrations giving the columns of each SELECT *.
+  const report = JSON.parse(samesight("exposure", "--format", "json"));
+  if (report.version !== 1 || !report.maps[0]?.tables.some((t) => t.table === "Inspection")) throw new Error(`exposure --format json: ${JSON.stringify(report).slice(0, 500)}`);
+  writeFileSync(join(cli, "people.yaml"), "config:\n  edition: 3\nstreams:\n  org:\n    auto_subscribe: true\n    query: SELECT id, email FROM members WHERE org_id = auth.parameter('org_id')\n");
+  try {
+    expectIn(samesight("exposure", "people.yaml"), "reaches users other than the row's owner: members.email.", "exposure");
+  } finally {
+    rmSync(join(cli, "people.yaml"));
+  }
+});
 step('a .ts policy under "type": "commonjs" names the fix', () => {
   const pkgPath = join(cli, "package.json");
   const pkg = readFileSync(pkgPath, "utf8");

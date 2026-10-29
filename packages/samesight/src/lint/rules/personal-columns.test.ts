@@ -131,6 +131,22 @@ describe("personal-columns on sync rules", () => {
     ]);
   });
 
+  it("names a bucket's group path once, not again through the owner it merges with", () => {
+    const rules = [
+      "bucket_definitions:",
+      "  people:",
+      "    parameters:",
+      "      - SELECT token_parameters.user_id AS uid",
+      "      - SELECT id AS uid FROM members WHERE org_id = token_parameters.org",
+      "    data:",
+      "      - SELECT id, email FROM members WHERE id = bucket.uid",
+      "",
+    ].join("\n");
+    expect(findings(rules).map((f) => f.message.replace(/^.*\) to /, "to "))).toEqual([
+      "to members of the row's group, through parameters[1], not only the row's owner; fine if they need it, else drop it from the query",
+    ]);
+  });
+
   it("warns about a bucket whose owner and fixed paths reach one table, and passes the owner's alone", () => {
     const rules = (...parameters: string[]) =>
       ["bucket_definitions:", "  mine:", "    parameters:", ...parameters.map((p) => `      - ${p}`), "    data:", "      - SELECT * FROM members WHERE id = bucket.member_id", ""].join("\n");

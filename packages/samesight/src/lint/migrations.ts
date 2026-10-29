@@ -94,7 +94,7 @@ function apply(m: Migrations, text: string, at: Located): void {
       const schema = new RegExp(String.raw`^set\s+schema\s+(${NAME})$`, "i").exec(action);
       if (schema && name(schema[1] as string) !== "public") forget(m, table);
       const def = m.tables.get(table);
-      if (def) alterColumns(def, action);
+      if (def) alterColumns(def, action, table);
     }
     return;
   }
@@ -103,7 +103,7 @@ function apply(m: Migrations, text: string, at: Located): void {
     const table = publicTable(x[3], x[4]);
     // A temporary table lives in a schema of its own, for one session.
     if (x[1] || !table || (x[2] && m.tables.has(table))) return;
-    m.tables.set(table, tableDef(x[5] ?? "", at));
+    m.tables.set(table, tableDef(x[5] ?? "", at, table));
     return;
   }
   x = new RegExp(String.raw`^comment\s+on\s+column\s+(?:(${NAME})\.)?(${NAME})\.(${NAME})\s+is\s+(.*)$`, "is").exec(text);
@@ -167,6 +167,12 @@ function apply(m: Migrations, text: string, at: Located): void {
   }
 }
 
+/**
+ * The name of each table's primary key constraint, as given or as Postgres names it
+ * (<table>_pkey, after the table's name when the key was made), so DROP CONSTRAINT can end it.
+ */
+const keyNames = new WeakMap<TableDef, string>();
+
 /** A table renamed: its RLS, policies and definition go with it. */
 function move(m: Migrations, from: string, to: string): void {
   const rls = m.rls.get(from);
@@ -198,31 +204,35 @@ const TYPE_END = /\b(?:not|null|default|references|primary|unique|check|constrai
  * and AS take their columns from elsewhere, so they leave it incomplete and empty; so does
  * `(a, b) AS query`, which names columns without types.
  */
-function tableDef(rest: string, at: Located): TableDef {
+function tableDef(rest: string, at: Located, table: string): TableDef {
   const def: TableDef = { ...at, columns: [], primaryKey: [], userColumns: [], complete: false };
   const body = rest.startsWith("(") ? parenthesised(rest) : null;
   if (!body || /\bas\b/i.test(blank(body[1]))) return def;
   def.complete = !/\binherits\b/i.test(blank(body[1]));
   for (const item of topLevelSplit(body[0])) {
-    if (TABLE_ITEM.test(item)) tableConstraint(def, item);
-    else addColumn(def, item);
+    if (TABLE_ITEM.test(item)) tableConstraint(def, item, table);
+    else addColumn(def, item, table);
   }
   return def;
 }
 
 /** A table constraint or LIKE: a primary key replaces the table's, a foreign key to auth.users marks its columns. */
-function tableConstraint(def: TableDef, item: string): void {
-  const c = item.replace(new RegExp(String.raw`^constraint\s+${NAME}\s*`, "i"), "");
+function tableConstraint(def: TableDef, item: string, table: string): void {
+  const named = new RegExp(String.raw`^constraint\s+(${NAME})\s*`, "i").exec(item);
+  const c = named ? item.slice(named[0].length) : item;
   if (/^like\b/i.test(c)) def.complete = false;
   const key = /^(primary|foreign)\s+key\s*(\(.*)$/is.exec(c);
   const columns = key && parenthesised(key[2] as string);
   if (!columns) return;
-  if (key[1]?.toLowerCase() === "primary") def.primaryKey = names(columns[0]);
+  if (key[1]?.toLowerCase() === "primary") {
+    def.primaryKey = names(columns[0]);
+    keyNames.set(def, named ? name(named[1] as string) : `${table}_pkey`);
+  }
   else if (referencesUsers(columns[1])) for (const column of names(columns[0])) addOnce(def.userColumns, column);
 }
 
 /** A column definition, `<name> <type> [constraints]`, appended unless the table has that column. */
-function addColumn(def: TableDef, text: string): void {
+function addColumn(def: TableDef, text: string, table: string): void {
   const x = new RegExp(String.raw`^(${NAME})\s*(.*)$`, "s").exec(text);
   if (!x) return;
   const column = name(x[1] as string);
@@ -232,15 +242,27 @@ function addColumn(def: TableDef, text: string): void {
   def.columns.push({ name: column, type: typeName(rest.slice(0, end)) });
   const constraints = rest.slice(end);
   if (/\bprimary\s+key\b/i.test(blank(constraints))) addOnce(def.primaryKey, column);
+  if (def.primaryKey.length && !keyNames.has(def)) keyNames.set(def, `${table}_pkey`);
   if (referencesUsers(constraints)) addOnce(def.userColumns, column);
 }
 
 /** One ALTER TABLE action on a known table's columns: ADD, DROP, RENAME, or ALTER ... TYPE. */
-function alterColumns(def: TableDef, action: string): void {
+function alterColumns(def: TableDef, action: string, table: string): void {
   const add = /^add\s+(.*)$/is.exec(action)?.[1];
   if (add !== undefined) {
-    if (TABLE_ITEM.test(add)) tableConstraint(def, add);
-    else addColumn(def, add.replace(/^column\s+/i, "").replace(/^if\s+not\s+exists\s+/i, ""));
+    if (TABLE_ITEM.test(add)) tableConstraint(def, add, table);
+    else addColumn(def, add.replace(/^column\s+/i, "").replace(/^if\s+not\s+exists\s+/i, ""), table);
+    return;
+  }
+  // Dropping the primary key's constraint leaves the table with no key.
+  const dropKey = new RegExp(String.raw`^drop\s+constraint\s+(?:if\s+exists\s+)?(${NAME})(?:\s+(?:cascade|restrict))?$`, "i").exec(action);
+  if (dropKey) {
+    if (name(dropKey[1] as string) === keyNames.get(def)) def.primaryKey = [];
+    return;
+  }
+  const renameKey = new RegExp(String.raw`^rename\s+constraint\s+(${NAME})\s+to\s+(${NAME})$`, "i").exec(action);
+  if (renameKey) {
+    if (name(renameKey[1] as string) === keyNames.get(def)) keyNames.set(def, name(renameKey[2] as string));
     return;
   }
   const drop = new RegExp(String.raw`^drop\s+(?!constraint\s)(?:column\s+)?(?:if\s+exists\s+)?(${NAME})(?:\s+(?:cascade|restrict))?$`, "i").exec(action);
@@ -304,6 +326,9 @@ function literal(text: string): string | null | undefined {
   if (/^null$/i.test(text)) return null;
   const quoted = /^'((?:[^']|'')*)'$/s.exec(text);
   if (quoted) return (quoted[1] ?? "").replaceAll("''", "'");
+  // E'...': backslash escapes too (\' and \\); other escapes are left as written.
+  const escaped = /^E'((?:[^'\\]|\\.|'')*)'$/is.exec(text);
+  if (escaped) return (escaped[1] ?? "").replace(/''|\\(['\\])/g, (_, c: string | undefined) => c ?? "'");
   return /^\$([A-Za-z0-9_]*)\$(.*)\$\1\$$/s.exec(text)?.[2];
 }
 

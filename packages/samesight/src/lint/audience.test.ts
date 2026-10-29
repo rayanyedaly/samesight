@@ -86,6 +86,38 @@ describe("stream queries sent to their owner", () => {
   });
 });
 
+describe("a token read mixed into more than the comparison", () => {
+  it("ties no row, so the audience is every user, never a group or owner", () => {
+    for (const where of [
+      "owner_id IN (auth.user_id(), 'system')",
+      "owner_id = auth.user_id() IS NULL",
+      "owner_id = auth.user_id() IS NOT TRUE",
+      "owner_id = CASE WHEN kind = 'pub' THEN 'shared' ELSE auth.user_id() END",
+      "auth.user_id() IN (owner_id, 'x')",
+      "org_id IN (SELECT org_id FROM memberships WHERE user_id IN (auth.user_id(), 'x'))",
+    ]) {
+      expect(docs(where), where).toEqual(everyone);
+    }
+    expect(docs("org_id IN mine", { mine: "SELECT org_id FROM memberships WHERE user_id = auth.user_id() IS NOT FALSE" })).toEqual(everyone);
+  });
+
+  it("keeps the narrowest plain tie beside one that is not", () => {
+    expect(docs("owner_id = auth.user_id() AND editor_id IN (auth.user_id(), 'x')")).toEqual(owner("owner_id"));
+    expect(docs("owner_id = auth.user_id() OR owner_id IN (auth.user_id(), 'system')")).toEqual(everyone);
+    expect(docs("auth.user_id() IN (owner_id, editor_id)")).toEqual(group("(owner_id, editor_id)"));
+  });
+
+  it("does the same through sync rules parameter and data queries", () => {
+    expect(bucket(["SELECT token_parameters.user_id AS uid"], ["SELECT * FROM docs WHERE owner_id IN (bucket.uid, 'system')"])).toEqual({ "data[0]": [everyone] });
+    expect(bucket(["SELECT id AS ws FROM workspaces WHERE owner_id IN (token_parameters.user_id, 'system')"], ["SELECT * FROM docs WHERE ws_id = bucket.ws"])).toEqual({
+      "data[0]": [everyone],
+    });
+    expect(bucket(["SELECT org_id FROM members WHERE user_id = token_parameters.user_id"], ["SELECT * FROM docs WHERE org_id = bucket.org_id"])).toEqual({
+      "data[0]": [group("parameters[0]")],
+    });
+  });
+});
+
 describe("stream queries sent to a group", () => {
   it("are tied to the user by anything but their own id against the row", () => {
     expect(docs("org_id IN (SELECT org_id FROM memberships WHERE user_id = auth.user_id())")).toEqual(group("a subquery on memberships"));
