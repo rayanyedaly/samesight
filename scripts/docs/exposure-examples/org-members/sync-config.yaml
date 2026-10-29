@@ -1,0 +1,12 @@
+config:
+  edition: 3
+
+streams:
+  org_members:
+    auto_subscribe: true
+    with:
+      my_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+    query: SELECT * FROM org_members WHERE org_id IN my_orgs
+  my_notes:
+    auto_subscribe: true
+    query: SELECT id, title, body FROM notes WHERE owner_id = auth.user_id()

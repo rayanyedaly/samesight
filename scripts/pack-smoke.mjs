@@ -2,9 +2,10 @@
 /**
  * Packs every published package the way `pnpm publish` would, installs the tarballs with
  * npm into fresh projects outside the workspace, and uses them as a user would: both CLIs,
- * `samesight check`, `explain` and `lint` on Fieldbook, policy loading under CommonJS and
- * as .mts, `init` with no database, the runtime packages imported by plain Node, and
- * consumer code type-checked under several TypeScript versions and module resolutions.
+ * `samesight check`, `explain`, `lint` and `exposure` on Fieldbook, policy loading under
+ * CommonJS and as .mts, `init` with no database, the runtime packages imported by plain
+ * Node, and consumer code type-checked under several TypeScript versions and module
+ * resolutions.
  *
  *   node scripts/pack-smoke.mjs [--no-lint] [--keep]
  *
@@ -189,6 +190,18 @@ step("samesight lint catches a leak", () => {
     expectIn(e.stdout, "(unscoped-query)", "lint leak");
   } finally {
     rmSync(join(cli, "leaky.yaml"));
+  }
+});
+step("samesight exposure maps who receives which columns", () => {
+  // Fieldbook's own config. The copied migrations are samesight's generated ones, which create
+  // no public tables, so this checks the JSON's shape; people.yaml lists its columns.
+  const report = JSON.parse(samesight("exposure", "--format", "json"));
+  if (report.version !== 1 || !report.maps[0]?.tables.some((t) => t.table === "Inspection")) throw new Error(`exposure --format json: ${JSON.stringify(report).slice(0, 500)}`);
+  writeFileSync(join(cli, "people.yaml"), "config:\n  edition: 3\nstreams:\n  org:\n    auto_subscribe: true\n    query: SELECT id, email FROM members WHERE org_id = auth.parameter('org_id')\n");
+  try {
+    expectIn(samesight("exposure", "people.yaml"), "reaches users other than the row's owner: members.email.", "exposure");
+  } finally {
+    rmSync(join(cli, "people.yaml"));
   }
 });
 step('a .ts policy under "type": "commonjs" names the fix', () => {

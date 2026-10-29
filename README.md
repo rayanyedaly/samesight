@@ -33,6 +33,14 @@ npx samesight audit --project . --sync-config sync-config.yaml
 
 That is PowerSync's to-do list demo with one owner filter removed from its sync config ([`examples/audit-todolist`](examples/audit-todolist)). Lint flags known patterns in seconds; audit tests the rows that actually reach a device. Both read sync streams and legacy sync rules (`bucket_definitions`), and neither needs a Samesight policy. [How sync configs leak](docs/how-sync-configs-leak.md) walks through the patterns they catch, and [auditing an existing project](docs/verify.md#audit-mode) has every audit option.
 
+RLS is per row, so it never limits columns: a query sends every column it selects, and `SELECT *` sends them all, a colleague's email or a patient's diagnosis included. To see who receives which columns, with the ones that likely hold personal data marked, print the exposure map (files only, like lint):
+
+```bash
+npx samesight exposure sync-config.yaml --migrations supabase/migrations
+```
+
+The [`personal-columns`](docs/rules/personal-columns.md) lint rule flags the same columns in CI. See [the exposure map](docs/exposure.md).
+
 ## Lint and audit in CI
 
 The repository is also a GitHub Action: `mode: lint` annotates pull requests and can upload SARIF to code scanning, and `mode: audit` runs the audit on pull requests that change the sync config or the migrations. See [CI and the GitHub Action](docs/ci.md).
@@ -150,6 +158,7 @@ The docs are also a website, with search: [rayanyedaly.github.io/samesight](http
 - [Lint rules](docs/rules/index.md): what each rule catches, with an example and the fix
 - [The verifier and audit mode](docs/verify.md)
 - [How sync configs leak](docs/how-sync-configs-leak.md): the patterns lint and audit catch
+- [The exposure map](docs/exposure.md): who receives which columns, and the ones that likely hold personal data
 - [CI and the GitHub Action](docs/ci.md): lint and audit on pull requests
 - [Fieldbook](examples/fieldbook), the example app: multi-tenant inspections with three roles, offline writes and append-only records
 - [Quickstart](examples/quickstart): what the getting-started guide produces, verified in CI

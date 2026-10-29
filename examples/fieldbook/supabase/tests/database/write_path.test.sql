@@ -1,5 +1,5 @@
--- apply_batch and record_rejection: the forged-write cases from the plan's write-path
--- check. Run with `pnpm --filter fieldbook test:db`. One transaction, rolled back.
+-- apply_batch and record_rejection: forged writes the write path must refuse.
+-- Run with `pnpm --filter fieldbook test:db`. One transaction, rolled back.
 
 begin;
 create extension if not exists pgtap with schema extensions;

@@ -1,6 +1,6 @@
 # The CLIs
 
-Both CLIs need Node 22.18 or newer. They find the policy file in the current directory (`samesight.policy.ts`, else `samesight.policy.mts`) unless `--policy` names one, and every path in the policy is relative to the policy file. `samesight lint` and `samesight-verify audit` need no policy file.
+Both CLIs need Node 22.18 or newer. They find the policy file in the current directory (`samesight.policy.ts`, else `samesight.policy.mts`) unless `--policy` names one, and every path in the policy is relative to the policy file. `samesight lint`, `samesight exposure` and `samesight-verify audit` need no policy file.
 
 ## `samesight`
 
@@ -14,6 +14,7 @@ From the `samesight` package.
 | `samesight doctor` | required | Checks the running database against the policy. |
 | `samesight explain` | no | Prints who can read and write what, in plain words, from the saved snapshot. |
 | `samesight lint [file ...]` | no | Checks PowerSync sync configs for known leak patterns, reading files only. Needs no policy. |
+| `samesight exposure [file ...]` | no | Prints who receives which tables and columns, marking likely personal ones, reading files only. Needs no policy. |
 | `samesight audit` | required | Runs `samesight-verify audit`, which tests the rows: needs `@samesight/verify`. Needs no policy. |
 
 Every command exits 0 when it passes, 1 when it found something (a stale file, a failing doctor check, a lint error, a policy that does not compile), and 2 when it could not run: no command or an unknown one, a flag it cannot read, a policy, snapshot or file it cannot find, an existing policy `init` would overwrite, or a database it cannot reach.
@@ -23,9 +24,9 @@ Every command exits 0 when it passes, 1 when it found something (a stale file, a
 | `--policy <file>` | The policy file. |
 | `--db <url>` | The local database. Default: `$SAMESIGHT_DB_URL`, else the `[db]` port in `supabase/config.toml` next to the policy, else the Supabase CLI's default `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. |
 | `--table <name>` | `explain` only: one table. |
-| `--migrations <dir>` | `lint` only: the SQL migrations to read RLS from. Default: `supabase/migrations`, when it exists. |
+| `--migrations <dir>` | `lint` and `exposure`: the SQL migrations to read tables, primary keys, column comments and (for `lint`) RLS from. Default: `supabase/migrations`, when it exists. |
 | `--allow <rule>[:<name>]` | `lint` only: accept a rule's findings, all of them or those about one stream, bucket, table or policy. Repeatable. |
-| `--format <text\|json\|sarif\|github>` | `lint` only: `json` prints one JSON object on stdout, each finding with its 1-based `line` and `column` where known; `sarif` one SARIF 2.1.0 log; `github` GitHub Actions annotations. Notes stay on stderr, and the exit code is the same in every format. |
+| `--format <text\|json\|sarif\|github>` | `lint`: `json` prints one JSON object on stdout, each finding with its 1-based `line` and `column` where known; `sarif` one SARIF 2.1.0 log; `github` GitHub Actions annotations. Notes stay on stderr, and the exit code is the same in every format. `exposure` takes `text` or `json`. |
 | `-v`, `--version` | |
 | `-h`, `--help` | |
 
@@ -110,7 +111,7 @@ powersync/sync-rules.yaml:17  warning  policy "members read" on workspace (supab
 
 That is PowerSync's Trello demo with a made-up migration. Its third parameter query reads `WHERE visibility = "Public"`. Double quotes name a column, not a string, so it reads nothing from the token and filters by no fixed value, and lint fails it; most likely it was meant to list public workspaces, which written as `'Public'` would be the "fixed filters" warning for data public by design.
 
-Lint proves nothing about what reaches a device: it flags known mistakes in seconds. `samesight-verify audit` tests the rows. The migrations reader is best-effort: it follows plain DDL (`alter table` enabling or disabling row level security, renaming the table or moving it out of `public`, `create policy`, `alter policy`, `drop policy`, `drop table`) in file order, and does not see RLS changed inside functions, `DO` blocks or dynamic SQL. Without migrations, `rls-off` and `rls-open` do not run, and lint says so.
+Lint proves nothing about what reaches a device: it flags known mistakes in seconds. `samesight-verify audit` tests the rows. The migrations reader is best-effort: it follows plain DDL (`create table`, `alter table` adding, dropping, renaming or retyping columns, adding, dropping or renaming the primary key's constraint (from a unique index too, as `supabase db diff` writes it), enabling or disabling row level security, renaming the table or moving it out of `public`, `create unique index`, `alter index ... rename to`, `comment on column` with `'...'`, `E'...'` or `$$...$$` text, `create policy`, `alter policy`, `drop policy`, `drop table`) in file order, and does not see tables or RLS changed inside functions, `DO` blocks or dynamic SQL. Without migrations, `rls-off` and `rls-open` do not run, and `personal-columns` sees only the columns a query lists, no column comment, and every table as keyed by `id`; lint says so.
 
 Warnings do not fail the run, but each one needs a decision: a warning can be a real leak (`deleted = false` filters rows yet sends every undeleted one to everyone; `auth.user_id() IN (SELECT id FROM profiles)` admits every user, not admins). Fix it, or accept it as below. A finding that is deliberate, such as a table public by design, can be accepted with `--allow unscoped-query:customers` (by stream, bucket, table or policy name) or `--allow not-auto-subscribed` (a whole rule). Allowed findings are counted in the output, never dropped silently, and a misspelt rule name is an error.
 
@@ -147,6 +148,22 @@ A synced table whose migrations never enable row level security. [More](rules/rl
 #### `rls-open`
 
 A policy on a synced table that lets any client or any signed-in user through. [More](rules/rls-open.md)
+
+#### `personal-columns`
+
+A column that likely holds personal data, sent to users other than the row's owner. [More](rules/personal-columns.md)
+
+### `exposure`
+
+Prints, for each table a sync config sends, who receives its rows and which columns, marking those whose name or comment marker looks personal. Like lint, it reads the sync config and the migrations only, needs no policy file, and finds the sync config where lint does.
+
+```text
+samesight exposure [file ...] [--migrations <dir>] [--format text|json]
+```
+
+`--migrations <dir>` names the SQL migrations whose tables give the columns a `SELECT *` sends, the primary keys that tie a row to its parent's owner, and the column comments that may hold a marker (default: `supabase/migrations`, when it exists). Without them, those columns are not known, no comment is read and every table is taken to be keyed by `id`, and it says so. `--format json` prints one JSON object on stdout instead of the text; notes stay on stderr.
+
+Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. See [the exposure map](exposure.md) for an example, how to read it, and how columns are matched.
 
 ### `audit`
 
