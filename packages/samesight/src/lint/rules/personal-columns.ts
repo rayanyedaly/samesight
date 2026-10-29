@@ -8,7 +8,8 @@
  * rows a fixed filter picks, are often shared on purpose, so a warning says what to decide.
  * Rows a role check admits are often meant for admins, and unscoped-query or client-scoped
  * usually fail a query whose rows any client or every user gets, so those are notes: they keep
- * the column in view when that finding is accepted with --allow. Queries the map cannot read
+ * the column in view when that finding is accepted with --allow. A query that reads the token
+ * but ties no row to the user by it fails no other rule, so it warns. Queries the map cannot read
  * are unreadable-query's. A * sends whatever columns the table has, which only the migrations
  * tell; without them only the listed columns count.
  */
@@ -20,9 +21,6 @@ import type { LintFinding, LintLevel } from "../finding.ts";
 import { defineRule, type LintRule } from "../lint.ts";
 
 const RULE = "personal-columns";
-
-/** Each audience wider than the row's owner. */
-const LEVEL: Record<Exclude<Audience["kind"], "owner">, LintLevel> = { group: "warning", fixed: "warning", role: "info", client: "info", everyone: "info" };
 
 const rank = (a: Audience) => AUDIENCE_ORDER.indexOf(a.kind);
 
@@ -46,14 +44,14 @@ function why(p: PersonalMatch, jsonKey: string | undefined): string {
 }
 
 /**
- * A query's level: by its widest audience, except that a bucket a group's members or a fixed
- * filter reaches through one parameter query warns even when a role check reaches it through
- * another. A query every user or any client gets is unscoped-query's or client-scoped's error.
+ * A query's level. A note where every user or any client gets the rows, which is
+ * unscoped-query's or client-scoped's error, and where only a role check admits users, unless
+ * a group's members or a fixed filter also reach a bucket through another parameter query.
+ * Else a warning: a group, a fixed filter, or a token check that ties no row to the user.
  */
 function level(q: ExposedQuery): LintLevel {
-  const widest = q.audience.kind;
-  if (widest === "owner" || widest === "everyone" || widest === "client") return "info";
-  return q.paths.some((p) => p.audience.kind === "group" || p.audience.kind === "fixed") ? "warning" : LEVEL[widest];
+  if (q.paths.some(({ audience: a }) => a.kind === "client" || (a.kind === "everyone" && !a.mixed))) return "info";
+  return q.audience.kind === "role" && !q.paths.some(({ audience: a }) => a.kind === "group" || a.kind === "fixed") ? "info" : "warning";
 }
 
 /** "a", "a and b", "a, b and c". */

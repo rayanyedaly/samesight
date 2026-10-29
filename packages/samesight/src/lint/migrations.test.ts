@@ -285,6 +285,22 @@ describe("escaped string comments", () => {
     ]);
     expect(m.tables.get("t")?.columns.map((c) => c.comment)).toEqual([undefined, "samesight:not-personal", "it\\s a 'note' \\\\ done"]);
   });
+
+  it("ends the statement after an escaped quote, not at it, and reads e'...' too", () => {
+    const m = applyMigrations([
+      {
+        file: "0.sql",
+        sql: "create table t (id uuid, email text, note text); comment on column t.email is E'it\\'s mine'; comment on column t.note is e'no\\'pe; ok'; create table u (id uuid primary key);",
+      },
+    ]);
+    expect(m.tables.get("t")?.columns.map((c) => c.comment)).toEqual([undefined, "it's mine", "no'pe; ok"]);
+    expect(m.tables.get("u")?.primaryKey).toEqual(["id"]);
+  });
+
+  it("splits a table's columns after an escaped quote in a default", () => {
+    const m = applyMigrations([{ file: "0.sql", sql: "create table t (id uuid primary key, note text default E'a\\'b, c', email text);" }]);
+    expect(m.tables.get("t")?.columns.map((c) => c.name)).toEqual(["id", "note", "email"]);
+  });
 });
 
 describe("primary key constraints", () => {
@@ -302,5 +318,32 @@ describe("primary key constraints", () => {
     expect(key("create table lists (id uuid primary key);", "alter table lists rename constraint lists_pkey to pk;", "alter table lists drop constraint pk;")).toEqual([]);
     // Postgres names the key when it is made: a later table rename keeps lists_pkey.
     expect(key("create table todo_lists (id uuid primary key);", "alter table todo_lists rename to lists;", "alter table lists drop constraint todo_lists_pkey;")).toEqual([]);
+    // Renaming another constraint, or adding a column after a named key, leaves the key's name.
+    expect(key("create table lists (id uuid, constraint pk primary key (id), owner_id uuid unique);", "alter table lists rename constraint lists_owner_id_key to o;", "alter table lists drop constraint pk;")).toEqual([]);
+    expect(key("create table lists (id uuid, constraint pk primary key (id));", "alter table lists add column note text;", "alter table lists drop constraint pk;")).toEqual([]);
+  });
+
+  it("reads a key named on its column, renamed through its index, or named for a long table", () => {
+    expect(key("create table lists (id uuid constraint lists_id_pk primary key);", "alter table lists drop constraint lists_id_pk;")).toEqual([]);
+    expect(key('create table lists (id uuid constraint "Key" primary key);', 'alter table lists drop constraint "Key";')).toEqual([]);
+    expect(key("create table lists (id uuid primary key);", "alter index lists_pkey rename to pk;", "alter table lists drop constraint pk;")).toEqual([]);
+    expect(key("create table lists (id uuid primary key);", "alter index if exists public.lists_pkey rename to pk;", "alter table lists drop constraint lists_pkey;")).toEqual(["id"]);
+    // Postgres cuts <table>_pkey to 63 bytes by shortening the table's name.
+    const long = "a".repeat(60);
+    const m = applyMigrations([{ file: "0.sql", sql: `create table ${long} (id uuid primary key); alter table ${long} drop constraint ${"a".repeat(58)}_pkey;` }]);
+    expect(m.tables.get(long)?.primaryKey).toEqual([]);
+  });
+
+  it("takes a key made from a unique index, as supabase db diff writes it", () => {
+    const index = 'CREATE UNIQUE INDEX lists_pkey ON public.lists USING btree (id);';
+    const using = 'alter table "public"."lists" add constraint "lists_pkey" PRIMARY KEY using index "lists_pkey";';
+    expect(key("create table lists (id uuid not null, owner_id uuid);", index, using)).toEqual(["id"]);
+    expect(key("create table lists (id uuid not null, owner_id uuid);", index, using, 'alter table "public"."lists" drop constraint "lists_pkey";')).toEqual([]);
+    // The constraint's own name renames the index.
+    expect(key("create table lists (id uuid not null);", "create unique index l_idx on lists (id);", "alter table lists add constraint pk primary key using index l_idx;", "alter table lists drop constraint pk;")).toEqual([]);
+    // An index it did not see, on an expression, or partial, gives no key it could guess.
+    expect(key("create table lists (id uuid not null);", using)).toEqual([]);
+    expect(key("create table lists (id uuid not null);", "create unique index lists_pkey on lists (lower(id::text));", using)).toEqual([]);
+    expect(key("create table lists (id uuid not null);", "create unique index lists_pkey on lists (id) where id is not null;", using)).toEqual([]);
   });
 });

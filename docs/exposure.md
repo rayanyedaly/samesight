@@ -118,11 +118,11 @@ Each table gets a block, and each query that sends it three lines:
 - `to`: who receives the rows. For a sync rules bucket with several parameter queries, the widest audience comes first, then one `through parameters[n]` line for each.
 - `columns`: the columns as devices name them. `[contact]` marks a column that looks personal, with its category, and `marked in its comment` says a comment marker decided it. `(from email)` names the columns a renamed or computed column is read from, when its name does not show them. A `SELECT *` lists the table's columns from the migrations; when the migrations define the table only in part (`LIKE`, `INHERITS`, `CREATE TABLE AS`), or not at all, it says so.
 
-Then queries it could not read, with why, and a summary: how many tables, and the columns that look personal and reach users other than the row's owner, as `table.column`. When some of what those users receive is not known (a query it could not read, a `*` whose columns the migrations do not give), the summary says so and claims nothing about it.
+Then queries it could not read, with why, and a summary: how many tables, and the columns that look personal and reach users other than the row's owner, one for each column sent: as `table.column`, with `as name` when the device names it otherwise (`members.email as contact`). When some of what those users receive is not known (a query it could not read, a `*` whose columns the migrations do not give), the summary says so and claims nothing about it.
 
 ## Who receives the rows
 
-The audiences, narrowest first. The map reads them from the sync config, as lint does, with the tables' primary keys from the migrations when it has them.
+The audiences, narrowest first. The map reads them from the sync config, as lint does, with the tables' primary keys from the migrations when it has them. A table the migrations do not define, or every table when no migrations are read, is taken to be keyed by `id`, as PowerSync's own examples are; a table the migrations give no primary key has no owner through it.
 
 - **only the row's owner (owner_id)**: each row goes to one user, the one whose id is in that column of the row.
 - **only the owner of its lists row (lists.owner_id)**: each row goes to one user, the owner of the one row it points at by key (a to-do goes to its list's owner).
@@ -130,9 +130,10 @@ The audiences, narrowest first. The map reads them from the sync config, as lint
 - **whoever passes a role or claim check**: users who pass a check on who is asking (a role claim, an admin list), not tied to the row.
 - **every user, for rows a fixed filter picks**: a fixed filter (`status = 'public'`) picks the rows, and every user gets them.
 - **whichever rows a client asks for**: a parameter the client sends picks the rows, so any client can ask for any.
+- **every user, for some rows or all (the token check does not tie rows to users)**: the query reads the token, but not in a way that ties a row to the users it reaches (below), so some rows, or all, can reach every user.
 - **every user**: nothing limits the rows.
 
-Owner is claimed only where each row surely goes to one user: the user id itself compared with a column of the row, or of the one parent row it points at by key, in every `OR` branch. A group is claimed only where the token is compared plainly with the row: a token read mixed with more (a literal in its `IN` list, a `CASE`, an `IS NULL` test) can let users through with no tie to the row, so the map says every user. Anything less certain gets the wider audience, never the narrower.
+Owner is claimed only where each row surely goes to one user: the user id itself compared with a column of the row, or of the one parent row it points at by key, in every `OR` branch. A group is claimed only where the token is compared plainly with the row, in a query whose tables are all joined by equalities. A token read mixed with more can let users through with no tie to the row: a literal or a column beside it in an `IN` list (`owner_id IN (auth.user_id(), 'system')`), a fallback for a claim a token may lack (`coalesce(auth.parameter('org_id'), 'public')`), a `CASE`, an `IS NULL` test, or a table joined `ON true`. The map says every user, for some rows or all, there. Anything less certain gets the wider audience, never the narrower.
 
 ## How personal columns are found
 
@@ -161,4 +162,4 @@ The categories are `identifier`, `contact`, `location`, `birth`, `health`, `fina
 
 ## JSON
 
-`--format json` prints one object on stdout: `version` (1), `files`, `migrations` (the directory it read, or `null`), `maps`, one per file it could read, and `unreadable`, each file it could not read with its error. Each map has its `file`, `kind` (`streams` or `bucket definitions`), `tables` and `unread`. A query there has its stream, label, SQL, audience and columns, each column with the columns it is read from and, when it looks personal, its category and what matched; and the `line` it starts on, when found. Notes stay on stderr.
+`--format json` prints one object on stdout: `version` (1), `files`, `migrations` (the directory it read, or `null`), `maps`, one per file it could read, and `unreadable`, each file it could not read with its error. Each map has its `file`, `kind` (`streams` or `bucket definitions`), `tables` and `unread`. A query there has its stream, label, SQL, audience (`mixed: true` on an `everyone` the token check does not tie) and columns, each column with the columns it is read from and, when it looks personal, its category, what matched and the column it matched on (`matchedOn`); and the `line` it starts on, when found. Notes stay on stderr.

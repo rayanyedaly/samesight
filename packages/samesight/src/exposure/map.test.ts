@@ -240,6 +240,12 @@ streams:
     const unkeyed = schemaOf("create table lists (id uuid not null, owner_id uuid); create table todos (id uuid primary key, list_id uuid, assignee_email text);");
     expect(map(yaml, keyed).tables[0]?.queries[0]?.audience.kind).toBe("owner");
     expect(map(yaml, unkeyed).tables[0]?.queries[0]?.audience.kind).toBe("group");
+    // As supabase db diff writes a key: a unique index, then a constraint using it.
+    const diffed = schemaOf(
+      "create table lists (id uuid not null, owner_id uuid); create table todos (id uuid not null, list_id uuid, assignee_email text);",
+      'CREATE UNIQUE INDEX lists_pkey ON public.lists USING btree (id); alter table "public"."lists" add constraint "lists_pkey" PRIMARY KEY using index "lists_pkey";',
+    );
+    expect(map(yaml, diffed).tables[0]?.queries[0]?.audience.kind).toBe("owner");
     // Without migrations, a table is taken to be keyed by id, as PowerSync's tables are.
     expect(map(yaml).tables[0]?.queries[0]?.audience.kind).toBe("owner");
   });

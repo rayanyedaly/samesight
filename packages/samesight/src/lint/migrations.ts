@@ -94,8 +94,28 @@ function apply(m: Migrations, text: string, at: Located): void {
       const schema = new RegExp(String.raw`^set\s+schema\s+(${NAME})$`, "i").exec(action);
       if (schema && name(schema[1] as string) !== "public") forget(m, table);
       const def = m.tables.get(table);
-      if (def) alterColumns(def, action, table);
+      if (def) alterColumns(def, action, table, indexesOf(m));
     }
+    return;
+  }
+  x = new RegExp(String.raw`^create\s+unique\s+index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?(${NAME})\s+on\s+(?:only\s+)?${TABLE}\s*(?:using\s+\w+\s*)?(\(.*)$`, "is").exec(text);
+  if (x) {
+    const table = publicTable(x[2], x[3]);
+    const def = table ? m.tables.get(table) : undefined;
+    const list = parenthesised(x[4] ?? "");
+    // Only plain columns: an expression or a partial index cannot back a primary key.
+    const plain = list && topLevelSplit(list[0]).every((item) => new RegExp(String.raw`^${NAME}(?:\s+(?:asc|desc))?(?:\s+nulls\s+(?:first|last))?$`, "i").test(item));
+    if (def && list && plain && !/\bwhere\b/i.test(blank(list[1]))) indexesOf(m).set(name(x[1] as string), { def, columns: names(list[0]) });
+    return;
+  }
+  x = new RegExp(String.raw`^alter\s+index\s+(?:if\s+exists\s+)?(?:(${NAME})\.)?(${NAME})\s+rename\s+to\s+(${NAME})$`, "i").exec(text);
+  if (x) {
+    const [from, to] = [name(x[2] as string), name(x[3] as string)];
+    // Renaming the index of a key renames its constraint.
+    for (const def of m.tables.values()) if (keyNames.get(def) === from) keyNames.set(def, to);
+    const index = indexesOf(m).get(from);
+    indexesOf(m).delete(from);
+    if (index) indexesOf(m).set(to, index);
     return;
   }
   x = new RegExp(String.raw`^create\s+(?:((?:global\s+|local\s+)?temp(?:orary)?)\s+|unlogged\s+)?table\s+(if\s+not\s+exists\s+)?${TABLE}\s*(.*)$`, "is").exec(text);
@@ -173,6 +193,30 @@ function apply(m: Migrations, text: string, at: Located): void {
  */
 const keyNames = new WeakMap<TableDef, string>();
 
+/** Postgres's name for a table's key: <table>_pkey, the table's name cut to fit in 63 bytes. */
+function keyName(table: string): string {
+  const chars = [...table];
+  while (new TextEncoder().encode(`${chars.join("")}_pkey`).length > 63) chars.pop();
+  return `${chars.join("")}_pkey`;
+}
+
+/** A unique index on plain columns of a table, which ADD PRIMARY KEY USING INDEX can make its key. */
+interface UniqueIndex {
+  def: TableDef;
+  columns: string[];
+}
+
+/** Each Migrations' unique indexes by name, as `supabase db diff` writes a key: CREATE UNIQUE INDEX, then ADD CONSTRAINT ... USING INDEX. */
+const uniqueIndexes = new WeakMap<Migrations, Map<string, UniqueIndex>>();
+
+function indexesOf(m: Migrations): Map<string, UniqueIndex> {
+  const found = uniqueIndexes.get(m);
+  if (found) return found;
+  const made = new Map<string, UniqueIndex>();
+  uniqueIndexes.set(m, made);
+  return made;
+}
+
 /** A table renamed: its RLS, policies and definition go with it. */
 function move(m: Migrations, from: string, to: string): void {
   const rls = m.rls.get(from);
@@ -216,17 +260,31 @@ function tableDef(rest: string, at: Located, table: string): TableDef {
   return def;
 }
 
-/** A table constraint or LIKE: a primary key replaces the table's, a foreign key to auth.users marks its columns. */
-function tableConstraint(def: TableDef, item: string, table: string): void {
+/**
+ * A table constraint or LIKE: a primary key replaces the table's, a foreign key to auth.users
+ * marks its columns. A key made from a unique index takes the index's columns, and the index
+ * takes the constraint's name.
+ */
+function tableConstraint(def: TableDef, item: string, table: string, indexes?: Map<string, UniqueIndex>): void {
   const named = new RegExp(String.raw`^constraint\s+(${NAME})\s*`, "i").exec(item);
   const c = named ? item.slice(named[0].length) : item;
   if (/^like\b/i.test(c)) def.complete = false;
+  const using = new RegExp(String.raw`^primary\s+key\s+using\s+index\s+(${NAME})`, "i").exec(c);
+  if (using) {
+    const index = name(using[1] as string);
+    const found = indexes?.get(index);
+    // An index this reader did not see leaves the table without a key it knows: never one it guessed.
+    if (found?.def !== def) return;
+    def.primaryKey = [...found.columns];
+    keyNames.set(def, named ? name(named[1] as string) : index);
+    return;
+  }
   const key = /^(primary|foreign)\s+key\s*(\(.*)$/is.exec(c);
   const columns = key && parenthesised(key[2] as string);
   if (!columns) return;
   if (key[1]?.toLowerCase() === "primary") {
     def.primaryKey = names(columns[0]);
-    keyNames.set(def, named ? name(named[1] as string) : `${table}_pkey`);
+    keyNames.set(def, named ? name(named[1] as string) : keyName(table));
   }
   else if (referencesUsers(columns[1])) for (const column of names(columns[0])) addOnce(def.userColumns, column);
 }
@@ -241,16 +299,21 @@ function addColumn(def: TableDef, text: string, table: string): void {
   const end = typeEnd(rest);
   def.columns.push({ name: column, type: typeName(rest.slice(0, end)) });
   const constraints = rest.slice(end);
-  if (/\bprimary\s+key\b/i.test(blank(constraints))) addOnce(def.primaryKey, column);
-  if (def.primaryKey.length && !keyNames.has(def)) keyNames.set(def, `${table}_pkey`);
+  const key = blank(constraints).search(/\bprimary\s+key\b/i);
+  if (key !== -1) {
+    addOnce(def.primaryKey, column);
+    // CONSTRAINT <name> PRIMARY KEY names it; blank keeps offsets, so the name is read from the text.
+    const named = new RegExp(String.raw`\bconstraint\s+(${NAME})\s*$`, "i").exec(constraints.slice(0, key));
+    keyNames.set(def, named ? name(named[1] as string) : keyName(table));
+  }
   if (referencesUsers(constraints)) addOnce(def.userColumns, column);
 }
 
 /** One ALTER TABLE action on a known table's columns: ADD, DROP, RENAME, or ALTER ... TYPE. */
-function alterColumns(def: TableDef, action: string, table: string): void {
+function alterColumns(def: TableDef, action: string, table: string, indexes: Map<string, UniqueIndex>): void {
   const add = /^add\s+(.*)$/is.exec(action)?.[1];
   if (add !== undefined) {
-    if (TABLE_ITEM.test(add)) tableConstraint(def, add, table);
+    if (TABLE_ITEM.test(add)) tableConstraint(def, add, table, indexes);
     else addColumn(def, add.replace(/^column\s+/i, "").replace(/^if\s+not\s+exists\s+/i, ""), table);
     return;
   }
@@ -341,6 +404,23 @@ function roles(head: string): string[] | undefined {
   return to ? to.split(",").map((r) => name(r.trim())) : undefined;
 }
 
+/**
+ * Where the string or quoted name that opens at `i` ends: the index after its closing quote,
+ * or the text's length. A doubled quote continues it, and in an E'...' string so does \'.
+ */
+function quotedEnd(text: string, i: number): number {
+  const quote = text[i];
+  const escapes = quote === "'" && /^[Ee]$/.test(text[i - 1] ?? "") && !/^[A-Za-z0-9_$]$/.test(text[i - 2] ?? "");
+  for (let j = i + 1; j < text.length; j++) {
+    if (escapes && text[j] === "\\") j++;
+    else if (text[j] === quote) {
+      if (text[j + 1] !== quote) return j + 1;
+      j++;
+    }
+  }
+  return text.length;
+}
+
 /** Parts of `text` split on commas outside parentheses and strings. */
 function topLevelSplit(text: string): string[] {
   const out: string[] = [];
@@ -348,10 +428,8 @@ function topLevelSplit(text: string): string[] {
   let start = 0;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (ch === "'" || ch === '"') {
-      const end = text.indexOf(ch, i + 1);
-      i = end === -1 ? text.length : end;
-    } else if (ch === "(") depth++;
+    if (ch === "'" || ch === '"') i = quotedEnd(text, i) - 1;
+    else if (ch === "(") depth++;
     else if (ch === ")") depth--;
     else if (ch === "," && depth === 0) {
       out.push(text.slice(start, i).trim());
@@ -384,10 +462,8 @@ function parenthesised(text: string): [inside: string, after: string] | null {
   let depth = 0;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (ch === "'" || ch === '"') {
-      const end = text.indexOf(ch, i + 1);
-      i = end === -1 ? text.length : end;
-    } else if (ch === "(") depth++;
+    if (ch === "'" || ch === '"') i = quotedEnd(text, i) - 1;
+    else if (ch === "(") depth++;
     else if (ch === ")" && --depth === 0) return [text.slice(1, i).trim(), text.slice(i + 1).trim()];
   }
   return null;
@@ -400,8 +476,7 @@ function blank(text: string): string {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i] as string;
     if (ch === "'" || ch === '"') {
-      const end = text.indexOf(ch, i + 1);
-      const stop = end === -1 ? text.length : end + 1;
+      const stop = quotedEnd(text, i);
       out += " ".repeat(stop - i);
       i = stop - 1;
     } else {
@@ -444,13 +519,10 @@ export function statements(sql: string): { text: string; line: number }[] {
       i = stop;
       continue;
     }
-    const dollar = /^\$[A-Za-z0-9_]*\$/.exec(sql.slice(i));
-    const quote = ch === "'" || ch === '"' ? ch : dollar?.[0];
-    if (quote) {
-      let end = sql.indexOf(quote, i + quote.length);
-      // A doubled quote ('' or "") continues the string.
-      while (end !== -1 && quote.length === 1 && sql[end + 1] === quote) end = sql.indexOf(quote, end + 2);
-      const stop = end === -1 ? sql.length : end + quote.length;
+    const dollar = ch === "$" ? /^\$[A-Za-z0-9_]*\$/.exec(sql.slice(i))?.[0] : undefined;
+    if (ch === "'" || ch === '"' || dollar) {
+      const end = dollar ? sql.indexOf(dollar, i + dollar.length) : -1;
+      const stop = !dollar ? quotedEnd(sql, i) : end === -1 ? sql.length : end + dollar.length;
       const body = sql.slice(i, stop);
       line += countLines(body);
       text += body;

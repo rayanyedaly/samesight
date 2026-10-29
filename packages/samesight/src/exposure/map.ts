@@ -31,6 +31,8 @@ export interface ExposedColumn {
   derived: boolean;
   /** When it likely holds personal data, by its name or a comment marker. */
   personal?: PersonalMatch;
+  /** The table's column the match was made on, when it was one of `from` (email, for lower(email) AS contact). */
+  matchedOn?: string;
   /** The JSON key the match was made on, when it was (data ->> 'phone'): not the column's name. */
   jsonKey?: string;
 }
@@ -125,14 +127,14 @@ function streamPaths(sql: string, ctes: Map<string, string>, keys: (table: strin
 function columnsOf(sent: ReturnType<typeof sentColumns>, kind: SyncConfig["kind"], table: SchemaTable | undefined, name: string): ExposedQuery["columns"] {
   const known = new Map((table?.columns ?? []).map((c) => [c.name, c]));
   const siblings = table ? table.columns.map((c) => c.name) : sent.columns.flatMap((c) => c.from);
-  const personal = (column: string, from: string[], jsonKeys: string[]): Pick<ExposedColumn, "personal" | "jsonKey"> => {
+  const personal = (column: string, from: string[], jsonKeys: string[]): Pick<ExposedColumn, "personal" | "matchedOn" | "jsonKey"> => {
     if (!from.length) return {};
     // Columns marked not personal settle it, whatever they are renamed to; only when all are.
     let settled = true;
     for (const source of from) {
       const c = known.get(source);
       const match = personalColumn(source, name, { siblings, ...(c?.type ? { type: c.type } : {}), ...(c?.comment ? { comment: c.comment } : {}) });
-      if (match) return { personal: match };
+      if (match) return { personal: match, matchedOn: source };
       if (!(c?.comment && commentMarker(c.comment)?.personal === false)) settled = false;
     }
     if (settled) return {};

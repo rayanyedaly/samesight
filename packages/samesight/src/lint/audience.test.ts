@@ -23,6 +23,7 @@ const role: Audience = { kind: "role" };
 const fixed: Audience = { kind: "fixed" };
 const client: Audience = { kind: "client" };
 const everyone: Audience = { kind: "everyone" };
+const mixed: Audience = { kind: "everyone", mixed: true };
 
 describe("stream queries sent to their owner", () => {
   it("compare the user id with a column of the row, however written", () => {
@@ -92,29 +93,75 @@ describe("a token read mixed into more than the comparison", () => {
       "owner_id IN (auth.user_id(), 'system')",
       "owner_id = auth.user_id() IS NULL",
       "owner_id = auth.user_id() IS NOT TRUE",
+      "owner_id = auth.user_id() ISNULL",
+      "owner_id = auth.user_id() NOTNULL",
       "owner_id = CASE WHEN kind = 'pub' THEN 'shared' ELSE auth.user_id() END",
       "auth.user_id() IN (owner_id, 'x')",
+      // A column beside the token in a list: the rows where owner_id = editor_id reach every user.
+      "owner_id IN (auth.user_id(), editor_id)",
+      "org_id IN (auth.parameter('org_id'), org_id)",
+      // A fallback for a claim a token may lack, or a column beside the token.
+      "org_id = coalesce(auth.parameter('org_id'), 'public')",
+      "org_id = COALESCE(auth.parameter('org_id'), org_id)",
+      "org_id IN coalesce(auth.parameter('org_ids'), '[\"public\"]')",
+      // The comparison is a truth value compared again.
+      "(owner_id = auth.user_id()) = is_done",
+      "owner_id = (auth.user_id() IS NULL)",
       "org_id IN (SELECT org_id FROM memberships WHERE user_id IN (auth.user_id(), 'x'))",
+      "org_id IN (SELECT org_id FROM memberships WHERE active AND user_id IN (auth.user_id(), 'x'))",
     ]) {
-      expect(docs(where), where).toEqual(everyone);
+      expect(docs(where), where).toEqual(mixed);
     }
-    expect(docs("org_id IN mine", { mine: "SELECT org_id FROM memberships WHERE user_id = auth.user_id() IS NOT FALSE" })).toEqual(everyone);
+    // The token compared with itself limits nothing, as unscoped-query sees it.
+    expect(docs("auth.user_id() IN (auth.user_id(), owner_id)")).toEqual(everyone);
+    expect(docs("org_id IN mine", { mine: "SELECT org_id FROM memberships WHERE user_id = auth.user_id() IS NOT FALSE" })).toEqual(mixed);
+    expect(docs("org_id IN (SELECT org_id FROM mine)", { mine: "SELECT org_id FROM memberships WHERE user_id IN (auth.user_id(), 'x')" })).toEqual(mixed);
   });
 
   it("keeps the narrowest plain tie beside one that is not", () => {
     expect(docs("owner_id = auth.user_id() AND editor_id IN (auth.user_id(), 'x')")).toEqual(owner("owner_id"));
-    expect(docs("owner_id = auth.user_id() OR owner_id IN (auth.user_id(), 'system')")).toEqual(everyone);
+    expect(docs("owner_id = auth.user_id() OR owner_id IN (auth.user_id(), 'system')")).toEqual(mixed);
     expect(docs("auth.user_id() IN (owner_id, editor_id)")).toEqual(group("(owner_id, editor_id)"));
+    expect(docs("owner_id IN (auth.user_id(), auth.parameter('acting_for'))")).toEqual(group("claim acting_for"));
+  });
+
+  it("ties no group through a table joined by anything but equalities", () => {
+    for (const sql of [
+      "SELECT todos.* FROM todos JOIN lists ON true WHERE lists.owner_id = auth.user_id()",
+      // A todo with no list joins every list, so every list's owner gets it.
+      "SELECT todos.* FROM todos JOIN lists ON todos.list_id = lists.id OR todos.list_id IS NULL WHERE lists.owner_id = auth.user_id()",
+      "SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l CROSS JOIN members m WHERE m.user_id = auth.user_id())",
+      "SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l, members m WHERE m.user_id = auth.user_id())",
+      "SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l JOIN members m ON true WHERE m.user_id = auth.user_id())",
+    ]) {
+      expect(stream(sql), sql).toEqual(mixed);
+    }
+    expect(stream("SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l JOIN members m ON m.list_id = l.id WHERE m.user_id = auth.user_id())")).toEqual(
+      group("a subquery on lists"),
+    );
   });
 
   it("does the same through sync rules parameter and data queries", () => {
-    expect(bucket(["SELECT token_parameters.user_id AS uid"], ["SELECT * FROM docs WHERE owner_id IN (bucket.uid, 'system')"])).toEqual({ "data[0]": [everyone] });
+    const docsBy = (parameters: string, data = "SELECT * FROM docs WHERE org_id = bucket.org_id") => bucket([parameters], [data])["data[0]"];
+    expect(bucket(["SELECT token_parameters.user_id AS uid"], ["SELECT * FROM docs WHERE owner_id IN (bucket.uid, 'system')"])).toEqual({ "data[0]": [mixed] });
     expect(bucket(["SELECT id AS ws FROM workspaces WHERE owner_id IN (token_parameters.user_id, 'system')"], ["SELECT * FROM docs WHERE ws_id = bucket.ws"])).toEqual({
-      "data[0]": [everyone],
+      "data[0]": [mixed],
     });
-    expect(bucket(["SELECT org_id FROM members WHERE user_id = token_parameters.user_id"], ["SELECT * FROM docs WHERE org_id = bucket.org_id"])).toEqual({
-      "data[0]": [group("parameters[0]")],
-    });
+    const members = "SELECT org_id FROM members WHERE user_id = token_parameters.user_id";
+    expect(docsBy(members)).toEqual([group("parameters[0]")]);
+    // The parameter on either side, and either cast.
+    expect(docsBy(members, "SELECT * FROM docs WHERE bucket.org_id = org_id")).toEqual([group("parameters[0]")]);
+    expect(docsBy(members, "SELECT * FROM docs WHERE org_id = bucket.org_id::text")).toEqual([group("parameters[0]")]);
+    expect(docsBy("SELECT org_id::text AS org_id FROM members WHERE user_id = token_parameters.user_id")).toEqual([group("parameters[0]")]);
+    for (const [parameters, data] of [
+      ["SELECT CASE WHEN token_parameters.is_admin THEN 'all' ELSE token_parameters.org_id END AS org_id", undefined],
+      ["SELECT coalesce(token_parameters.org_id, 'public') AS org_id", undefined],
+      ["SELECT lower(org_id) AS org_id FROM members WHERE user_id = token_parameters.user_id", undefined],
+      [members, "SELECT * FROM docs WHERE bucket.org_id = org_id IS NULL"],
+      ["SELECT m.org_id FROM members m, orgs o WHERE o.owner_id = token_parameters.user_id", undefined],
+    ] as [string, string | undefined][]) {
+      expect(docsBy(parameters, data), parameters).toEqual([mixed]);
+    }
   });
 });
 
@@ -156,7 +203,6 @@ describe("stream queries sent to a group", () => {
       ["SELECT todos.* FROM todos RIGHT JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()", "lists.owner_id"],
       // The join reaches the lists that share a column with the row, not one by its key.
       ["SELECT lists.* FROM lists JOIN todos ON todos.list_id = lists.id WHERE todos.owner_id = auth.user_id()", "todos.owner_id"],
-      ["SELECT todos.* FROM todos JOIN lists ON todos.list_id = lists.id OR todos.list_id IS NULL WHERE lists.owner_id = auth.user_id()", "lists.owner_id"],
       ["SELECT todos.* FROM todos JOIN lists ON todos.list_id::uuid = lists.id WHERE lists.owner_id = auth.user_id()", "lists.owner_id"],
       // In a join, a bare column could be either table's.
       ["SELECT todos.* FROM todos JOIN lists ON todos.list_id = lists.id WHERE owner_id = auth.user_id()", "owner_id"],

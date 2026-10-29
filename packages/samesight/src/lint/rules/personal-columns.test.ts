@@ -89,6 +89,20 @@ describe("personal-columns on sync streams", () => {
     ]);
   });
 
+  it("warns where the token is read but ties no row, which no other rule fails", () => {
+    expect(lint(query("SELECT id, email FROM members WHERE user_id IN (auth.user_id(), 'system')")).map((f) => [f[0], f[2]])).toEqual([
+      [
+        "warning",
+        "stream s, query sends members.email (likely contact data, by its name) to every user, for some rows or all (the token check does not tie rows to users), not only the row's owner; fine if they need it, else drop it from the query",
+      ],
+    ]);
+    const rules = "bucket_definitions:\n  b:\n    parameters: SELECT token_parameters.org_id AS org_id\n    data:\n      - SELECT id, email FROM members WHERE org_id IN (bucket.org_id, 'public')\n";
+    expect(columns(rules)).toEqual([["warning", "members.email"]]);
+    // A plain everyone path is unscoped-query's error, so the bucket's note stays a note.
+    const both = "bucket_definitions:\n  b:\n    parameters:\n      - SELECT token_parameters.org_id AS org_id\n      - SELECT org_id FROM orgs\n    data:\n      - SELECT id, email FROM members WHERE org_id IN (bucket.org_id, 'public')\n";
+    expect(columns(both)).toEqual([["info", "members.email"]]);
+  });
+
   it("reports a stream the app subscribes to on demand too", () => {
     expect(columns(stream("  s:\n    query: SELECT id, email FROM members WHERE org_id = subscription.parameter('org')\n"))).toEqual([["info", "members.email"]]);
   });

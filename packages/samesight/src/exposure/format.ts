@@ -130,13 +130,23 @@ function shows(name: string, column: string): boolean {
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /**
+ * A personal column as the summary names it: by the table's column the match was made on
+ * (members.email, or members.email as contact), else by the columns it reads and its name on
+ * the device (profiles.title as email, profiles.data as phone).
+ */
+function personalName(table: string, c: ExposedColumn): string {
+  if (c.matchedOn !== undefined) return c.matchedOn === c.name && !c.derived ? `${table}.${c.name}` : `${table}.${c.matchedOn} as ${c.name}`;
+  return `${c.from.map((f) => `${table}.${f}`).join(" and ")} as ${c.name}`;
+}
+
+/**
  * How many tables, and the likely personal columns that reach users other than the row's
- * owner (any audience but "owner"), as table.column. Where some of what those users get is
- * not known (a query not read, a * with no columns to read), it claims no more than it read.
+ * owner (any audience but "owner"), one per column sent. Where some of what those users get
+ * is not known (a query not read, a * with no columns to read), it claims no more than it read.
  */
 function summary(map: ExposureMap): string {
   const shared = map.tables.flatMap((t) => t.queries.filter((q) => q.audience.kind !== "owner").map((q) => ({ table: t.table, q })));
-  const personal = [...new Set(shared.flatMap(({ table, q }) => q.columns.items.filter((c) => c.personal).flatMap((c) => (c.from.length ? c.from : [c.name]).map((f) => `${table}.${f}`))))];
+  const personal = [...new Set(shared.flatMap(({ table, q }) => q.columns.items.filter((c) => c.personal).map((c) => personalName(table, c))))];
   const unknown = [...new Set(shared.filter(({ q }) => !q.columns.complete).map(({ table }) => table))];
   const unread = map.unread.length ? `, and ${count(map.unread.length, "query", "queries")} that could not be read` : "";
   const found = personal.length

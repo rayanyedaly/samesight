@@ -24,7 +24,7 @@ Every command exits 0 when it passes, 1 when it found something (a stale file, a
 | `--policy <file>` | The policy file. |
 | `--db <url>` | The local database. Default: `$SAMESIGHT_DB_URL`, else the `[db]` port in `supabase/config.toml` next to the policy, else the Supabase CLI's default `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. |
 | `--table <name>` | `explain` only: one table. |
-| `--migrations <dir>` | `lint` and `exposure`: the SQL migrations to read RLS, tables and column comments from. Default: `supabase/migrations`, when it exists. |
+| `--migrations <dir>` | `lint` and `exposure`: the SQL migrations to read tables, primary keys, column comments and (for `lint`) RLS from. Default: `supabase/migrations`, when it exists. |
 | `--allow <rule>[:<name>]` | `lint` only: accept a rule's findings, all of them or those about one stream, bucket, table or policy. Repeatable. |
 | `--format <text\|json\|sarif\|github>` | `lint`: `json` prints one JSON object on stdout, each finding with its 1-based `line` and `column` where known; `sarif` one SARIF 2.1.0 log; `github` GitHub Actions annotations. Notes stay on stderr, and the exit code is the same in every format. `exposure` takes `text` or `json`. |
 | `-v`, `--version` | |
@@ -111,7 +111,7 @@ powersync/sync-rules.yaml:17  warning  policy "members read" on workspace (supab
 
 That is PowerSync's Trello demo with a made-up migration. Its third parameter query reads `WHERE visibility = "Public"`. Double quotes name a column, not a string, so it reads nothing from the token and filters by no fixed value, and lint fails it; most likely it was meant to list public workspaces, which written as `'Public'` would be the "fixed filters" warning for data public by design.
 
-Lint proves nothing about what reaches a device: it flags known mistakes in seconds. `samesight-verify audit` tests the rows. The migrations reader is best-effort: it follows plain DDL (`create table`, `alter table` adding, dropping, renaming or retyping columns, enabling or disabling row level security, renaming the table or moving it out of `public`, `comment on column`, `create policy`, `alter policy`, `drop policy`, `drop table`) in file order, and does not see tables or RLS changed inside functions, `DO` blocks or dynamic SQL. Without migrations, `rls-off` and `rls-open` do not run, and lint says so.
+Lint proves nothing about what reaches a device: it flags known mistakes in seconds. `samesight-verify audit` tests the rows. The migrations reader is best-effort: it follows plain DDL (`create table`, `alter table` adding, dropping, renaming or retyping columns, adding, dropping or renaming the primary key's constraint (from a unique index too, as `supabase db diff` writes it), enabling or disabling row level security, renaming the table or moving it out of `public`, `create unique index`, `alter index ... rename to`, `comment on column` with `'...'`, `E'...'` or `$$...$$` text, `create policy`, `alter policy`, `drop policy`, `drop table`) in file order, and does not see tables or RLS changed inside functions, `DO` blocks or dynamic SQL. Without migrations, `rls-off` and `rls-open` do not run, and `personal-columns` sees only the columns a query lists, no column comment, and every table as keyed by `id`; lint says so.
 
 Warnings do not fail the run, but each one needs a decision: a warning can be a real leak (`deleted = false` filters rows yet sends every undeleted one to everyone; `auth.user_id() IN (SELECT id FROM profiles)` admits every user, not admins). Fix it, or accept it as below. A finding that is deliberate, such as a table public by design, can be accepted with `--allow unscoped-query:customers` (by stream, bucket, table or policy name) or `--allow not-auto-subscribed` (a whole rule). Allowed findings are counted in the output, never dropped silently, and a misspelt rule name is an error.
 
@@ -161,7 +161,7 @@ Prints, for each table a sync config sends, who receives its rows and which colu
 samesight exposure [file ...] [--migrations <dir>] [--format text|json]
 ```
 
-`--migrations <dir>` names the SQL migrations whose tables give the columns a `SELECT *` sends (default: `supabase/migrations`, when it exists); without them those columns are not known, and it says so. `--format json` prints one JSON object on stdout instead of the text; notes stay on stderr.
+`--migrations <dir>` names the SQL migrations whose tables give the columns a `SELECT *` sends, the primary keys that tie a row to its parent's owner, and the column comments that may hold a marker (default: `supabase/migrations`, when it exists). Without them, those columns are not known, no comment is read and every table is taken to be keyed by `id`, and it says so. `--format json` prints one JSON object on stdout instead of the text; notes stay on stderr.
 
 Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. See [the exposure map](exposure.md) for an example, how to read it, and how columns are matched.
 

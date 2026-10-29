@@ -161,7 +161,7 @@ streams:
         "  to       members of the row's group, through claim org_id",
         "  columns  all columns (no migrations read, so not known), plus contact (from email) [contact]",
         "",
-        "1 table. 1 likely personal column reaches users other than the row's owner: members.email. Not every column sent from members is known.",
+        "1 table. 1 likely personal column reaches users other than the row's owner: members.email as contact. Not every column sent from members is known.",
         MATCHED_BY,
       ].join("\n"),
     );
@@ -310,6 +310,23 @@ streams:
 `,
       schema,
     );
-    expect(out).toContain("reaches users other than the row's owner: profiles.phone.");
+    expect(out).toContain("reaches users other than the row's owner: profiles.phone as email.");
+  });
+
+  it("counts each column sent once, by the column it matched on, else by what it reads and its name", () => {
+    const schema = schemaOf("create table profiles (id uuid primary key, org_id uuid, title text, first_name text, data jsonb, email text);");
+    const out = text(
+      `config:
+  edition: 3
+streams:
+  s:
+    auto_subscribe: true
+    query: SELECT id, concat(title, ' ', first_name) AS label, upper(title) AS email, data ->> 'phone' AS reach, email FROM profiles WHERE org_id = auth.parameter('org_id')
+`,
+      schema,
+    );
+    expect(out).toContain(
+      "4 likely personal columns reach users other than the row's owner: profiles.first_name as label, profiles.title as email, profiles.data as reach, profiles.email.",
+    );
   });
 });

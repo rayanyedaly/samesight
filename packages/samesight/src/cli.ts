@@ -55,8 +55,8 @@ Options:
                     supabase/config.toml, else 54322)
   --table <name>    explain: one table only
   --migrations <dir>
-                    lint: the SQL migrations to read RLS from (default: supabase/migrations);
-                    exposure: the tables, keys and column comments to read
+                    lint and exposure: the SQL migrations to read tables, keys, column
+                    comments and (lint) RLS from (default: supabase/migrations)
   --allow <rule>[:<name>]
                     lint: accept a rule's findings, all of them or those about one stream,
                     bucket, table or policy; repeatable
@@ -90,9 +90,10 @@ async function main(argv: string[]): Promise<number> {
   // Lint and exposure need no policy: they are for any PowerSync project.
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
   if (command === "exposure") {
-    // Accepting a lint option it does not use would look like it worked.
-    if (values.allow?.length) {
-      console.error("samesight: --allow is lint's; exposure takes [file ...], --migrations and --format");
+    // Accepting an option it does not use would look like it worked.
+    const unused = (["allow", "policy", "db", "table"] as const).find((o) => values[o] !== undefined);
+    if (unused) {
+      console.error(`samesight: exposure does not take --${unused}; it takes [file ...], --migrations and --format`);
       return 2;
     }
     return exposure(positionals.slice(1), values.migrations, values.format ?? "text");
@@ -229,7 +230,7 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
   }
   const found = syncConfigs(given, "lint");
   const migrations = migrationsIn(migrationsDir)?.migrations;
-  if (!migrations) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run and personal-columns saw only the columns queries list, not those a SELECT * sends; pass --migrations <dir> to check them`);
+  if (!migrations) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run, and personal-columns saw only the columns queries list (not those a SELECT * sends), no column comments, and every table as keyed by id; pass --migrations <dir> to check them`);
   const findings: LintFinding[] = [];
   const unreadable: Unreadable[] = [];
   for (const file of found) {
@@ -274,7 +275,7 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
   }
   const found = syncConfigs(given, "exposure");
   const read = migrationsIn(migrationsDir);
-  if (!read) console.error(`note: no ${MIGRATIONS_DIR} here, so the columns a SELECT * sends are not known; pass --migrations <dir> to read them`);
+  if (!read) console.error(`note: no ${MIGRATIONS_DIR} here, so the columns a SELECT * sends are not known, no column comment is read, and every table is taken to be keyed by id; pass --migrations <dir> to read them`);
   const schema = read && ((table: string) => read.migrations.tables.get(table));
   const mapped: MappedConfig[] = [];
   const unreadable: Unreadable[] = [];

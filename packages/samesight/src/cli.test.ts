@@ -165,7 +165,7 @@ describe("samesight exposure", () => {
     const result = await cli(["exposure", "sync-config.yaml"], project(false));
     expect([result.code, result.stderr]).toEqual([
       0,
-      "note: no supabase/migrations here, so the columns a SELECT * sends are not known; pass --migrations <dir> to read them\n",
+      "note: no supabase/migrations here, so the columns a SELECT * sends are not known, no column comment is read, and every table is taken to be keyed by id; pass --migrations <dir> to read them\n",
     ]);
     expect(result.stdout).toContain("  columns  all columns (no migrations read, so not known)\n");
   });
@@ -215,7 +215,14 @@ describe("samesight exposure", () => {
     }
     const format = await cli(["exposure", "--format", "sarif"], project());
     expect([format.code, format.stderr]).toEqual([2, 'samesight: --format must be text or json for exposure, not "sarif"\n']);
-    const allow = await cli(["exposure", "--allow", "personal-columns"], project());
-    expect([allow.code, allow.stderr]).toEqual([2, "samesight: --allow is lint's; exposure takes [file ...], --migrations and --format\n"]);
+    for (const [flag, value] of [
+      ["--allow", "personal-columns"],
+      ["--table", "members"],
+      ["--policy", "p.ts"],
+      ["--db", "postgres://localhost"],
+    ]) {
+      const unused = await cli(["exposure", flag as string, value as string], project());
+      expect([unused.code, unused.stderr]).toEqual([2, `samesight: exposure does not take ${flag}; it takes [file ...], --migrations and --format\n`]);
+    }
   });
 });
