@@ -1,6 +1,6 @@
 # The CLIs
 
-Both CLIs need Node 22.18 or newer. They find the policy file in the current directory (`samesight.policy.ts`, else `samesight.policy.mts`) unless `--policy` names one, and every path in the policy is relative to the policy file. `samesight lint` and `samesight-verify audit` need no policy file.
+Both CLIs need Node 22.18 or newer. They find the policy file in the current directory (`samesight.policy.ts`, else `samesight.policy.mts`) unless `--policy` names one, and every path in the policy is relative to the policy file. `samesight lint`, `samesight exposure` and `samesight-verify audit` need no policy file.
 
 ## `samesight`
 
@@ -14,6 +14,7 @@ From the `samesight` package.
 | `samesight doctor` | required | Checks the running database against the policy. |
 | `samesight explain` | no | Prints who can read and write what, in plain words, from the saved snapshot. |
 | `samesight lint [file ...]` | no | Checks PowerSync sync configs for known leak patterns, reading files only. Needs no policy. |
+| `samesight exposure [file ...]` | no | Prints who receives which tables and columns, marking likely personal ones, reading files only. Needs no policy. |
 | `samesight audit` | required | Runs `samesight-verify audit`, which tests the rows: needs `@samesight/verify`. Needs no policy. |
 
 Every command exits 0 when it passes, 1 when it found something (a stale file, a failing doctor check, a lint error, a policy that does not compile), and 2 when it could not run: no command or an unknown one, a flag it cannot read, a policy, snapshot or file it cannot find, an existing policy `init` would overwrite, or a database it cannot reach.
@@ -23,9 +24,9 @@ Every command exits 0 when it passes, 1 when it found something (a stale file, a
 | `--policy <file>` | The policy file. |
 | `--db <url>` | The local database. Default: `$SAMESIGHT_DB_URL`, else the `[db]` port in `supabase/config.toml` next to the policy, else the Supabase CLI's default `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. |
 | `--table <name>` | `explain` only: one table. |
-| `--migrations <dir>` | `lint` only: the SQL migrations to read RLS from. Default: `supabase/migrations`, when it exists. |
+| `--migrations <dir>` | `lint` and `exposure`: the SQL migrations to read RLS, tables and column comments from. Default: `supabase/migrations`, when it exists. |
 | `--allow <rule>[:<name>]` | `lint` only: accept a rule's findings, all of them or those about one stream, bucket, table or policy. Repeatable. |
-| `--format <text\|json\|sarif\|github>` | `lint` only: `json` prints one JSON object on stdout, each finding with its 1-based `line` and `column` where known; `sarif` one SARIF 2.1.0 log; `github` GitHub Actions annotations. Notes stay on stderr, and the exit code is the same in every format. |
+| `--format <text\|json\|sarif\|github>` | `lint`: `json` prints one JSON object on stdout, each finding with its 1-based `line` and `column` where known; `sarif` one SARIF 2.1.0 log; `github` GitHub Actions annotations. Notes stay on stderr, and the exit code is the same in every format. `exposure` takes `text` or `json`. |
 | `-v`, `--version` | |
 | `-h`, `--help` | |
 

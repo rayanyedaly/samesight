@@ -222,7 +222,7 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
   }
   const found = syncConfigs(given, "lint");
   const migrations = migrationsIn(migrationsDir)?.migrations;
-  if (!migrations) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run; pass --migrations <dir> to check them`);
+  if (!migrations) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run and personal-columns saw only the columns queries list, not those a SELECT * sends; pass --migrations <dir> to check them`);
   const findings: LintFinding[] = [];
   const unreadable: Unreadable[] = [];
   for (const file of found) {

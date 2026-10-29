@@ -157,7 +157,7 @@ The categories are `identifier`, `contact`, `location`, `birth`, `health`, `fina
 
 - It matches names and markers, so it misses a column whose name gives nothing away (`info` holding phone numbers) and can flag one that holds nothing personal. Mark either in its comment.
 - It reads the migrations as lint does, best-effort: plain DDL in file order, not tables changed inside functions, `DO` blocks or dynamic SQL. See [lint](cli.md#lint).
-- It says what the files show. The `personal-columns` lint rule flags the same columns in CI (see [lint](cli.md#lint)). `samesight-verify audit` tests the rows each device receives against RLS, but not their columns, today.
+- It says what the files show. The [`personal-columns`](rules/personal-columns.md) lint rule flags the same columns in CI. `samesight-verify audit` tests the rows each device receives against RLS, but not their columns, today.
 
 ## JSON
 
