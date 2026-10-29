@@ -152,6 +152,18 @@ A policy on a synced table that lets any client or any signed-in user through. [
 
 A column that likely holds personal data, sent to users other than the row's owner. [More](rules/personal-columns.md)
 
+### `exposure`
+
+Prints, for each table a sync config sends, who receives its rows and which columns, marking those whose name or comment marker looks personal. Like lint, it reads the sync config and the migrations only, needs no policy file, and finds the sync config where lint does.
+
+```text
+samesight exposure [file ...] [--migrations <dir>] [--format text|json]
+```
+
+`--migrations <dir>` names the SQL migrations whose tables give the columns a `SELECT *` sends (default: `supabase/migrations`, when it exists); without them those columns are not known, and it says so. `--format json` prints one JSON object on stdout instead of the text; notes stay on stderr.
+
+Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. See [the exposure map](exposure.md) for an example, how to read it, and how columns are matched.
+
 ### `audit`
 
 ```console

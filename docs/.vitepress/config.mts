@@ -224,6 +224,7 @@ export default defineConfig({
         items: [
           { text: "Why I built this", link: "/why" },
           { text: "How sync configs leak", link: "/how-sync-configs-leak" },
+          { text: "Exposure map", link: "/exposure" },
           { text: "Getting started with a policy", link: "/getting-started" },
         ],
       },
