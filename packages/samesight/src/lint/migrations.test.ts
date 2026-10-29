@@ -297,6 +297,13 @@ describe("escaped string comments", () => {
     expect(m.tables.get("u")?.primaryKey).toEqual(["id"]);
   });
 
+  it("reads a backslash as itself outside E'...'", () => {
+    const m = applyMigrations([{ file: "0.sql", sql: "create table t (id uuid, a text); comment on column t.a is 'C:\\'; create table u (id uuid primary key); create table v (escape text, x text default escape'\\'); create table w (id uuid primary key);" }]);
+    expect(m.tables.get("t")?.columns[1]?.comment).toBe("C:\\");
+    expect(m.tables.get("u")?.primaryKey).toEqual(["id"]);
+    expect(m.tables.get("w")?.primaryKey).toEqual(["id"]);
+  });
+
   it("splits a table's columns after an escaped quote in a default", () => {
     const m = applyMigrations([{ file: "0.sql", sql: "create table t (id uuid primary key, note text default E'a\\'b, c', email text);" }]);
     expect(m.tables.get("t")?.columns.map((c) => c.name)).toEqual(["id", "note", "email"]);
@@ -321,6 +328,9 @@ describe("primary key constraints", () => {
     // Renaming another constraint, or adding a column after a named key, leaves the key's name.
     expect(key("create table lists (id uuid, constraint pk primary key (id), owner_id uuid unique);", "alter table lists rename constraint lists_owner_id_key to o;", "alter table lists drop constraint pk;")).toEqual([]);
     expect(key("create table lists (id uuid, constraint pk primary key (id));", "alter table lists add column note text;", "alter table lists drop constraint pk;")).toEqual([]);
+    // A table constraint gets Postgres's name too, and a key made again after a drop its own.
+    expect(key("create table lists (id uuid, primary key (id));", "alter table lists drop constraint lists_pkey;")).toEqual([]);
+    expect(key("create table lists (id uuid constraint pk primary key);", "alter table lists drop constraint pk;", "alter table lists add column lid uuid primary key;", "alter table lists drop constraint lists_pkey;")).toEqual([]);
   });
 
   it("reads a key named on its column, renamed through its index, or named for a long table", () => {
@@ -332,6 +342,10 @@ describe("primary key constraints", () => {
     const long = "a".repeat(60);
     const m = applyMigrations([{ file: "0.sql", sql: `create table ${long} (id uuid primary key); alter table ${long} drop constraint ${"a".repeat(58)}_pkey;` }]);
     expect(m.tables.get(long)?.primaryKey).toEqual([]);
+    // By bytes, not characters: é takes two, so 29 of them fill 58.
+    const wide = `"${"é".repeat(40)}"`;
+    const w = applyMigrations([{ file: "0.sql", sql: `create table ${wide} (id uuid primary key); alter table ${wide} drop constraint "${"é".repeat(29)}_pkey";` }]);
+    expect(w.tables.get("é".repeat(40))?.primaryKey).toEqual([]);
   });
 
   it("takes a key made from a unique index, as supabase db diff writes it", () => {
@@ -341,8 +355,11 @@ describe("primary key constraints", () => {
     expect(key("create table lists (id uuid not null, owner_id uuid);", index, using, 'alter table "public"."lists" drop constraint "lists_pkey";')).toEqual([]);
     // The constraint's own name renames the index.
     expect(key("create table lists (id uuid not null);", "create unique index l_idx on lists (id);", "alter table lists add constraint pk primary key using index l_idx;", "alter table lists drop constraint pk;")).toEqual([]);
-    // An index it did not see, on an expression, or partial, gives no key it could guess.
+    // CONCURRENTLY, an order, and an index renamed before it is used.
+    expect(key("create table lists (id uuid not null);", "create unique index concurrently if not exists l on lists using btree (id desc nulls last);", "alter index l rename to lists_pkey;", using)).toEqual(["id"]);
+    // An index it did not see, one on another table, on an expression, or partial, gives no key it could guess.
     expect(key("create table lists (id uuid not null);", using)).toEqual([]);
+    expect(key("create table lists (id uuid not null); create table other (id uuid not null);", "create unique index lists_pkey on other (id);", using)).toEqual([]);
     expect(key("create table lists (id uuid not null);", "create unique index lists_pkey on lists (lower(id::text));", using)).toEqual([]);
     expect(key("create table lists (id uuid not null);", "create unique index lists_pkey on lists (id) where id is not null;", using)).toEqual([]);
   });

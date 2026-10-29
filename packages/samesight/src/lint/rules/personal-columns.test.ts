@@ -145,6 +145,12 @@ describe("personal-columns on sync rules", () => {
     ]);
   });
 
+  it("warns about a bucket a fixed filter reaches through one parameter query and a role check through another", () => {
+    const rules =
+      "bucket_definitions:\n  b:\n    parameters:\n      - SELECT id AS org_id FROM orgs WHERE token_parameters.is_admin = true\n      - SELECT id AS org_id FROM orgs WHERE visibility = 'public'\n    data:\n      - SELECT id, email FROM members WHERE org_id = bucket.org_id\n";
+    expect(columns(rules).map((c) => c[0])).toEqual(["warning"]);
+  });
+
   it("names a bucket's group path once, not again through the owner it merges with", () => {
     const rules = [
       "bucket_definitions:",

@@ -87,6 +87,14 @@ describe("stream queries sent to their owner", () => {
   });
 });
 
+describe("widest", () => {
+  it("prefers every user for every row to every user for some rows or all", () => {
+    expect(widest([mixed, everyone])).toEqual(everyone);
+    expect(widest([everyone, mixed])).toEqual(everyone);
+    expect(widest([group("x"), mixed])).toEqual(mixed);
+  });
+});
+
 describe("a token read mixed into more than the comparison", () => {
   it("ties no row, so the audience is every user, never a group or owner", () => {
     for (const where of [
@@ -113,6 +121,13 @@ describe("a token read mixed into more than the comparison", () => {
       "org_id = coalesce(auth.parameter('org_id'), auth.parameter('x'), 'public')",
       "org_id = coalesce(auth.parameter('org_id'), lower('PUBLIC'))",
       "org_id = greatest(auth.parameter('org_id'), 'm')",
+      "org_id = greatest(auth.parameter('org_id'), org_id)",
+      // A fallback inside an IN list, on either side.
+      "org_id IN (auth.parameter('a'), coalesce(auth.parameter('b'), 'public'))",
+      "coalesce(auth.parameter('org_id'), 'public') IN (org_id, team_id)",
+      // A truth value or a subquery on the row's side: the same for every row.
+      "auth.parameter('flag') = (status = 'x')",
+      "auth.user_id() = (SELECT user_id FROM admins LIMIT 1)",
       // The comparison is a truth value compared again.
       "(owner_id = auth.user_id()) = is_done",
       "owner_id = (auth.user_id() IS NULL)",
@@ -164,6 +179,8 @@ describe("a token read mixed into more than the comparison", () => {
     // The parameter on either side, and either cast.
     expect(docsBy(members, "SELECT * FROM docs WHERE bucket.org_id = org_id")).toEqual([group("parameters[0]")]);
     expect(docsBy(members, "SELECT * FROM docs WHERE org_id = bucket.org_id::text")).toEqual([group("parameters[0]")]);
+    expect(docsBy(members, "SELECT * FROM docs WHERE bucket.org_id::text = org_id")).toEqual([group("parameters[0]")]);
+    expect(docsBy(members, "SELECT * FROM docs WHERE org_id = (bucket.org_id::text)")).toEqual([group("parameters[0]")]);
     expect(docsBy("SELECT org_id::text AS org_id FROM members WHERE user_id = token_parameters.user_id")).toEqual([group("parameters[0]")]);
     for (const [parameters, data] of [
       ["SELECT CASE WHEN token_parameters.is_admin THEN 'all' ELSE token_parameters.org_id END AS org_id", undefined],
@@ -172,6 +189,8 @@ describe("a token read mixed into more than the comparison", () => {
       ["SELECT iif(token_parameters.is_admin, 'all', token_parameters.org_id) AS org_id", undefined],
       ["SELECT lower(org_id) AS org_id FROM members WHERE user_id = token_parameters.user_id", undefined],
       [members, "SELECT * FROM docs WHERE bucket.org_id = org_id IS NULL"],
+      // More than a cast after the parameter.
+      [members, "SELECT * FROM docs WHERE org_id = bucket.org_id::text || 'x'"],
       ["SELECT m.org_id FROM members m, orgs o WHERE o.owner_id = token_parameters.user_id", undefined],
     ] as [string, string | undefined][]) {
       expect(docsBy(parameters, data), parameters).toEqual([mixed]);

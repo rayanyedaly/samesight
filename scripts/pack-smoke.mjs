@@ -194,7 +194,7 @@ step("samesight lint catches a leak", () => {
 });
 step("samesight exposure maps who receives which columns", () => {
   // Fieldbook's own config. The copied migrations are samesight's generated ones, which create
-  // no tables, so this checks the JSON's shape; people.yaml lists its columns.
+  // no public tables, so this checks the JSON's shape; people.yaml lists its columns.
   const report = JSON.parse(samesight("exposure", "--format", "json"));
   if (report.version !== 1 || !report.maps[0]?.tables.some((t) => t.table === "Inspection")) throw new Error(`exposure --format json: ${JSON.stringify(report).slice(0, 500)}`);
   writeFileSync(join(cli, "people.yaml"), "config:\n  edition: 3\nstreams:\n  org:\n    auto_subscribe: true\n    query: SELECT id, email FROM members WHERE org_id = auth.parameter('org_id')\n");

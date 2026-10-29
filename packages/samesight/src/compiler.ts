@@ -1,6 +1,7 @@
 /**
  * The compiler's internals, for @samesight/verify: the IR, the emitters, the generate
- * plan and the local-only database access. Not a stable API before 1.0.
+ * plan and the local-only database access; and the exposure map lint reads, with its
+ * personal-column matcher. Not a stable API before 1.0.
  */
 
 export {

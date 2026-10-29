@@ -50,9 +50,13 @@ type Key = (table: string) => string | undefined;
 
 const rank = (a: Audience) => AUDIENCE_ORDER.indexOf(a.kind);
 
-/** The widest of several (what a user can get through any of them). Owners named by different columns together are a group. */
+/**
+ * The widest of several (what a user can get through any of them). Owners named by different
+ * columns together are a group, and every user for every row is wider than for some or all.
+ */
 export function widest(a: Audience[]): Audience {
-  const top = a.reduce<Audience | undefined>((w, x) => (w === undefined || rank(x) > rank(w) ? x : w), undefined);
+  const wider = (x: Audience, w: Audience) => rank(x) > rank(w) || (x.kind === "everyone" && w.kind === "everyone" && w.mixed === true && !x.mixed);
+  const top = a.reduce<Audience | undefined>((w, x) => (w === undefined || wider(x, w) ? x : w), undefined);
   if (top === undefined) throw new Error("widest needs at least one audience");
   return top.kind === "owner" || top.kind === "group" ? together(a.filter((x): x is Tied => x.kind === "owner" || x.kind === "group")) : top;
 }
@@ -238,8 +242,8 @@ function valueOnly(side: Token[]): boolean {
   return true;
 }
 
-/** A value of the row: not a literal, and not the token or a client value. */
-const rowValue = (side: Token[]) => side.length > 0 && !literal(side) && !readsToken(side) && !readsClient(side) && valueOnly(side);
+/** A value of the row: not a literal, a subquery (the same for every row), the token or a client value. */
+const rowValue = (side: Token[]) => side.length > 0 && !literal(side) && !side.some((x) => word(x, "select")) && !readsToken(side) && !readsClient(side) && valueOnly(side);
 
 /** A CASE, or PowerSync's iif(), whose branches may pick a value without the token. */
 const branches = (x: Token, i: number, t: Token[]) => word(x, "case") || (word(x, "iif") && sym(t[i + 1], "("));
