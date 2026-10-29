@@ -157,6 +157,41 @@ streams:
     );
     expect(m.tables[0]?.queries[0]?.columns.items.every((c) => c.personal === undefined)).toBe(true);
   });
+
+  it("does not let one column marked not personal hide another read beside it", () => {
+    const schema = schemaOf(`create table members (id uuid primary key, shared text, email text); comment on column members.shared is 'samesight:not-personal';`);
+    const m = map(
+      `
+config:
+  edition: 3
+streams:
+  s:
+    auto_subscribe: true
+    query: SELECT id, concat(shared, email) AS x, shared AS email_copy FROM members
+`,
+      schema,
+    );
+    expect(m.tables[0]?.queries[0]?.columns.items.map((c) => [c.name, c.personal?.matched ?? null])).toEqual([
+      ["id", null],
+      ["x", "email"],
+      ["email_copy", null],
+    ]);
+  });
+
+  it("records the JSON key a match was made on", () => {
+    const m = map(
+      `
+config:
+  edition: 3
+streams:
+  s:
+    auto_subscribe: true
+    query: SELECT id, data ->> 'phone' AS reach FROM members
+`,
+      ORG_SCHEMA,
+    );
+    expect(m.tables[0]?.queries[0]?.columns.items[1]).toMatchObject({ name: "reach", jsonKey: "phone", personal: { category: "contact" } });
+  });
 });
 
 describe("sync rules", () => {

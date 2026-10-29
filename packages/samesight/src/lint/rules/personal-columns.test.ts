@@ -110,8 +110,24 @@ describe("personal-columns on sync rules", () => {
       [
         "warning",
         7,
-        "bucket by_org, data[0] sends members.email (likely contact data, by its name) to every user, for rows a fixed filter picks, not only the row's owner; fine if they need it, else drop it from the query",
+        "bucket by_org, data[0] sends members.email (likely contact data, by its name) to every user, for rows a fixed filter picks, and to members of the row's group, through parameters[0], not only the row's owner; fine if they need it, else drop it from the query",
       ],
+    ]);
+  });
+
+  it("warns about a bucket a group reaches through one parameter query and a role check through another", () => {
+    const rules = [
+      "bucket_definitions:",
+      "  by_org:",
+      "    parameters:",
+      "      - SELECT org_id FROM members WHERE user_id = request.user_id()",
+      "      - SELECT id AS org_id FROM orgs WHERE request.jwt() ->> 'app_role' = 'admin'",
+      "    data:",
+      "      - SELECT id, email FROM members WHERE org_id = bucket.org_id",
+      "",
+    ].join("\n");
+    expect(findings(rules).map((f) => [f.level, f.message.replace(/^.*\) to /, "to ")])).toEqual([
+      ["warning", "to whoever passes a role or claim check, and to members of the row's group, through parameters[0], not only the row's owner; fine if they need it, else drop it from the query"],
     ]);
   });
 
@@ -177,6 +193,9 @@ describe("what counts as personal", () => {
       // By the JSON key it picks.
       "stream s, query sends members.settings as reach",
     ]);
+    expect(findings(query(`SELECT id, settings ->> 'phone' AS reach FROM members WHERE org_id = auth.parameter('org_id')`))[0]?.message).toContain(
+      "sends members.settings as reach (likely contact data, by the JSON key 'phone' it reads)",
+    );
     expect(findings(query("SELECT concat(email, ' ', full_name) AS card FROM members WHERE org_id = auth.parameter('org_id')"))[0]?.subjects).toEqual([
       "s",
       "members",

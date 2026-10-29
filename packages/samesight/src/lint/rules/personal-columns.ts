@@ -13,7 +13,7 @@
  * tell; without them only the listed columns count.
  */
 
-import { type ExposedColumn, exposureMap, type Schema } from "../../exposure/map.ts";
+import { type ExposedColumn, type ExposedQuery, exposureMap, type Schema } from "../../exposure/map.ts";
 import type { PersonalCategory, PersonalMatch } from "../../exposure/personal.ts";
 import { type Audience, audienceText } from "../audience.ts";
 import type { LintFinding, LintLevel } from "../finding.ts";
@@ -37,8 +37,22 @@ const HOLDS: Record<PersonalCategory, string> = {
   personal: "personal data",
 };
 
-/** Why the column counts: likely, by its name, or as its comment marks it. */
-const why = (p: PersonalMatch) => (p.source === "comment" ? `${HOLDS[p.category]}, marked in its comment` : `likely ${HOLDS[p.category]}, by its name`);
+/** Why the column counts: likely, by its name or the JSON key it reads, or as its comment marks it. */
+function why(p: PersonalMatch, jsonKey: string | undefined): string {
+  if (p.source === "comment") return `${HOLDS[p.category]}, marked in its comment`;
+  return `likely ${HOLDS[p.category]}, by ${jsonKey === undefined ? "its name" : `the JSON key '${jsonKey}' it reads`}`;
+}
+
+/**
+ * A query's level: by its widest audience, except that a bucket a group's members or a fixed
+ * filter reaches through one parameter query warns even when a role check reaches it through
+ * another. A query every user or any client gets is unscoped-query's or client-scoped's error.
+ */
+function level(q: ExposedQuery): LintLevel {
+  const widest = q.audience.kind;
+  if (widest === "owner" || widest === "everyone" || widest === "client") return "info";
+  return q.paths.some((p) => p.audience.kind === "group" || p.audience.kind === "fixed") ? "warning" : LEVEL[widest];
+}
 
 /** "a", "a and b", "a, b and c". */
 const list = (xs: string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
@@ -63,19 +77,20 @@ export const personalColumns: LintRule = defineRule(RULE, ({ file, config, migra
   const out: LintFinding[] = [];
   for (const { table, queries } of map.tables) {
     for (const q of queries) {
-      const audience = q.audience;
-      if (audience.kind === "owner") continue;
-      const fine = audience.kind === "role" ? "fine if only users meant to see it (such as admins) pass that check" : "fine if they need it";
+      if (q.audience.kind === "owner") continue;
+      // Every audience wider than the owner, widest first: a bucket's group path besides its role check.
+      const reach = [...new Set([q.audience, ...q.paths.map((p) => p.audience)].filter((a) => a.kind !== "owner").map(to))];
+      const fine = level(q) === "info" && q.audience.kind === "role" ? "fine if only users meant to see it (such as admins) pass that check" : "fine if they need it";
       for (const c of q.columns.items) {
         if (!c.personal) continue;
         const { columns, text } = sent(table, c);
         out.push({
           rule: RULE,
-          level: LEVEL[audience.kind],
+          level: level(q),
           file,
           ...lineOf(q.sql),
           subjects: [q.stream, table, ...columns],
-          message: `${kind} ${q.stream}, ${q.query} sends ${text} (${why(c.personal)}) to ${to(audience)}, not only the row's owner; ${fine}, else drop it from the query`,
+          message: `${kind} ${q.stream}, ${q.query} sends ${text} (${why(c.personal, c.jsonKey)}) to ${reach.join(", and to ")}, not only the row's owner; ${fine}, else drop it from the query`,
         });
       }
     }
