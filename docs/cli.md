@@ -148,6 +148,10 @@ A synced table whose migrations never enable row level security. [More](rules/rl
 
 A policy on a synced table that lets any client or any signed-in user through. [More](rules/rls-open.md)
 
+#### `personal-columns`
+
+A column that likely holds personal data, sent to users other than the row's owner. [More](rules/personal-columns.md)
+
 ### `audit`
 
 ```console

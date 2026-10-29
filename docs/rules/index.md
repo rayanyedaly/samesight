@@ -11,6 +11,7 @@
 | [`not-auto-subscribed`](not-auto-subscribed.md) | info | A stream devices get only when the app subscribes, which audit does not test. |
 | [`rls-off`](rls-off.md) | warning | A synced table whose migrations never enable row level security. |
 | [`rls-open`](rls-open.md) | warning | A policy on a synced table that lets any client or any signed-in user through. |
+| [`personal-columns`](personal-columns.md) | warning, or note | A column that likely holds personal data, sent to users other than the row's owner. |
 
 An error fails the run (exit code 1). Warnings and notes do not, but each warning needs a decision: fix it, or accept it. `rls-off` and `rls-open` run only when lint has migrations to read, from `supabase/migrations` or the directory `--migrations` names.
 

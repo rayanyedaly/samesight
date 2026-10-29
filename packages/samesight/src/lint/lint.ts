@@ -12,6 +12,7 @@ import type { LintFinding } from "./finding.ts";
 import type { Migrations } from "./migrations.ts";
 import { clientScoped } from "./rules/client-scoped.ts";
 import { notAutoSubscribed } from "./rules/not-auto-subscribed.ts";
+import { personalColumns } from "./rules/personal-columns.ts";
 import { rlsOff } from "./rules/rls-off.ts";
 import { rlsOpen } from "./rules/rls-open.ts";
 import { unreadableQuery } from "./rules/unreadable-query.ts";
@@ -46,7 +47,7 @@ export function defineRule(name: string, run: (context: LintContext) => LintFind
 
 export { RULE_INFO, type RuleInfo } from "./rule-info.ts";
 
-export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed, rlsOff, rlsOpen];
+export const RULES: LintRule[] = [unscopedQuery, clientScoped, userMetadata, unreadableQuery, notAutoSubscribed, rlsOff, rlsOpen, personalColumns];
 
 /** Every rule's name, as findings and --allow use it. */
 export const RULE_NAMES = RULES.map((r) => r.ruleName);

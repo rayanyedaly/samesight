@@ -68,4 +68,10 @@ export const RULE_INFO: Readonly<Record<string, RuleInfo>> = Object.fromEntries(
     "A policy on a synced table that lets any client or any signed-in user through.",
     "A permissive policy with using (true) or with check (true) for anon, authenticated or public lets them read or write every row through the Supabase API, whatever the sync config sends. Policies for other roles and restrictive policies are not reported.",
   ),
+  rule(
+    "personal-columns",
+    "warning",
+    "A column that likely holds personal data, sent to users other than the row's owner.",
+    "A column whose name says it likely holds personal data (email, phone, date_of_birth), or whose comment marks it so, sent by a query to more users than the row's owner. Lint reads names and comments, never data: names by whole words, and weak words (name, address, notes) only as the whole name of a column in a table named for people (users, members, patients). A comment settles what a name cannot: COMMENT ON COLUMN ... IS 'samesight:personal=<category>' or 'samesight:not-personal'. Comments, and the columns a SELECT * sends, are read from the migrations, so without them only listed columns count. It warns when a group's members get the column, or every user for the rows a fixed filter picks, and notes it when a role check admits the users (often admins), or when any client or every user gets it, which unscoped-query or client-scoped usually fails already.",
+  ),
 ]);
