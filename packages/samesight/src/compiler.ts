@@ -37,3 +37,5 @@ export { parseSyncConfig, type SyncConfig } from "./sync/config.ts";
 export { type ParsedQuery, parseQuery, render, sqlText, type Token, type TokenizeOptions, tokenize } from "./sync/sql.ts";
 export { parseStreams, type Stream } from "./sync/streams.ts";
 export { type AuditScope, auditScope, outputTable, tablesNamed } from "./sync/scope.ts";
+export { type ExposedColumn, type ExposedQuery, type ExposedTable, type ExposureMap, exposureMap, type Schema, type SchemaTable } from "./exposure/map.ts";
+export { commentMarker, type PersonalCategory, type PersonalMatch, personalColumn } from "./exposure/personal.ts";
