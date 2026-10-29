@@ -226,6 +226,25 @@ bucket_definitions:
   });
 });
 
+describe("keys", () => {
+  it("takes a parent's key from the migrations, and with none there, claims no owner through it", () => {
+    const yaml = `
+config:
+  edition: 3
+streams:
+  s:
+    auto_subscribe: true
+    query: SELECT todos.* FROM todos JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()
+`;
+    const keyed = schemaOf("create table lists (id uuid primary key, owner_id uuid); create table todos (id uuid primary key, list_id uuid, assignee_email text);");
+    const unkeyed = schemaOf("create table lists (id uuid not null, owner_id uuid); create table todos (id uuid primary key, list_id uuid, assignee_email text);");
+    expect(map(yaml, keyed).tables[0]?.queries[0]?.audience.kind).toBe("owner");
+    expect(map(yaml, unkeyed).tables[0]?.queries[0]?.audience.kind).toBe("group");
+    // Without migrations, a table is taken to be keyed by id, as PowerSync's tables are.
+    expect(map(yaml).tables[0]?.queries[0]?.audience.kind).toBe("owner");
+  });
+});
+
 describe("what it cannot read", () => {
   it("lists queries whose table or audience cannot be read, with why", () => {
     const m = map(`

@@ -19,8 +19,8 @@ Rows only their owner gets (`owner_id = auth.user_id()`, or through the owner of
 
 Lint judges a column by its name and its comment, never by its data, so a finding from a name says "likely":
 
-- Whole words of the name, split at `_`, `-`, a change of case and a run of digits: `email`, `phone`, `first_name`, `date_of_birth`, `ssn`, `ip_address`, `diagnosis`, `iban`, `password`, wherever they stand (`billing_email`, `homeZip`). `filename` has no `name`, and `gzip` no `zip`.
-- Weak words (`name`, `address`, `city`, `gender`, `notes`, `age`, `condition` and a few more) count only as the whole name of a column, or a numbered one (`address2`), in a table named for people (`users`, `profiles`, `members`, `customers`, `contacts`, `patients`, `employees`, `team_members`): `members.name`, but not `projects.name` or `members.role_name`.
+- Whole words of the name, split at `_`, `-`, a change of case and a run of digits: `email`, `phone`, `first_name`, `date_of_birth`, `ssn`, `ip_address`, `diagnosis`, `iban`, `password`, wherever they stand (`billing_email`, `homeZip`), but `zip` and `mobile` only as the last word. `filename` has no `name`, and `gzip` no `zip`.
+- Weak words (`name`, `address`, `city`, `gender`, `notes`, `age`, `condition` and a few more) count only as the whole name of a column, or a numbered one (`address2`), in a table named for people, by the last whole word of its name (`users`, `profiles`, `members`, `customers`, `contacts`, `patients`, `employees`, `team_members`): `members.name`, but not `projects.name` or `members.role_name`.
 - A flag or a column about the data is not the data: `is_public`, `has_email`, `email_verified`, `phone_type`, `owner_id`, `created_by`, and a column the migrations declare `boolean`. `display_name` and `username` are left out, since people choose them to be shown.
 - A latitude counts only beside its longitude (`lat` with `lng`, `home_latitude` with `home_longitude`).
 - A renamed or derived column counts by the table column it reads (`lower(email) AS contact` is still the email), else by its name on the device, else by the JSON key it picks (`data ->> 'phone'`). A literal holds nobody's data.

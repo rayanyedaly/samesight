@@ -76,10 +76,9 @@ export interface ExposureMap {
  * a * is "unknown" and only listed columns are read.
  */
 export function exposureMap(config: SyncConfig, schema?: Schema): ExposureMap {
-  const keys = (table: string) => {
-    const key = schema?.(table)?.primaryKey;
-    return key?.length ? key : undefined;
-  };
+  // A table the schema knows keys by its primary key, none included: then no row of it is one
+  // user's through a join. Only a table it does not know is taken to be keyed by id.
+  const keys = (table: string) => schema?.(table)?.primaryKey;
   const byTable = new Map<string, ExposedQuery[]>();
   const unread: ExposureMap["unread"] = [];
   for (const s of config.streams) {

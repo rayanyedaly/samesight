@@ -56,7 +56,7 @@ Options:
   --table <name>    explain: one table only
   --migrations <dir>
                     lint: the SQL migrations to read RLS from (default: supabase/migrations);
-                    exposure: the schema a SELECT * is read from
+                    exposure: the tables, keys and column comments to read
   --allow <rule>[:<name>]
                     lint: accept a rule's findings, all of them or those about one stream,
                     bucket, table or policy; repeatable
@@ -89,7 +89,14 @@ async function main(argv: string[]): Promise<number> {
   }
   // Lint and exposure need no policy: they are for any PowerSync project.
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
-  if (command === "exposure") return exposure(positionals.slice(1), values.migrations, values.format ?? "text");
+  if (command === "exposure") {
+    // Accepting a lint option it does not use would look like it worked.
+    if (values.allow?.length) {
+      console.error("samesight: --allow is lint's; exposure takes [file ...], --migrations and --format");
+      return 2;
+    }
+    return exposure(positionals.slice(1), values.migrations, values.format ?? "text");
+  }
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
   const db = values.db ?? process.env.SAMESIGHT_DB_URL ?? projectDbUrl(root);

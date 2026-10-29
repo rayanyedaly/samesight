@@ -215,5 +215,7 @@ describe("samesight exposure", () => {
     }
     const format = await cli(["exposure", "--format", "sarif"], project());
     expect([format.code, format.stderr]).toEqual([2, 'samesight: --format must be text or json for exposure, not "sarif"\n']);
+    const allow = await cli(["exposure", "--allow", "personal-columns"], project());
+    expect([allow.code, allow.stderr]).toEqual([2, "samesight: --allow is lint's; exposure takes [file ...], --migrations and --format\n"]);
   });
 });

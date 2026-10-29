@@ -33,7 +33,7 @@ npx samesight audit --project . --sync-config sync-config.yaml
 
 That is PowerSync's to-do list demo with one owner filter removed from its sync config ([`examples/audit-todolist`](examples/audit-todolist)). Lint flags known patterns in seconds; audit tests the rows that actually reach a device. Both read sync streams and legacy sync rules (`bucket_definitions`), and neither needs a Samesight policy. [How sync configs leak](docs/how-sync-configs-leak.md) walks through the patterns they catch, and [auditing an existing project](docs/verify.md#audit-mode) has every audit option.
 
-RLS is per row, so a row a user may see is sent whole: a colleague's email, a patient's diagnosis. To see who receives which columns, with the ones that likely hold personal data marked, print the exposure map (files only, like lint):
+RLS is per row, so it never limits columns: a query sends every column it selects, and `SELECT *` sends them all, a colleague's email or a patient's diagnosis included. To see who receives which columns, with the ones that likely hold personal data marked, print the exposure map (files only, like lint):
 
 ```bash
 npx samesight exposure sync-config.yaml --migrations supabase/migrations
