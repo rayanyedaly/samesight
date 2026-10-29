@@ -93,7 +93,7 @@ describe("personal-columns on sync streams", () => {
     expect(lint(query("SELECT id, email FROM members WHERE user_id IN (auth.user_id(), 'system')")).map((f) => [f[0], f[2]])).toEqual([
       [
         "warning",
-        "stream s, query sends members.email (likely contact data, by its name) to every user, for some rows or all (the token check does not tie rows to users), not only the row's owner; fine if they need it, else drop it from the query",
+        "stream s, query sends members.email (likely contact data, by its name) to every user, for some rows or all (the token check does not tie rows to users), not only the row's owner; the filter may let users with no tie to the row through: compare the token alone with the row, or drop the column from the query",
       ],
     ]);
     const rules = "bucket_definitions:\n  b:\n    parameters: SELECT token_parameters.org_id AS org_id\n    data:\n      - SELECT id, email FROM members WHERE org_id IN (bucket.org_id, 'public')\n";

@@ -135,7 +135,7 @@ const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? on
  * the device (profiles.title as email, profiles.data as phone).
  */
 function personalName(table: string, c: ExposedColumn): string {
-  if (c.matchedOn !== undefined) return c.matchedOn === c.name && !c.derived ? `${table}.${c.name}` : `${table}.${c.matchedOn} as ${c.name}`;
+  if (c.matchedOn !== undefined) return c.matchedOn === c.name ? `${table}.${c.name}` : `${table}.${c.matchedOn} as ${c.name}`;
   return `${c.from.map((f) => `${table}.${f}`).join(" and ")} as ${c.name}`;
 }
 

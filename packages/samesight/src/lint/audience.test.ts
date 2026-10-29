@@ -104,6 +104,15 @@ describe("a token read mixed into more than the comparison", () => {
       "org_id = coalesce(auth.parameter('org_id'), 'public')",
       "org_id = COALESCE(auth.parameter('org_id'), org_id)",
       "org_id IN coalesce(auth.parameter('org_ids'), '[\"public\"]')",
+      // PowerSync's ifnull and iif, and fallbacks a level down or several deep.
+      "org_id = ifnull(auth.parameter('org_id'), 'public')",
+      "org_id IN ifnull(auth.parameter('org_ids'), '[\"public\"]')",
+      "org_id = ifnull(auth.parameter('org_id'), org_id)",
+      "org_id = iif(auth.parameter('is_admin'), org_id, auth.parameter('org_id'))",
+      "org_id = coalesce(lower(auth.parameter('org_id')), 'public')",
+      "org_id = coalesce(auth.parameter('org_id'), auth.parameter('x'), 'public')",
+      "org_id = coalesce(auth.parameter('org_id'), lower('PUBLIC'))",
+      "org_id = greatest(auth.parameter('org_id'), 'm')",
       // The comparison is a truth value compared again.
       "(owner_id = auth.user_id()) = is_done",
       "owner_id = (auth.user_id() IS NULL)",
@@ -133,12 +142,15 @@ describe("a token read mixed into more than the comparison", () => {
       "SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l CROSS JOIN members m WHERE m.user_id = auth.user_id())",
       "SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l, members m WHERE m.user_id = auth.user_id())",
       "SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l JOIN members m ON true WHERE m.user_id = auth.user_id())",
+      // Sets outputTable does not read, by DISTINCT or an outer join, joined ON true.
+      "SELECT * FROM todos WHERE list_id IN (SELECT DISTINCT l.id FROM lists l JOIN members m ON true WHERE m.user_id = auth.user_id())",
+      "SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l LEFT JOIN members m ON true WHERE m.user_id = auth.user_id())",
     ]) {
       expect(stream(sql), sql).toEqual(mixed);
     }
-    expect(stream("SELECT * FROM todos WHERE list_id IN (SELECT l.id FROM lists l JOIN members m ON m.list_id = l.id WHERE m.user_id = auth.user_id())")).toEqual(
-      group("a subquery on lists"),
-    );
+    for (const set of ["SELECT l.id FROM lists l JOIN members m ON m.list_id = l.id", "SELECT DISTINCT l.id FROM lists l JOIN members m ON m.list_id = l.id", "SELECT DISTINCT l.id FROM lists l JOIN members m USING (list_id)"]) {
+      expect(stream(`SELECT * FROM todos WHERE list_id IN (${set} WHERE m.user_id = auth.user_id())`), set).toEqual(group("a subquery on lists"));
+    }
   });
 
   it("does the same through sync rules parameter and data queries", () => {
@@ -156,6 +168,8 @@ describe("a token read mixed into more than the comparison", () => {
     for (const [parameters, data] of [
       ["SELECT CASE WHEN token_parameters.is_admin THEN 'all' ELSE token_parameters.org_id END AS org_id", undefined],
       ["SELECT coalesce(token_parameters.org_id, 'public') AS org_id", undefined],
+      ["SELECT ifnull(token_parameters.org_id, 'public') AS org_id", undefined],
+      ["SELECT iif(token_parameters.is_admin, 'all', token_parameters.org_id) AS org_id", undefined],
       ["SELECT lower(org_id) AS org_id FROM members WHERE user_id = token_parameters.user_id", undefined],
       [members, "SELECT * FROM docs WHERE bucket.org_id = org_id IS NULL"],
       ["SELECT m.org_id FROM members m, orgs o WHERE o.owner_id = token_parameters.user_id", undefined],

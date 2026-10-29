@@ -1,7 +1,8 @@
 /**
  * Who receives a query's rows, for each stream query and sync rules data query: only the
  * row's owner, members of a group, whoever passes a role check, every user for the rows a
- * fixed filter picks, whichever rows a client asks for, or every user.
+ * fixed filter picks, whichever rows a client asks for, every user for some rows or all
+ * where the token is read but ties no row, or every user.
  *
  * It builds on the access analysis lint already does (access.ts): a query the token limits
  * is owner or group, and any other gets the audience its unscoped-query or client-scoped
@@ -200,7 +201,7 @@ function plainTie(term: Token[], ctes: Map<string, string>, dialect: "streams" |
   const top = topLevel(term);
   // = ... IS NULL, IS NOT TRUE, ISNULL: a test of the comparison, not the comparison.
   if (top.some((i) => word(term[i], "is") || word(term[i], "isnull") || word(term[i], "notnull"))) return false;
-  if (term.some((x) => word(x, "case"))) return false;
+  if (term.some(branches)) return false;
   const token = (side: Token[]) => tokenValue(side, dialect);
   const at = top.find((i) => isIn(term, i));
   if (at === undefined) {
@@ -240,21 +241,34 @@ function valueOnly(side: Token[]): boolean {
 /** A value of the row: not a literal, and not the token or a client value. */
 const rowValue = (side: Token[]) => side.length > 0 && !literal(side) && !readsToken(side) && !readsClient(side) && valueOnly(side);
 
+/** A CASE, or PowerSync's iif(), whose branches may pick a value without the token. */
+const branches = (x: Token, i: number, t: Token[]) => word(x, "case") || (word(x, "iif") && sym(t[i + 1], "("));
+
+/** Functions that pick one of their arguments: COALESCE and IFNULL the first not null, GREATEST and LEAST by value. */
+const PICKS = new Set(["coalesce", "ifnull", "greatest", "least"]);
+
 /**
  * A value read from the token, as is or through functions (lower(auth.user_id()),
  * coalesce(auth.parameter('acting_for'), auth.user_id())), with nothing that picks a value
- * without it: a fallback for a claim a token may lack, a CASE, or a column beside it in
- * COALESCE, GREATEST or LEAST. The user id is in every token, so its fallback is never used.
+ * without it: a CASE or iif(), or a literal or column beside it in COALESCE, IFNULL,
+ * GREATEST or LEAST. The user id is in every token, so a literal after it in COALESCE or
+ * IFNULL is never used.
  */
 function tokenValue(side: Token[], dialect: "streams" | "rules"): boolean {
-  if (!readsToken(side) || readsClient(side) || !valueOnly(side) || side.some((x) => word(x, "case"))) return false;
+  if (!readsToken(side) || readsClient(side) || !valueOnly(side) || side.some(branches)) return false;
   const { reads, unreadable } = claimReads(sqlText(side), dialect);
   if (unreadable.length || reads.some((r) => r.fallback !== undefined && !isSub(r.path))) return false;
   for (let i = 0; i < side.length; i++) {
-    if (!(word(side[i], "coalesce") || word(side[i], "greatest") || word(side[i], "least")) || !sym(side[i + 1], "(")) continue;
+    const name = side[i];
+    if (name?.kind !== "word" || !PICKS.has(name.text) || !sym(side[i + 1], "(")) continue;
     const end = closing(side, i + 1);
     const args = splitTop(side.slice(i + 2, end === -1 ? side.length : end), (x) => sym(x, ","));
-    if (args.some(readsToken) && args.some((a) => !readsToken(a) && !literal(a))) return false;
+    const token = args.filter(readsToken);
+    const other = args.filter((a) => !readsToken(a));
+    if (!token.length || !other.length) continue;
+    // coalesce(auth.user_id(), 'nobody'): the fallback never applies.
+    const userIdFirst = (name.text === "coalesce" || name.text === "ifnull") && other.every(literal) && token.every((a) => tokenRead(a, dialect)?.path.join(".") === "sub");
+    if (!userIdFirst) return false;
   }
   return true;
 }
@@ -267,11 +281,27 @@ function tokenValue(side: Token[], dialect: "streams" | "rules"): boolean {
 function joinedUp(t: Token[]): boolean {
   const scope = scopeOf(sqlText(t));
   if (!scope) {
-    // outputTable refuses a comma or CROSS JOIN; other refusals say nothing of the joins.
+    // A query outputTable refuses (DISTINCT, an outer join, a comma): each join must be ON an
+    // equality of two columns, or USING them; a comma, CROSS or NATURAL JOIN, or ON true, ties nothing.
     const top = topLevel(t);
     const from = top.find((i) => word(t[i], "from"));
-    const end = top.find((i) => from !== undefined && i > from && (word(t[i], "where") || word(t[i], "group") || word(t[i], "order") || word(t[i], "limit")));
-    return from === undefined || !top.some((i) => i > from && (end === undefined || i < end) && (sym(t[i], ",") || word(t[i], "cross")));
+    if (from === undefined) return true;
+    const end = top.find((i) => i > from && (word(t[i], "where") || word(t[i], "group") || word(t[i], "order") || word(t[i], "limit"))) ?? t.length;
+    const clause = top.filter((i) => i > from && i < end);
+    if (clause.some((i) => sym(t[i], ",") || word(t[i], "cross") || word(t[i], "natural"))) return false;
+    const joins = clause.filter((i) => word(t[i], "join"));
+    return joins.every((j, n) => {
+      const next = joins[n + 1] ?? end;
+      const on = clause.find((i) => i > j && i < next && (word(t[i], "on") || word(t[i], "using")));
+      if (on === undefined) return false;
+      return (
+        word(t[on], "using") ||
+        andTerms(t.slice(on + 1, next)).some((term) => {
+          const s = equality(term);
+          return s !== undefined && columnOf(uncast(s[0])) !== undefined && columnOf(uncast(s[1])) !== undefined;
+        })
+      );
+    });
   }
   const reached = new Set([scope.alias]);
   const edges = conditions(t)

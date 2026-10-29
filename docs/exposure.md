@@ -16,7 +16,7 @@ npx samesight exposure powersync/sync-config.yaml --migrations supabase/migratio
 npx samesight exposure --format json
 ```
 
-With no file named, it looks for the sync config where lint does: `sync-config.yaml` or `sync-rules.yaml`, in the current directory and then under `powersync/`. It reads the migrations in `supabase/migrations`, or in the directory `--migrations` names. Without them, it says so on stderr, and a `SELECT *` lists no columns, since only the migrations say what the table holds.
+With no file named, it looks for the sync config where lint does: `sync-config.yaml` or `sync-rules.yaml`, in the current directory and then under `powersync/`. It reads the migrations in `supabase/migrations`, or in the directory `--migrations` names. Without them, it says so on stderr: a `SELECT *` lists no columns, since only the migrations say what the table holds, no column comment is read, and every table is taken to be keyed by `id`.
 
 It exits 0 whatever the map shows: it informs, it never fails a run. It exits 2 when a file cannot be read, no sync config is found or an option is wrong.
 
@@ -162,4 +162,4 @@ The categories are `identifier`, `contact`, `location`, `birth`, `health`, `fina
 
 ## JSON
 
-`--format json` prints one object on stdout: `version` (1), `files`, `migrations` (the directory it read, or `null`), `maps`, one per file it could read, and `unreadable`, each file it could not read with its error. Each map has its `file`, `kind` (`streams` or `bucket definitions`), `tables` and `unread`. A query there has its stream, label, SQL, audience (`mixed: true` on an `everyone` the token check does not tie) and columns, each column with the columns it is read from and, when it looks personal, its category, what matched and the column it matched on (`matchedOn`); and the `line` it starts on, when found. Notes stay on stderr.
+`--format json` prints one object on stdout: `version` (1), `files`, `migrations` (the directory it read, or `null`), `maps`, one per file it could read, and `unreadable`, each file it could not read with its error. Each map has its `file`, `kind` (`streams` or `bucket definitions`), `tables` and `unread`. A query there has its `stream`, its label as `query`, `sql`, `autoSubscribe`, `deviceTable`, `audience` (with `mixed: true` on an `everyone` the token check does not tie), `paths` (for a sync rules bucket, the audience through each parameter query, named in `via`; for a stream, its one audience) and `columns`: their `source` (`list`, `schema` or `unknown`), whether they are `complete`, and `items`. Each item has its `name` on the device, the columns it is read `from`, whether it is `derived` and, when it looks personal, `personal` (its category, what matched and whether a name or a comment), `matchedOn` when the match was made on one of the table's columns, and `jsonKey` when it was made on a JSON key. A query also has the `line` it starts on, when found. Notes stay on stderr.

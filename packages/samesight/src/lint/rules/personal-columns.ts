@@ -82,7 +82,11 @@ export const personalColumns: LintRule = defineRule(RULE, ({ file, config, migra
       // first; else the query's one audience. Owners named by different columns are a group.
       const paths = q.paths.length > 1 ? [...new Set(q.paths.map((p) => p.audience).filter((a) => a.kind !== "owner").sort((x, y) => rank(y) - rank(x)).map(to))] : [];
       const reach = paths.length ? paths : [to(q.audience)];
-      const fine = level(q) === "info" && q.audience.kind === "role" ? "fine if only users meant to see it (such as admins) pass that check" : "fine if they need it";
+      // What to do: decide for a role check or a group; fix the filter where the token ties no row.
+      const advice =
+        q.audience.kind === "everyone" && q.audience.mixed
+          ? "the filter may let users with no tie to the row through: compare the token alone with the row, or drop the column from the query"
+          : `${level(q) === "info" && q.audience.kind === "role" ? "fine if only users meant to see it (such as admins) pass that check" : "fine if they need it"}, else drop it from the query`;
       for (const c of q.columns.items) {
         if (!c.personal) continue;
         const { columns, text } = sent(table, c);
@@ -92,7 +96,7 @@ export const personalColumns: LintRule = defineRule(RULE, ({ file, config, migra
           file,
           ...lineOf(q.sql),
           subjects: [q.stream, table, ...columns],
-          message: `${kind} ${q.stream}, ${q.query} sends ${text} (${why(c.personal, c.jsonKey)}) to ${reach.join(", and to ")}, not only the row's owner; ${fine}, else drop it from the query`,
+          message: `${kind} ${q.stream}, ${q.query} sends ${text} (${why(c.personal, c.jsonKey)}) to ${reach.join(", and to ")}, not only the row's owner; ${advice}`,
         });
       }
     }

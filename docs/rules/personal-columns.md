@@ -1,6 +1,6 @@
 # personal-columns
 
-Level: warning, or info (a note) when a role check decides who gets the rows, or when any client or every user gets them and another rule already fails the query.
+Level: warning, or info (a note) when a role check decides who gets the rows, or when any client or every user gets them, which `unscoped-query` or `client-scoped` usually fails already.
 
 A column that likely holds personal data, sent to users other than the row's owner.
 
@@ -10,7 +10,7 @@ PowerSync sends a device every column a query selects, and for `SELECT *` every 
 
 For each query, lint reads who receives its rows, as [`unscoped-query`](unscoped-query.md) and [`client-scoped`](client-scoped.md) read them, and which columns it sends (see [the exposure map](../exposure.md)). It reports each column that likely holds personal data, once per query that sends it to anyone but the row's owner:
 
-- a warning when the members of a group get it (through a membership subquery or CTE, a token claim such as `org_id`, or a sync rules parameter query), or every user for the rows a fixed filter picks (`status = 'public'`). Often meant, so it is a decision: do they need that column? Also a warning when the query reads the token but does not tie rows to users by it (`org_id IN (auth.parameter('org_id'), 'public')`, a `COALESCE` fallback, a table joined `ON true`), so some rows, or all, reach every user: no other rule fails such a query.
+- a warning when the members of a group get it (through a membership subquery or CTE, a token claim such as `org_id`, or a sync rules parameter query), or every user for the rows a fixed filter picks (`status = 'public'`). Often meant, so it is a decision: do they need that column? Also a warning when the query reads the token but does not tie rows to users by it (`org_id IN (auth.parameter('org_id'), 'public')`, a `COALESCE` fallback, a table joined `ON true`), so some rows, or all, reach every user: no other rule fails such a query, and the message says to compare the token alone with the row.
 - a note when whoever passes a check on who is asking gets it (a role claim, an admin list): often admins, so confirm only users meant to see it pass the check. A sync rules bucket that a group or a fixed filter also reaches, through another parameter query, warns instead, and the message names each way in. And a note when any client or every user gets it: `unscoped-query` or `client-scoped` usually fails that query already, and the note keeps the column in view if that error is accepted with `--allow`. (A sync rules parameter query whose users lint cannot read, such as one with `UNION`, counts as reaching every user, and may have no error of its own.)
 
 Rows only their owner gets (`owner_id = auth.user_id()`, or through the owner of the parent row they point at) are not reported, and a query lint cannot read is [`unreadable-query`](unreadable-query.md)'s.
