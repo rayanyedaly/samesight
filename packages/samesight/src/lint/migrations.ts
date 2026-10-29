@@ -1,10 +1,11 @@
 /**
- * A best-effort reading of a project's SQL migrations, for lint's RLS rules: which public
- * tables end up with row level security enabled, and which policies they end up with.
- * Statements are applied in file order (Supabase names migrations by timestamp). Only
- * plain DDL is understood: RLS switched on or off in a function, a DO block or dynamic
- * SQL is not seen, so the rules built on this say what the migrations show, not what the
- * database holds. `samesight-verify audit` reads the database itself.
+ * A best-effort reading of a project's SQL migrations, for lint: which public tables they
+ * create and with which columns, which public tables end up with row level security
+ * enabled, and which policies they end up with. Statements are applied in file order
+ * (Supabase names migrations by timestamp). Only plain DDL is understood: a table or its
+ * RLS changed in a function, a DO block or dynamic SQL is not seen, so the rules built on
+ * this say what the migrations show, not what the database holds. `samesight-verify audit`
+ * reads the database itself.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -28,11 +29,33 @@ export interface Policy extends Located {
   check: string | null;
 }
 
+export interface ColumnDef {
+  name: string;
+  /** The type as written, lowercased (quoted names aside) and with whitespace collapsed: "text", "timestamp with time zone", "uuid", "varchar(255)", "text[]". */
+  type: string;
+  /** COMMENT ON COLUMN text, when set; whitespace in it is collapsed. */
+  comment?: string;
+}
+
+/** A public table as the migrations define it, located where it was created. */
+export interface TableDef extends Located {
+  /** In definition order; ADD COLUMN appends. */
+  columns: ColumnDef[];
+  /** Primary key columns, from an inline PRIMARY KEY or a table constraint. */
+  primaryKey: string[];
+  /** Columns that reference auth.users (inline REFERENCES, a table FOREIGN KEY, or ALTER TABLE ADD CONSTRAINT ... FOREIGN KEY). */
+  userColumns: string[];
+  /** False when the definition is not fully known here: LIKE, INHERITS, PARTITION OF, OF type, CREATE TABLE ... AS. */
+  complete: boolean;
+}
+
 export interface Migrations {
   /** Tables whose RLS the migrations leave on, with where it was turned on. */
   rls: Map<string, Located>;
   /** Policies the migrations leave in place, per table. */
   policies: Map<string, Policy[]>;
+  /** Public tables the migrations create and leave in place, with their columns. */
+  tables: Map<string, TableDef>;
 }
 
 /** Every `.sql` file in `dir`, in name order, read into one Migrations. */
@@ -44,7 +67,7 @@ export function readMigrations(dir: string): Migrations {
 }
 
 export function applyMigrations(files: { file: string; sql: string }[]): Migrations {
-  const out: Migrations = { rls: new Map(), policies: new Map() };
+  const out: Migrations = { rls: new Map(), policies: new Map(), tables: new Map() };
   for (const { file, sql } of files) {
     for (const s of statements(sql)) apply(out, s.text, { file, line: s.line });
   }
@@ -69,11 +92,29 @@ function apply(m: Migrations, text: string, at: Located): void {
       if (rename) move(m, table, name(rename[1] as string));
       // Moved out of public: a later public table of that name starts afresh.
       const schema = new RegExp(String.raw`^set\s+schema\s+(${NAME})$`, "i").exec(action);
-      if (schema && name(schema[1] as string) !== "public") {
-        m.rls.delete(table);
-        m.policies.delete(table);
-      }
+      if (schema && name(schema[1] as string) !== "public") forget(m, table);
+      const def = m.tables.get(table);
+      if (def) alterColumns(def, action);
     }
+    return;
+  }
+  x = new RegExp(String.raw`^create\s+(?:((?:global\s+|local\s+)?temp(?:orary)?)\s+|unlogged\s+)?table\s+(if\s+not\s+exists\s+)?${TABLE}\s*(.*)$`, "is").exec(text);
+  if (x) {
+    const table = publicTable(x[3], x[4]);
+    // A temporary table lives in a schema of its own, for one session.
+    if (x[1] || !table || (x[2] && m.tables.has(table))) return;
+    m.tables.set(table, tableDef(x[5] ?? "", at));
+    return;
+  }
+  x = new RegExp(String.raw`^comment\s+on\s+column\s+(?:(${NAME})\.)?(${NAME})\.(${NAME})\s+is\s+(.*)$`, "is").exec(text);
+  if (x) {
+    const table = publicTable(x[1], x[2]);
+    const column = table ? m.tables.get(table)?.columns.find((c) => c.name === name(x?.[3] as string)) : undefined;
+    const comment = literal(x[4] ?? "");
+    if (!column || comment === undefined) return;
+    // Postgres keeps an empty comment as none.
+    if (comment) column.comment = comment;
+    else delete column.comment;
     return;
   }
   x = new RegExp(String.raw`^create\s+policy\s+(${NAME})\s+on\s+${TABLE}(.*)$`, "is").exec(text);
@@ -116,17 +157,17 @@ function apply(m: Migrations, text: string, at: Located): void {
     if (table) m.policies.set(table, (m.policies.get(table) ?? []).filter((p) => p.name !== name(x?.[1] as string)));
     return;
   }
-  x = new RegExp(String.raw`^drop\s+table\s+(?:if\s+exists\s+)?${TABLE}`, "i").exec(text);
+  x = /^drop\s+table\s+(?:if\s+exists\s+)?(.*)$/is.exec(text);
   if (x) {
-    const table = publicTable(x[1], x[2]);
-    if (table) {
-      m.rls.delete(table);
-      m.policies.delete(table);
+    for (const target of topLevelSplit(x[1] ?? "")) {
+      const t = new RegExp(`^${TABLE}`).exec(target);
+      const table = t && publicTable(t[1], t[2]);
+      if (table) forget(m, table);
     }
   }
 }
 
-/** A table renamed: its RLS and policies go with it. */
+/** A table renamed: its RLS, policies and definition go with it. */
 function move(m: Migrations, from: string, to: string): void {
   const rls = m.rls.get(from);
   m.rls.delete(from);
@@ -134,6 +175,136 @@ function move(m: Migrations, from: string, to: string): void {
   const policies = m.policies.get(from);
   m.policies.delete(from);
   if (policies) m.policies.set(to, policies);
+  const def = m.tables.get(from);
+  m.tables.delete(from);
+  if (def) m.tables.set(to, def);
+}
+
+/** A table dropped or moved out of public: nothing of it is left. */
+function forget(m: Migrations, table: string): void {
+  m.rls.delete(table);
+  m.policies.delete(table);
+  m.tables.delete(table);
+}
+
+/** Starts a table constraint or LIKE, not a column. All are reserved words but EXCLUDE, which can name a column, so USING or a parenthesis must follow it. */
+const TABLE_ITEM = /^(?:(?:constraint|primary|foreign|unique|check|like|not)\b|exclude\s*(?:using\b|\())/i;
+
+/** Ends a column's type: its first constraint, or the COLLATE or USING of ALTER ... TYPE. */
+const TYPE_END = /\b(?:not|null|default|references|primary|unique|check|constraint|generated|collate|identity|using)\b/i;
+
+/**
+ * A table as CREATE TABLE defines it, from what follows its name. OF type, PARTITION OF
+ * and AS take their columns from elsewhere, so they leave it incomplete and empty; so does
+ * `(a, b) AS query`, which names columns without types.
+ */
+function tableDef(rest: string, at: Located): TableDef {
+  const def: TableDef = { ...at, columns: [], primaryKey: [], userColumns: [], complete: false };
+  const body = rest.startsWith("(") ? parenthesised(rest) : null;
+  if (!body || /\bas\b/i.test(blank(body[1]))) return def;
+  def.complete = !/\binherits\b/i.test(blank(body[1]));
+  for (const item of topLevelSplit(body[0])) {
+    if (TABLE_ITEM.test(item)) tableConstraint(def, item);
+    else addColumn(def, item);
+  }
+  return def;
+}
+
+/** A table constraint or LIKE: a primary key replaces the table's, a foreign key to auth.users marks its columns. */
+function tableConstraint(def: TableDef, item: string): void {
+  const c = item.replace(new RegExp(String.raw`^constraint\s+${NAME}\s*`, "i"), "");
+  if (/^like\b/i.test(c)) def.complete = false;
+  const key = /^(primary|foreign)\s+key\s*(\(.*)$/is.exec(c);
+  const columns = key && parenthesised(key[2] as string);
+  if (!columns) return;
+  if (key[1]?.toLowerCase() === "primary") def.primaryKey = names(columns[0]);
+  else if (referencesUsers(columns[1])) for (const column of names(columns[0])) addOnce(def.userColumns, column);
+}
+
+/** A column definition, `<name> <type> [constraints]`, appended unless the table has that column. */
+function addColumn(def: TableDef, text: string): void {
+  const x = new RegExp(String.raw`^(${NAME})\s*(.*)$`, "s").exec(text);
+  if (!x) return;
+  const column = name(x[1] as string);
+  if (def.columns.some((c) => c.name === column)) return;
+  const rest = x[2] ?? "";
+  const end = typeEnd(rest);
+  def.columns.push({ name: column, type: typeName(rest.slice(0, end)) });
+  const constraints = rest.slice(end);
+  if (/\bprimary\s+key\b/i.test(blank(constraints))) addOnce(def.primaryKey, column);
+  if (referencesUsers(constraints)) addOnce(def.userColumns, column);
+}
+
+/** One ALTER TABLE action on a known table's columns: ADD, DROP, RENAME, or ALTER ... TYPE. */
+function alterColumns(def: TableDef, action: string): void {
+  const add = /^add\s+(.*)$/is.exec(action)?.[1];
+  if (add !== undefined) {
+    if (TABLE_ITEM.test(add)) tableConstraint(def, add);
+    else addColumn(def, add.replace(/^column\s+/i, "").replace(/^if\s+not\s+exists\s+/i, ""));
+    return;
+  }
+  const drop = new RegExp(String.raw`^drop\s+(?!constraint\s)(?:column\s+)?(?:if\s+exists\s+)?(${NAME})(?:\s+(?:cascade|restrict))?$`, "i").exec(action);
+  if (drop) {
+    const column = name(drop[1] as string);
+    def.columns = def.columns.filter((c) => c.name !== column);
+    // Postgres drops a constraint with any of its columns, so a composite key goes whole.
+    if (def.primaryKey.includes(column)) def.primaryKey = [];
+    def.userColumns = def.userColumns.filter((c) => c !== column);
+    return;
+  }
+  // RENAME TO renames the table and RENAME CONSTRAINT a constraint: neither matches here.
+  const rename = new RegExp(String.raw`^rename\s+(?:column\s+)?(${NAME})\s+to\s+(${NAME})$`, "i").exec(action);
+  if (rename) {
+    const [from, to] = [name(rename[1] as string), name(rename[2] as string)];
+    const column = def.columns.find((c) => c.name === from);
+    if (!column) return;
+    column.name = to;
+    def.primaryKey = def.primaryKey.map((c) => (c === from ? to : c));
+    def.userColumns = def.userColumns.map((c) => (c === from ? to : c));
+    return;
+  }
+  const retype = new RegExp(String.raw`^alter\s+(?:column\s+)?(${NAME})\s+(?:set\s+data\s+)?type\s+(.*)$`, "is").exec(action);
+  const column = retype && def.columns.find((c) => c.name === name(retype[1] as string));
+  const type = retype?.[2] ?? "";
+  if (column) column.type = typeName(type.slice(0, typeEnd(type)));
+}
+
+/** Whether `text` has a REFERENCES to auth.users outside parentheses and strings. */
+function referencesUsers(text: string): boolean {
+  for (const r of blank(text).matchAll(/\breferences\b/gi)) {
+    const t = new RegExp(String.raw`^references\s*${TABLE}`, "i").exec(text.slice(r.index));
+    if (t?.[1] && name(t[1]) === "auth" && name(t[2] as string) === "users") return true;
+  }
+  return false;
+}
+
+/** Where a column's type ends in what follows the column's name. */
+function typeEnd(text: string): number {
+  const at = blank(text).search(TYPE_END);
+  return at === -1 ? text.length : at;
+}
+
+/** A type as written, lowercased outside quoted names. */
+const typeName = (raw: string) => raw.trim().replace(/"(?:[^"]|"")*"|[^"]+/g, (s) => (s.startsWith('"') ? s : s.toLowerCase()));
+
+/** The names in a column list, as Postgres resolves them. */
+function names(list: string): string[] {
+  return topLevelSplit(list).flatMap((item) => {
+    const n = new RegExp(`^${NAME}`).exec(item)?.[0];
+    return n ? [name(n)] : [];
+  });
+}
+
+function addOnce(list: string[], item: string): void {
+  if (!list.includes(item)) list.push(item);
+}
+
+/** A string constant's text ('' unescaped, or dollar-quoted), null for NULL, undefined for anything else. */
+function literal(text: string): string | null | undefined {
+  if (/^null$/i.test(text)) return null;
+  const quoted = /^'((?:[^']|'')*)'$/s.exec(text);
+  if (quoted) return (quoted[1] ?? "").replaceAll("''", "'");
+  return /^\$([A-Za-z0-9_]*)\$(.*)\$\1\$$/s.exec(text)?.[2];
 }
 
 /** A policy statement up to its USING or WITH CHECK, where AS, FOR and TO are read. */
@@ -180,15 +351,41 @@ function name(raw: string): string {
 /** The parenthesised expression after `keyword`, outer parentheses removed; null if absent. */
 function clause(text: string, keyword: string): string | null {
   const m = new RegExp(String.raw`\b${keyword.replace(" ", String.raw`\s+`)}\s*\(`, "i").exec(text);
-  if (!m) return null;
+  return m ? (parenthesised(text.slice(m.index + m[0].length - 1))?.[0] ?? null) : null;
+}
+
+/** What is inside the parentheses `text` opens with, and what follows them; null when they never close. */
+function parenthesised(text: string): [inside: string, after: string] | null {
   let depth = 0;
-  for (let i = m.index + m[0].length - 1; i < text.length; i++) {
+  for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (ch === "'") i = text.indexOf("'", i + 1) === -1 ? text.length : text.indexOf("'", i + 1);
-    else if (ch === "(") depth++;
-    else if (ch === ")" && --depth === 0) return text.slice(m.index + m[0].length, i).trim();
+    if (ch === "'" || ch === '"') {
+      const end = text.indexOf(ch, i + 1);
+      i = end === -1 ? text.length : end;
+    } else if (ch === "(") depth++;
+    else if (ch === ")" && --depth === 0) return [text.slice(1, i).trim(), text.slice(i + 1).trim()];
   }
   return null;
+}
+
+/** `text` with strings, quoted names and what parentheses hold blanked: a word found in it is top-level, at the same offset. */
+function blank(text: string): string {
+  let out = "";
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+    if (ch === "'" || ch === '"') {
+      const end = text.indexOf(ch, i + 1);
+      const stop = end === -1 ? text.length : end + 1;
+      out += " ".repeat(stop - i);
+      i = stop - 1;
+    } else {
+      if (ch === ")") depth--;
+      out += depth > 0 ? " " : ch;
+      if (ch === "(") depth++;
+    }
+  }
+  return out;
 }
 
 /**
