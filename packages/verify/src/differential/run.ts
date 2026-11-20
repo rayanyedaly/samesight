@@ -16,6 +16,7 @@ import type { Stack } from "../stack.ts";
 import { show } from "../audit/assign.ts";
 import { claimKey } from "../audit/claims.ts";
 import { type Coverage, measure, pending } from "../audit/coverage.ts";
+import { type Exposure, noteExposure } from "../audit/exposure.ts";
 import { sendingQueries } from "./attribute.ts";
 import { likelyFixes } from "./fix.ts";
 import { policyVerdicts } from "./policies.ts";
@@ -709,6 +710,8 @@ export interface DifferentialOptions {
   timeLimitMs: number;
   /** Audit only: counts which rules each passing dataset exercised, until the first failure. */
   coverage?: Coverage;
+  /** Audit only: notes the likely personal columns of other run users' rows each device held, until the first failure. */
+  exposure?: Exposure;
   /** The sync config's streams, to name the query that sent a row of the counterexample and suggest a fix. */
   sync?: { kind: "streams" | "bucket definitions"; streams: Stream[] };
   /** The command that replays the run with a seed, set on a counterexample's finding. */
@@ -761,6 +764,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       const devices = await syncAll(s);
       const passed = failing(await compareAll(s, { devices, tally: visible, received })).length === 0;
       if (passed && !failedOnce && options.coverage) await measure(s, options.coverage, rowsIn, devices, (s.fixedRows ?? []).filter((r) => s.synced.includes(r.table)));
+      if (passed && !failedOnce && options.exposure) noteExposure(s, options.exposure, devices);
       return passed;
     });
     failedOnce ||= !ok;

@@ -25,6 +25,7 @@ import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
 import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
+import { exposureFindings, exposureScope } from "./exposure.ts";
 import { executeAdvice, planHook } from "./hook.ts";
 import { auditTables, cleanupScope } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
@@ -427,6 +428,23 @@ describe("the write path on the demo", () => {
     // The new row must pass the SELECT policy too, since the WHERE reads the table.
     expect(refused).toBe("42501");
   });
+});
+
+describe("exposure on the demo", () => {
+  it("reads a comment marker on a synced column, and finds no run user's list on another's device", async () => {
+    // Committed for the run, since readModel and the devices see only committed comments; cleared after.
+    await client.query("comment on column public.lists.name is 'samesight:personal=free text'");
+    try {
+      const ex = exposureScope(await readModel(client, SYNCED.map((name) => ({ name }))), SYNCED);
+      expect(ex.tables.map((t) => [t.table, t.owner, [...t.columns.keys()]])).toEqual([["lists", "owner_id", ["name"]]]);
+      const r = await differential(s, { runs: 2, seed: 3, timeLimitMs: 120_000, exposure: ex });
+      expect(r.findings.filter((f) => f.status === "fail")).toEqual([]);
+      expect(ex.datasets).toBeGreaterThanOrEqual(2);
+      expect(exposureFindings(ex)).toEqual([{ status: "ok", check: "exposure", detail: "no likely personal column of one run user's rows reached another run user's device" }]);
+    } finally {
+      await client.query("comment on column public.lists.name is null");
+    }
+  }, 300_000);
 });
 
 describe("coverage on the demo", () => {
