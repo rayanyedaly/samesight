@@ -457,7 +457,9 @@ describe("exposure on the demo", () => {
       const held = [...ex.held.values()];
       expect(held.length).toBeGreaterThan(0);
       for (const h of held) expect([h.table, h.stream, [...h.columns]]).toEqual(["todos", "user_data", ["description"]]);
-      expect(exposureFindings(ex)[0]?.detail).toMatch(/^u\d's device held description \[free text, marked in its comment\] of \d other run users?'s? todos rows, sent by stream user_data \(\d+ rows? over \d+ datasets?\)$/);
+      for (const f of exposureFindings(ex)) {
+        expect(f.detail).toMatch(/^u\d's device held description \[free text, marked in its comment\] of (\d other run users?'s? todos rows|todos rows u\d shares with \d other run users?), sent by stream user_data \(\d+ rows? over \d+ datasets?\)$/);
+      }
     } finally {
       await client.query("comment on column public.todos.description is null");
     }

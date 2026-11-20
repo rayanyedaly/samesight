@@ -49,8 +49,12 @@ describe("exposureScope", () => {
   });
 
   it("names tables whose rows the run cannot match by id as not measured", () => {
+    expect(exposureFindings(exposureScope([PINS], ["pins"])).map((f) => f.detail)).toEqual([
+      "no synced table with a likely personal column could be measured",
+      "pins: email likely personal, but it has no id column to match its rows by, so whose rows reach whom is not read here",
+    ]);
     expect(exposureScope([LOGS, PINS], ["logs", "pins"]).unowned).toEqual([
-      { table: "logs", columns: ["email"], why: "its id comes from a sequence the run does not read back" },
+      { table: "logs", columns: ["email"], why: "the database sets its id, which the run does not read back" },
       { table: "pins", columns: ["email"], why: "it has no id column to match its rows by" },
     ]);
   });
@@ -123,10 +127,16 @@ describe("noteExposure", () => {
         ["c", [row("messages", { id: "x1", recipient_phone: "555" }, "everyone")]],
       ]),
     );
-    expect([...ex.held.values()].map((h) => [h.reader, h.table, [...h.owners]])).toEqual([
-      ["u0", "messages", ["b"]],
-      ["u1", "messages", ["a"]],
-      ["u2", "messages", ["a", "b"]],
+    expect([...ex.held.values()].map((h) => [h.reader, h.table, h.shared, [...h.owners]])).toEqual([
+      ["u0", "messages", true, ["b"]],
+      ["u1", "messages", true, ["a"]],
+      ["u2", "messages", false, ["a", "b"]],
+    ]);
+    // A shared row's values may be the reader's own, so its line says the row is shared.
+    expect(exposureFindings(ex).map((f) => f.detail)).toEqual([
+      "u0's device held recipient_phone [contact] of messages rows u0 shares with 1 other run user, sent by stream outbox (1 row over 1 dataset)",
+      "u1's device held recipient_phone [contact] of messages rows u1 shares with 1 other run user, sent by stream inbox (1 row over 1 dataset)",
+      "u2's device held recipient_phone [contact] of 2 other run users' messages rows, sent by stream everyone (1 row over 1 dataset)",
     ]);
     // A profile keyed by its user is that user's row.
     const other = scoped();
@@ -136,7 +146,7 @@ describe("noteExposure", () => {
 
   it("names a table some of whose rows took their id from the database", () => {
     const ex = scoped();
-    noteExposure(run, ex, [ins("members", { user_id: "b" })], new Map([["a", [row("members", { id: "m9", user_id: "b", email: "b@x" })]]]));
+    noteExposure(run, ex, [ins("members", { user_id: "b" }), ins("members", { id: null, user_id: "c" })], new Map([["a", [row("members", { id: "m9", user_id: "b", email: "b@x" })]]]));
     expect(ex.held.size).toBe(0);
     expect(exposureFindings(ex).map((f) => f.detail)).toEqual([
       "no likely personal column of one run user's rows reached another run user's device",

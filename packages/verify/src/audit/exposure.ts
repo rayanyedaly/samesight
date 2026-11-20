@@ -6,8 +6,8 @@
  * Informational: whether a user may have a row at all is the comparison's question; this
  * says which of its columns came with it. A row belongs to the run users its columns for a
  * user hold (each key to auth.users, as the run inserted it), so a stream that leaves those
- * columns out still counts; a reader who is one of them holds the others' share of it (a
- * doctor holds the patient's visit). Ownership through a parent row is not read, and neither are rows
+ * columns out still counts. A row the reader is one of the users of (a doctor's visit with a
+ * patient) is counted apart, as shared: its values may be the reader's own. Ownership through a parent row is not read, and neither are rows
  * the run did not insert. Datasets that pass hold the columns under their own names: a
  * renamed or computed column fails the comparison first.
  */
@@ -33,6 +33,8 @@ export interface Held {
   reader: string;
   /** The reader's place among the run's users, for the order lines are printed in. */
   order: number;
+  /** Rows the reader is one of the users of, kept apart: their values may be the reader's own. */
+  shared: boolean;
   table: string;
   stream: string;
   columns: Set<string>;
@@ -70,7 +72,7 @@ export function exposureScope(model: TableModel[], synced: string[]): Exposure {
     if (!columns.size) continue;
     // Rows are matched to the run's by id: a sequence's id is not read back, so its rows would never match.
     const id = t.columns.find((c) => c.name === "id");
-    const why = !owners.length ? "no column of it references auth.users" : !id ? "it has no id column to match its rows by" : id.autoKey || id.computed ? "its id comes from a sequence the run does not read back" : undefined;
+    const why = !owners.length ? "no column of it references auth.users" : !id ? "it has no id column to match its rows by" : id.autoKey || id.computed ? "the database sets its id, which the run does not read back" : undefined;
     if (why) unowned.push({ table: t.name, columns: [...columns.keys()], why });
     else tables.push({ table: t.name, owners, columns });
   }
@@ -102,14 +104,16 @@ export function noteExposure(s: Pick<Run, "fixed">, ex: Exposure, inserted: Inse
     const reader = label.get(u.id) as string;
     for (const r of devices.get(u.id) ?? []) {
       const t = ex.tables.find((x) => x.table === r.table);
-      // The other run users whose row it is; the reader's own share is theirs to hold.
-      const users = (t ? owners.get(`${r.table}\0${r.id}`) : undefined)?.filter((o) => o !== u.id);
-      if (!t || !users?.length) continue;
+      const all = t ? owners.get(`${r.table}\0${r.id}`) : undefined;
+      // The other run users whose row it is; when the reader is one too, the row is shared.
+      const users = all?.filter((o) => o !== u.id);
+      if (!t || !all || !users?.length) continue;
+      const shared = users.length < all.length;
       for (const source of r.sources) {
         const present = source.columns.filter((c) => t.columns.has(c) && r.data[c] !== null && r.data[c] !== undefined);
         if (!present.length) continue;
-        const key = `${reader}\0${t.table}\0${source.stream}`;
-        const held = ex.held.get(key) ?? { reader, order, table: t.table, stream: source.stream, columns: new Set<string>(), owners: new Set<string>(), rows: new Set<string>() };
+        const key = `${reader}\0${t.table}\0${source.stream}\0${shared}`;
+        const held = ex.held.get(key) ?? { reader, order, shared, table: t.table, stream: source.stream, columns: new Set<string>(), owners: new Set<string>(), rows: new Set<string>() };
         for (const c of present) held.columns.add(c);
         for (const o of users) held.owners.add(o);
         held.rows.add(r.id);
@@ -128,15 +132,15 @@ const named = (column: string, match: PersonalMatch) => `${column} [${match.cate
 export function exposureFindings(ex: Exposure): Finding[] {
   const check = "exposure";
   const out: Finding[] = [];
-  const held = [...ex.held.values()].sort((a, b) => a.order - b.order || a.table.localeCompare(b.table) || a.stream.localeCompare(b.stream));
+  const held = [...ex.held.values()].sort((a, b) => a.order - b.order || a.table.localeCompare(b.table) || a.stream.localeCompare(b.stream) || Number(a.shared) - Number(b.shared));
   for (const h of held) {
     const t = ex.tables.find((x) => x.table === h.table) as ExposedTable;
     const columns = [...t.columns].filter(([c]) => h.columns.has(c)).map(([c, m]) => named(c, m));
-    const others = plural(h.owners.size, "other run user's", "other run users'");
+    const whose = h.shared ? `${h.table} rows ${h.reader} shares with ${plural(h.owners.size, "other run user")}` : `${plural(h.owners.size, "other run user's", "other run users'")} ${h.table} rows`;
     out.push({
       status: "ok",
       check,
-      detail: `${h.reader}'s device held ${columns.join(", ")} of ${others} ${h.table} rows, sent by stream ${h.stream} (${plural(h.rows.size, "row")} over ${plural(ex.datasets, "dataset")})`,
+      detail: `${h.reader}'s device held ${columns.join(", ")} of ${whose}, sent by stream ${h.stream} (${plural(h.rows.size, "row")} over ${plural(ex.datasets, "dataset")})`,
     });
   }
   if (!held.length && ex.tables.length && !ex.datasets) {
