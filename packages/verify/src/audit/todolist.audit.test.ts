@@ -14,6 +14,7 @@ import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal, rolledBack } from "../db.ts";
 import { compareAll, differential, PREFIX, type Run, setUpUsers, tearDown, withWorld } from "../differential/run.ts";
+import { readModel } from "../differential/model.ts";
 import { sendingQueries } from "../differential/attribute.ts";
 import { likelyFixes } from "../differential/fix.ts";
 import { policyVerdicts } from "../differential/policies.ts";
@@ -92,6 +93,18 @@ describe("the audit catalog on the demo", () => {
     expect(findings).toContainEqual(expect.objectContaining({ status: "fail", check: "row level security", detail: expect.stringMatching(/off on todos/) }));
     expect(findings).toContainEqual(expect.objectContaining({ status: "fail", check: "publication", detail: expect.stringMatching(/does not publish todos/) }));
     expect(findings).toContainEqual(expect.objectContaining({ status: "warn", check: "anon", detail: expect.stringMatching(/"anyone" on lists/) }));
+  });
+});
+
+describe("the model of the demo's tables", () => {
+  it("reads a column's comment, and none where it has none", async () => {
+    const model = await rolledBack(client, async () => {
+      await client.query("comment on column public.todos.description is 'What the task says. samesight:personal=free text'");
+      return readModel(client, [{ name: "todos" }]);
+    });
+    const columns = model[0]?.columns ?? [];
+    expect(columns.find((c) => c.name === "description")?.comment).toBe("What the task says. samesight:personal=free text");
+    expect(columns.find((c) => c.name === "id")).not.toHaveProperty("comment");
   });
 });
 

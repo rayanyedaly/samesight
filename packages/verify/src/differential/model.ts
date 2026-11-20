@@ -28,6 +28,8 @@ export interface ColumnModel {
   hints: string[];
   /** Values run users hold in a claim the rules compare this column with (audit): drawn often. */
   claimValues?: unknown[];
+  /** COMMENT ON COLUMN text, when there is one: a samesight:personal marker in it says what the column holds. */
+  comment?: string;
 }
 
 export interface ForeignKeyModel {
@@ -174,12 +176,14 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
     identity: boolean;
     default_expr: string | null;
     labels: string[] | null;
+    comment: string | null;
   }>(
     client,
     `select c.relname as table, a.attname as name, format_type(a.atttypid, a.atttypmod) as type, not a.attnotnull as nullable,
             a.atthasdef or a.attidentity = 'd' as has_default, (a.attidentity = 'a' or a.attgenerated <> '') as computed,
             a.attidentity <> '' as identity, pg_get_expr(d.adbin, d.adrelid) as default_expr,
-            (select array_agg(e.enumlabel order by e.enumsortorder) from pg_enum e where e.enumtypid = a.atttypid)::text[] as labels
+            (select array_agg(e.enumlabel order by e.enumsortorder) from pg_enum e where e.enumtypid = a.atttypid)::text[] as labels,
+            col_description(a.attrelid, a.attnum) as comment
        from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
        left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
       where n.nspname = 'public' and c.relname = any($1) and a.attnum > 0 and not a.attisdropped
@@ -229,6 +233,7 @@ export async function readModel(client: pg.Client, tables: ScopeTable[]): Promis
           ...(pattern !== undefined ? { pattern } : {}),
           hints: [...(hints.get(c.name) ?? [])],
           ...(t.claimValues?.get(c.name)?.length ? { claimValues: t.claimValues.get(c.name) } : {}),
+          ...(c.comment ? { comment: c.comment } : {}),
         };
       });
     const primaryKey = mine.find((k) => k.type === "p")?.columns ?? ["id"];
