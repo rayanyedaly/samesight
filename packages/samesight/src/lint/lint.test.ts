@@ -40,12 +40,15 @@ describe("RULE_NAMES", () => {
     "  by_param:\n    auto_subscribe: true\n    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list')",
     "  by_metadata:\n    auto_subscribe: true\n    query: SELECT * FROM tasks WHERE team_id = auth.parameter('user_metadata') ->> 'team'",
     "  odd:\n    auto_subscribe: true\n    query: SELECT * FROM lists JOIN shares ON shares.list_id = lists.id WHERE lists.owner_id = auth.user_id()",
+    "  org_members:\n    auto_subscribe: true\n    query: SELECT * FROM members WHERE org_id IN (SELECT org_id FROM members WHERE user_id = auth.user_id())",
     "",
   ].join("\n");
-  const migrations = applyMigrations([{ file: "m.sql", sql: "create policy open on customers using (true);" }]);
+  const migrations = applyMigrations([
+    { file: "m.sql", sql: "create policy open on customers using (true);\ncreate table members (id uuid primary key, org_id uuid, user_id uuid references auth.users, email text);" },
+  ]);
 
   it("are the rules' own names, each on every finding the rule makes, so --allow reaches each one", () => {
-    expect(RULE_NAMES).toEqual(["unscoped-query", "client-scoped", "user-metadata", "unreadable-query", "not-auto-subscribed", "rls-off", "rls-open"]);
+    expect(RULE_NAMES).toEqual(["unscoped-query", "client-scoped", "user-metadata", "unreadable-query", "not-auto-subscribed", "rls-off", "rls-open", "personal-columns"]);
     for (const rule of RULES) {
       const found = lintSyncConfig(everything, "s.yaml", [rule], migrations);
       expect(found.length, rule.ruleName).toBeGreaterThan(0);

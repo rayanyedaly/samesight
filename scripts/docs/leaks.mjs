@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Keeps the output shown in docs/how-sync-configs-leak.md and in the lint rule pages
- * (docs/rules/<id>.md) true to the tools. Each block between markers is rewritten.
+ * Keeps the output shown in docs/how-sync-configs-leak.md, in the lint rule pages
+ * (docs/rules/<id>.md) and in docs/exposure.md true to the tools. Each block between
+ * markers is rewritten.
  *
  * In docs/how-sync-configs-leak.md:
  *
@@ -33,6 +34,16 @@
  * both blocks for its own rule, every example must be a rule's, and each example must make
  * lint report its rule.
  *
+ * In docs/exposure.md, from an example in scripts/docs/exposure-examples/<name>/ (a
+ * sync-config.yaml, and a migrations/ directory of .sql files for the columns a * sends):
+ *
+ *   <!-- exposure-example:<name> -->  the example's files, inlined as an example block does
+ *   <!-- /exposure-example -->
+ *   <!-- exposure:<name> -->          `samesight exposure sync-config.yaml --migrations migrations`,
+ *   <!-- /exposure -->                as the built CLI prints it, run from the example's directory
+ *
+ * Every example there must have both blocks, once each, and exposure must map it (exit 0).
+ *
  *   node scripts/docs/leaks.mjs           rewrite the blocks
  *   node scripts/docs/leaks.mjs --check   exit 1 if any block differs from a fresh run
  *
@@ -50,6 +61,8 @@ const PLANTED = "corpus/planted";
 const CAPTURE = "docs/assets/audit-demo.txt";
 const RULES = "docs/rules";
 const EXAMPLES = "scripts/docs/rule-examples";
+const EXPOSURE_DOC = "docs/exposure.md";
+const EXPOSURE_EXAMPLES = "scripts/docs/exposure-examples";
 const CLI = join(ROOT, "packages/samesight/dist/cli.js");
 const RULE_INFO_JS = join(ROOT, "packages/samesight/dist/lint/rule-info.js");
 const VERIFY = join(ROOT, "packages/verify/dist");
@@ -124,35 +137,51 @@ function captureBlock() {
   return ["```text", ...all.slice(start, end + 1), "```"];
 }
 
-/** A rule's example: its directory, and its migrations (paths relative to it) when it has any. */
-function example(id) {
-  const dir = join(ROOT, EXAMPLES, id);
-  if (!existsSync(join(dir, "sync-config.yaml"))) fail(`${EXAMPLES}/${id}/sync-config.yaml is missing; each rule page shows the example there`);
+/**
+ * An example in `base` (a rule's, or the exposure map's), which `shownIn` shows: its
+ * directory, and its migrations (paths relative to it) when it has any.
+ */
+function example(base, name, shownIn) {
+  const dir = join(ROOT, base, name);
+  if (!existsSync(join(dir, "sync-config.yaml"))) fail(`${base}/${name}/sync-config.yaml is missing; ${shownIn} shows the example there`);
   if (!existsSync(join(dir, "migrations"))) return { dir, migrations: [] };
   const migrations = readdirSync(join(dir, "migrations"))
     .filter((f) => f.endsWith(".sql"))
     .sort()
     .map((f) => `migrations/${f}`);
-  if (!migrations.length) fail(`${EXAMPLES}/${id}/migrations has no .sql file`);
+  if (!migrations.length) fail(`${base}/${name}/migrations has no .sql file`);
   return { dir, migrations };
 }
 
+const ruleExample = (id) => example(EXAMPLES, id, "each rule page");
+const exposureExample = (name) => example(EXPOSURE_EXAMPLES, name, EXPOSURE_DOC);
+
 /** The example's files as the page shows them: each named, then fenced. */
-function exampleBlock(id) {
-  const { dir, migrations } = example(id);
+function exampleBlock({ dir, migrations }) {
   const fenced = (file, lang) => [`\`${file}\`:`, "", `\`\`\`${lang}`, ...lines(readFileSync(join(dir, file), "utf8")), "```"];
   return [...fenced("sync-config.yaml", "yaml"), ...migrations.flatMap((f) => ["", ...fenced(f, "sql")])];
 }
 
 /** `samesight lint` on a rule's example, from its directory; the output must name the rule. */
 function ruleLintBlock(id) {
-  const { dir, migrations } = example(id);
+  const { dir, migrations } = ruleExample(id);
   const lintArgs = ["lint", "sync-config.yaml", ...(migrations.length ? ["--migrations", "migrations"] : [])];
   const r = spawnSync(process.execPath, [CLI, ...lintArgs], { cwd: dir, env, encoding: "utf8" });
   if (r.status !== 0 && r.status !== 1) fail(`samesight ${lintArgs.join(" ")} in ${EXAMPLES}/${id} exited ${r.status}: ${r.stderr || r.error}`);
   const out = lines(r.stdout);
   if (!out.some((l) => l.endsWith(`  (${id})`))) fail(`lint reports no ${id} finding on ${EXAMPLES}/${id}, so the example does not show the rule:\n${r.stdout.trimEnd()}`);
   return ["```console", `$ npx samesight ${lintArgs.join(" ")}`, ...out, "```"];
+}
+
+/** `samesight exposure` on an exposure example, from its directory, reading its migrations. */
+function exposureBlock(name) {
+  const { dir, migrations } = exposureExample(name);
+  if (!migrations.length) fail(`${EXPOSURE_EXAMPLES}/${name} has no migrations/*.sql; the page shows the columns a * sends, which come from them`);
+  const exposureArgs = ["exposure", "sync-config.yaml", "--migrations", "migrations"];
+  const r = spawnSync(process.execPath, [CLI, ...exposureArgs], { cwd: dir, env, encoding: "utf8" });
+  // The map never fails: anything but 0 means it could not run.
+  if (r.status !== 0) fail(`samesight ${exposureArgs.join(" ")} in ${EXPOSURE_EXAMPLES}/${name} exited ${r.status}: ${r.stderr || r.error}`);
+  return ["```console", `$ npx samesight ${exposureArgs.join(" ")}`, ...lines(r.stdout), "```"];
 }
 
 function lines(text) {
@@ -204,7 +233,7 @@ const rewritten = pages.map((id) => {
     if (name !== id) fail(`${doc} has a ${kind} block for ${name}; a rule's page shows its own rule (${kind}:${id})`);
     if (kinds.has(kind)) fail(`${doc} has two ${kind} blocks`);
     kinds.add(kind);
-    const body = kind === "example" ? exampleBlock(id) : ruleLintBlock(id);
+    const body = kind === "example" ? exampleBlock(ruleExample(id)) : ruleLintBlock(id);
     const out = [`<!-- ${kind}:${name} -->`, ...body, `<!-- /${kind} -->`].join("\n");
     if (out !== block) blocks.push(`${kind}:${name}`);
     return out;
@@ -214,6 +243,28 @@ const rewritten = pages.map((id) => {
   }
   return { doc, text, fresh, blocks };
 });
+
+// The exposure map page: each exposure example's files, and what exposure prints on them.
+const exposureNames = readdirSync(join(ROOT, EXPOSURE_EXAMPLES))
+  .filter((d) => statSync(join(ROOT, EXPOSURE_EXAMPLES, d)).isDirectory())
+  .sort();
+const exposureBefore = readFileSync(join(ROOT, EXPOSURE_DOC), "utf8");
+const exposureSeen = new Set();
+const exposureStale = [];
+const exposureAfter = exposureBefore.replace(/^<!-- (exposure-example|exposure):([a-z0-9-]+) -->\n[\s\S]*?^<!-- \/\1 -->$/gm, (block, kind, name) => {
+  if (!exposureNames.includes(name)) fail(`${EXPOSURE_DOC} has a ${kind} block for ${name}, but there is no ${EXPOSURE_EXAMPLES}/${name}`);
+  if (exposureSeen.has(`${kind}:${name}`)) fail(`${EXPOSURE_DOC} has two ${kind} blocks for ${name}`);
+  exposureSeen.add(`${kind}:${name}`);
+  const body = kind === "exposure" ? exposureBlock(name) : exampleBlock(exposureExample(name));
+  const out = [`<!-- ${kind}:${name} -->`, ...body, `<!-- /${kind} -->`].join("\n");
+  if (out !== block) exposureStale.push(`${kind}:${name}`);
+  return out;
+});
+for (const name of exposureNames) {
+  for (const kind of ["exposure-example", "exposure"]) {
+    if (!exposureSeen.has(`${kind}:${name}`)) fail(`${EXPOSURE_DOC} has no ${kind} block for ${EXPOSURE_EXAMPLES}/${name}; add <!-- ${kind}:${name} --> and <!-- /${kind} --> on lines of their own`);
+  }
+}
 
 if (check) {
   let ok = true;
@@ -227,6 +278,10 @@ if (check) {
   }
   if (changed.length) ok = false;
   else console.log(`${RULES}: every generated block is up to date (${rewritten.length} rule pages)`);
+  if (exposureStale.length) {
+    console.error(`${EXPOSURE_DOC} is stale: ${exposureStale.map((b) => `<!-- ${b} -->`).join(", ")} ${exposureStale.length === 1 ? "is" : "are"} not what its example and the tools give now. Run: node scripts/docs/leaks.mjs`);
+    ok = false;
+  } else console.log(`${EXPOSURE_DOC}: every generated block is up to date`);
   if (!ok) process.exit(1);
 } else {
   if (after !== before) {
@@ -241,4 +296,10 @@ if (check) {
     console.log(`${r.doc}: rewrote ${r.blocks.join(", ")}`);
   }
   if (!changed.length) console.log(`${RULES}: up to date`);
+  if (exposureAfter !== exposureBefore) {
+    writeFileSync(join(ROOT, EXPOSURE_DOC), exposureAfter);
+    console.log(`${EXPOSURE_DOC}: rewrote ${exposureStale.join(", ")}`);
+  } else {
+    console.log(`${EXPOSURE_DOC}: up to date`);
+  }
 }

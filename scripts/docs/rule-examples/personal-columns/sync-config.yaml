@@ -1,0 +1,9 @@
+config:
+  edition: 3
+
+streams:
+  org_members:
+    auto_subscribe: true
+    with:
+      my_orgs: SELECT org_id FROM members WHERE user_id = auth.user_id()
+    query: SELECT * FROM members WHERE org_id IN my_orgs

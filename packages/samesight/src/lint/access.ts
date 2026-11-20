@@ -71,7 +71,7 @@ export function queryLimits(t: Token[], gate: Gate): boolean {
 const isIn = (t: Token[], i: number) => word(t[i], "in") && !word(t[i - 1], "not");
 
 /** The two sides of a term's top-level = or IN; undefined when it has neither. */
-function sides(term: Token[]): [Token[], Token[]] | undefined {
+export function sides(term: Token[]): [Token[], Token[]] | undefined {
   const at = topLevel(term).find((i) => sym(term[i], "=") || isIn(term, i));
   return at === undefined ? undefined : [term.slice(0, at), term.slice(at + 1)];
 }
@@ -343,6 +343,16 @@ export function streamAccess(sql: string, ctes: Map<string, string>): StreamAcce
     filtered: limitedBy(t, ctes, filters),
     filteredOrClaim: limitedBy(t, ctes, (term) => filters(term) || claimCheck(term), true),
   };
+}
+
+/**
+ * Whether one condition alone limits rows by the user's own token value, the way `token`
+ * in streamAccess counts it for a whole query, through the stream's CTEs: for telling which
+ * of a query's terms do.
+ */
+export function limitsByToken(condition: Token[], ctes: Map<string, string>): boolean {
+  // limitedBy reads a query's conditions: this one, as the WHERE of an empty SELECT.
+  return limitedBy([{ kind: "word", text: "select" }, { kind: "word", text: "where" }, ...condition], ctes, matches(ownToken));
 }
 
 /** Whether a sync rules parameter query checks who is asking (a role claim): it gives its buckets to whoever passes. */

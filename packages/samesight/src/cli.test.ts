@@ -28,7 +28,7 @@ describe("samesight exit codes", () => {
     expect((await cli(["--help"])).code).toBe(0);
     expect((await cli([])).code).toBe(2);
     const unknown = await cli(["frobnicate"]);
-    expect([unknown.code, unknown.stderr]).toEqual([2, 'samesight: unknown command "frobnicate"; the commands are init, generate, check, doctor, explain, lint, audit; see samesight --help\n']);
+    expect([unknown.code, unknown.stderr]).toEqual([2, 'samesight: unknown command "frobnicate"; the commands are init, generate, check, doctor, explain, lint, exposure, audit; see samesight --help\n']);
   });
 
   it("names a flag it cannot read in Node's words, and where to look", { timeout: 30_000 }, async () => {
@@ -116,5 +116,113 @@ describe("samesight audit", () => {
     // --help before audit still prints the help.
     const help = await cli(["--help", "audit"]);
     expect([help.code, help.stdout]).toEqual([0, expect.stringContaining("Usage")]);
+  });
+});
+
+describe("samesight exposure", () => {
+  const SYNC_CONFIG = [
+    "config:",
+    "  edition: 3",
+    "streams:",
+    "  org_members:",
+    "    auto_subscribe: true",
+    "    with:",
+    "      my_orgs: SELECT org_id FROM members WHERE user_id = auth.user_id()",
+    "    query: SELECT * FROM members WHERE org_id IN my_orgs",
+    "",
+  ].join("\n");
+  const MIGRATION = "create table public.members (id uuid primary key, org_id uuid not null, user_id uuid not null references auth.users (id), email text not null, role text);\n";
+
+  /** A project with the sync config, and its migrations in supabase/migrations unless told not to. */
+  function project(migrations = true): string {
+    const dir = tempDir();
+    writeFileSync(join(dir, "sync-config.yaml"), SYNC_CONFIG);
+    if (migrations) {
+      mkdirSync(join(dir, "supabase/migrations"), { recursive: true });
+      writeFileSync(join(dir, "supabase/migrations/1_init.sql"), MIGRATION);
+    }
+    return dir;
+  }
+
+  it("maps the sync config it finds, with the columns of supabase/migrations, and exits 0", { timeout: 30_000 }, async () => {
+    const result = await cli(["exposure"], project());
+    expect([result.code, result.stderr]).toEqual([0, ""]);
+    expect(result.stdout).toBe(
+      [
+        "members",
+        "  sent by  stream org_members, query  (sync-config.yaml:8)",
+        "  to       members of the row's group, through with.my_orgs",
+        "  columns  id, org_id, user_id, email [contact], role  (all columns, from the migrations)",
+        "",
+        "1 table. 1 likely personal column reaches users other than the row's owner: members.email.",
+        "Columns are matched by name or a samesight comment marker, never by their data.",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("says on stderr when it has no migrations to read, and still exits 0", { timeout: 30_000 }, async () => {
+    const result = await cli(["exposure", "sync-config.yaml"], project(false));
+    expect([result.code, result.stderr]).toEqual([
+      0,
+      "note: no supabase/migrations here, so the columns a SELECT * sends are not known, no column comment is read, and every table is taken to be keyed by id; pass --migrations <dir> to read them\n",
+    ]);
+    expect(result.stdout).toContain("  columns  all columns (no migrations read, so not known)\n");
+  });
+
+  it("prints one JSON object with --format json", { timeout: 30_000 }, async () => {
+    const dir = project();
+    const result = await cli(["exposure", "sync-config.yaml", "gone.yaml", "--format", "json"], dir);
+    expect(result.code).toBe(2);
+    const report = JSON.parse(result.stdout);
+    expect(report).toEqual({
+      version: 1,
+      files: ["sync-config.yaml", "gone.yaml"],
+      migrations: "supabase/migrations",
+      maps: [{ file: "sync-config.yaml", kind: "streams", tables: [{ table: "members", queries: [expect.objectContaining({ stream: "org_members", query: "query", line: 8 })] }], unread: [] }],
+      unreadable: [{ file: "gone.yaml", error: expect.stringMatching(/^ENOENT/) }],
+    });
+    expect(report.maps[0].tables[0].queries[0].columns.items.find((c: { name: string }) => c.name === "email").personal).toEqual({ category: "contact", matched: "email", source: "name" });
+  });
+
+  it("exits 2 when a file cannot be read, still mapping the others", { timeout: 30_000 }, async () => {
+    const dir = project();
+    writeFileSync(join(dir, "bad.yaml"), "streams: [1]\n");
+    const result = await cli(["exposure", "sync-config.yaml", "gone.yaml", "bad.yaml"], dir);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toBe(
+      [
+        "samesight: gone.yaml: cannot be read as a sync config: ENOENT: no such file or directory, open 'gone.yaml'; check the path, or name another file",
+        "samesight: bad.yaml: cannot be read as a sync config: the sync config has no streams: section; fix the YAML, or name another file",
+        "2 of 3 file(s) could not be read, so nothing in them is mapped.",
+        "",
+      ].join("\n"),
+    );
+    expect(result.stdout).toMatch(/^members\n {2}sent by {2}stream org_members, query {2}\(sync-config.yaml:8\)\n/);
+    // Nothing read, nothing printed.
+    const none = await cli(["exposure", "gone.yaml"], dir);
+    expect([none.code, none.stdout]).toEqual([2, ""]);
+  });
+
+  it("exits 2 with no sync config, a --format it does not print, or migrations it cannot read, in lint's words", { timeout: 30_000 }, async () => {
+    const empty = tempDir();
+    const tried = "tried sync-config.yaml, sync-rules.yaml, powersync/sync-config.yaml, powersync/sync-rules.yaml";
+    for (const command of ["exposure", "lint"]) {
+      const none = await cli([command], empty);
+      expect([none.code, none.stderr]).toEqual([2, `samesight: no sync config found (${tried}); name one: samesight ${command} <file>\n`]);
+      const missing = await cli([command, "--migrations", "nowhere"], project());
+      expect([missing.code, missing.stderr]).toEqual([2, "samesight: no migrations directory at nowhere; check the path given to --migrations\n"]);
+    }
+    const format = await cli(["exposure", "--format", "sarif"], project());
+    expect([format.code, format.stderr]).toEqual([2, 'samesight: --format must be text or json for exposure, not "sarif"\n']);
+    for (const [flag, value] of [
+      ["--allow", "personal-columns"],
+      ["--table", "members"],
+      ["--policy", "p.ts"],
+      ["--db", "postgres://localhost"],
+    ]) {
+      const unused = await cli(["exposure", flag as string, value as string], project());
+      expect([unused.code, unused.stderr]).toEqual([2, `samesight: exposure does not take ${flag}; it takes [file ...], --migrations and --format\n`]);
+    }
   });
 });
