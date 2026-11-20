@@ -100,11 +100,11 @@ describe("the audit catalog on the demo", () => {
 describe("the model of the demo's tables", () => {
   it("reads a column's comment, and none where it has none", async () => {
     const model = await rolledBack(client, async () => {
-      await client.query("comment on column public.todos.description is 'What the task says. samesight:personal=free text'");
+      await client.query("comment on column public.todos.description is 'What the task says. samesight:personal=free-text'");
       return readModel(client, [{ name: "todos" }]);
     });
     const columns = model[0]?.columns ?? [];
-    expect(columns.find((c) => c.name === "description")?.comment).toBe("What the task says. samesight:personal=free text");
+    expect(columns.find((c) => c.name === "description")?.comment).toBe("What the task says. samesight:personal=free-text");
     expect(columns.find((c) => c.name === "id")).not.toHaveProperty("comment");
   });
 });
@@ -432,11 +432,11 @@ describe("the write path on the demo", () => {
 
 describe("exposure on the demo", () => {
   it("reads a comment marker on a synced column, and finds no run user's list on another's device", async () => {
-    // Committed for the run, since readModel and the devices see only committed comments; cleared after.
-    await client.query("comment on column public.lists.name is 'samesight:personal=free text'");
+    // Set for the run, outside any transaction the run's own steps open, and cleared after.
+    await client.query("comment on column public.lists.name is 'samesight:personal=free-text'");
     try {
       const ex = exposureScope(await readModel(client, SYNCED.map((name) => ({ name }))), SYNCED);
-      expect(ex.tables.map((t) => [t.table, t.owner, [...t.columns.keys()]])).toEqual([["lists", "owner_id", ["name"]]]);
+      expect(ex.tables.map((t) => [t.table, t.owners, [...t.columns.keys()]])).toEqual([["lists", ["owner_id"], ["name"]]]);
       const r = await differential(s, { runs: 2, seed: 3, timeLimitMs: 120_000, exposure: ex });
       expect(r.findings.filter((f) => f.status === "fail")).toEqual([]);
       expect(ex.datasets).toBeGreaterThanOrEqual(2);

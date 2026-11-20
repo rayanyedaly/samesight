@@ -4,23 +4,25 @@
  * which stream, over the datasets the differential ran before its first failure.
  *
  * Informational: whether a user may have a row at all is the comparison's question; this
- * says which of its columns came with it. A row belongs to the run user its table's column
- * for a user holds (a key to auth.users, as the generator fills it). Ownership through a
- * parent row is not read, and neither are rows the run did not insert.
+ * says which of its columns came with it. A row belongs to the run users its columns for a
+ * user hold (each key to auth.users, as the run inserted it), so a stream that leaves those
+ * columns out still counts. Ownership through a parent row is not read, and neither are rows
+ * the run did not insert. Datasets that pass hold the columns under their own names: a
+ * renamed or computed column fails the comparison first.
  */
 
 import { type PersonalMatch, personalColumn } from "samesight/compiler";
 import type { DeviceRow } from "../differential/device.ts";
 import type { TableModel } from "../differential/model.ts";
 import type { Run } from "../differential/run.ts";
+import type { Inserted } from "../differential/world.ts";
 import type { Finding } from "../report.ts";
-import { userColumn } from "./fixed.ts";
 
 /** A synced table with likely personal columns and a column for its user. */
 export interface ExposedTable {
   table: string;
-  /** The column that holds the user a row belongs to. */
-  owner: string;
+  /** The columns that hold a user the row belongs to: every key to auth.users. */
+  owners: string[];
   /** Each likely personal column, with what matched. */
   columns: Map<string, PersonalMatch>;
 }
@@ -28,12 +30,15 @@ export interface ExposedTable {
 /** What one run user's device held of other run users' rows of a table, from one stream. */
 export interface Held {
   reader: string;
+  /** The reader's place among the run's users, for the order lines are printed in. */
+  order: number;
   table: string;
   stream: string;
   columns: Set<string>;
   /** The run users whose rows they were. */
   owners: Set<string>;
-  rows: number;
+  /** The rows, by id: a row the run keeps for every dataset counts once. */
+  rows: Set<string>;
 }
 
 export interface Exposure {
@@ -56,34 +61,47 @@ export function exposureScope(model: TableModel[], synced: string[]): Exposure {
       if (match) columns.set(c.name, match);
     }
     if (!columns.size) continue;
-    const owner = userColumn(t);
-    // The user's own id is no one else's personal data on their own row.
-    if (owner) columns.delete(owner);
+    const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
+    // A user's id names whose row it is; it is no one else's personal data on it.
+    for (const o of owners) columns.delete(o);
     if (!columns.size) continue;
-    if (owner) tables.push({ table: t.name, owner, columns });
+    if (owners.length) tables.push({ table: t.name, owners, columns });
     else unowned.push({ table: t.name, columns: [...columns.keys()] });
   }
   return { tables, unowned, datasets: 0, held: new Map() };
 }
 
-/** Adds one passing dataset: each likely personal value a device holds of another run user's row, by stream. */
-export function noteExposure(s: Pick<Run, "fixed">, ex: Exposure, devices: Map<string, DeviceRow[]>): void {
+/**
+ * Adds one passing dataset: each likely personal value a device holds of another run user's
+ * row, by stream. `inserted`: the run's rows, the dataset's and those it keeps for every
+ * dataset, which say whose each row is.
+ */
+export function noteExposure(s: Pick<Run, "fixed">, ex: Exposure, inserted: Inserted[], devices: Map<string, DeviceRow[]>): void {
   ex.datasets++;
   const label = new Map(s.fixed.users.map((u) => [u.id, u.label.split(" ")[0] as string]));
-  for (const u of s.fixed.users) {
+  // Whose each run row is, by table and id: the run users its columns for a user hold.
+  const owners = new Map<string, string[]>();
+  for (const i of inserted) {
+    const t = ex.tables.find((x) => x.table === i.table);
+    if (!t) continue;
+    const users = t.owners.map((c) => i.row[c]).filter((v): v is string => typeof v === "string" && label.has(v));
+    if (users.length) owners.set(`${i.table}\0${String(i.row.id)}`, users);
+  }
+  for (const [order, u] of s.fixed.users.entries()) {
     const reader = label.get(u.id) as string;
     for (const r of devices.get(u.id) ?? []) {
       const t = ex.tables.find((x) => x.table === r.table);
-      const owner = t ? r.data[t.owner] : undefined;
-      if (!t || typeof owner !== "string" || owner === u.id || !label.has(owner)) continue;
+      const users = t ? owners.get(`${r.table}\0${r.id}`) : undefined;
+      // A row that is in part the reader's own (sent to them, say) is theirs to hold.
+      if (!t || !users || users.includes(u.id)) continue;
       for (const source of r.sources) {
         const present = source.columns.filter((c) => t.columns.has(c) && r.data[c] !== null && r.data[c] !== undefined);
         if (!present.length) continue;
         const key = `${reader}\0${t.table}\0${source.stream}`;
-        const held = ex.held.get(key) ?? { reader, table: t.table, stream: source.stream, columns: new Set<string>(), owners: new Set<string>(), rows: 0 };
+        const held = ex.held.get(key) ?? { reader, order, table: t.table, stream: source.stream, columns: new Set<string>(), owners: new Set<string>(), rows: new Set<string>() };
         for (const c of present) held.columns.add(c);
-        held.owners.add(owner);
-        held.rows++;
+        for (const o of users) held.owners.add(o);
+        held.rows.add(r.id);
         ex.held.set(key, held);
       }
     }
@@ -99,7 +117,7 @@ const named = (column: string, match: PersonalMatch) => `${column} [${match.cate
 export function exposureFindings(ex: Exposure): Finding[] {
   const check = "exposure";
   const out: Finding[] = [];
-  const held = [...ex.held.values()].sort((a, b) => a.reader.localeCompare(b.reader) || a.table.localeCompare(b.table) || a.stream.localeCompare(b.stream));
+  const held = [...ex.held.values()].sort((a, b) => a.order - b.order || a.table.localeCompare(b.table) || a.stream.localeCompare(b.stream));
   for (const h of held) {
     const t = ex.tables.find((x) => x.table === h.table) as ExposedTable;
     const columns = [...t.columns].filter(([c]) => h.columns.has(c)).map(([c, m]) => named(c, m));
@@ -107,10 +125,12 @@ export function exposureFindings(ex: Exposure): Finding[] {
     out.push({
       status: "ok",
       check,
-      detail: `${h.reader}'s device held ${columns.join(", ")} of ${others} ${h.table} rows, sent by stream ${h.stream} (${plural(h.rows, "row")} over ${plural(ex.datasets, "dataset")})`,
+      detail: `${h.reader}'s device held ${columns.join(", ")} of ${others} ${h.table} rows, sent by stream ${h.stream} (${plural(h.rows.size, "row")} over ${plural(ex.datasets, "dataset")})`,
     });
   }
-  if (!held.length) {
+  if (!held.length && ex.tables.length && !ex.datasets) {
+    out.push({ status: "ok", check, detail: "no dataset passed before the run stopped, so nothing was measured" });
+  } else if (!held.length) {
     out.push({
       status: "ok",
       check,
@@ -130,5 +150,5 @@ export function exposureFindings(ex: Exposure): Finding[] {
 /** The section's title, and how much it covers when a failure or the time limit cut the run short. */
 export function exposureTitle(ex: Exposure, result: { findings: Finding[]; stopped?: boolean }): string {
   const cut = result.findings.some((f) => f.status === "fail") ? " before the failure" : result.stopped ? " before the time limit" : "";
-  return cut ? `Exposure in the ${ex.datasets} datasets run${cut}` : "Exposure (columns that likely hold personal data, by name or comment marker, of other run users' rows)";
+  return cut ? `Exposure in the ${plural(ex.datasets, "dataset")} run${cut}` : "Exposure (columns that likely hold personal data, by name or comment marker, of other run users' rows)";
 }
