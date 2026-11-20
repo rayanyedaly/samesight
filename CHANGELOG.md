@@ -15,7 +15,7 @@ The four npm packages (`samesight`, `@samesight/verify`, `@samesight/supabase`, 
 ### @samesight/verify
 
 - `samesight-verify --help` and the npm page link to the docs site's page on the verifier and audit mode.
-- Audit has an Exposure section, after Coverage: for each run user's device, the columns that likely hold personal data (by name or a `samesight:personal` comment marker, matched as `samesight exposure` matches them) of other run users' rows it held, and the stream that sent them. Every line is `ok`, so exit codes and the summary are unchanged. Audit reads column comments from the database for it.
+- Audit has an Exposure section, after Coverage: for each run user's device, the columns that likely hold personal data (by name or a `samesight:personal` or `samesight:not-personal` comment marker, matched as `samesight exposure` matches them) of other run users' rows it held, and the stream that sent them; a row belongs to the run users its keys to `auth.users` hold. Every line is `ok`, so exit codes and the summary are unchanged. Audit reads column comments from the database for it.
 
 ## 0.1.0 (2026-10-28)
 
