@@ -445,6 +445,23 @@ describe("exposure on the demo", () => {
       await client.query("comment on column public.lists.name is null");
     }
   }, 300_000);
+  it("counts a to-do another run user created in the reader's own list, as the run's devices hold it", async () => {
+    // A to-do belongs to its creator and its completer (keys to auth.users), so in someone
+    // else's list it is their row on the list owner's device.
+    await client.query("comment on column public.todos.description is 'samesight:personal=free-text'");
+    try {
+      const ex = exposureScope(await readModel(client, SYNCED.map((name) => ({ name }))), SYNCED);
+      expect(ex.tables.map((t) => [t.table, [...t.owners].sort(), [...t.columns.keys()]])).toEqual([["todos", ["completed_by", "created_by"], ["description"]]]);
+      const r = await differential(s, { runs: 3, seed: 5, timeLimitMs: 120_000, exposure: ex });
+      expect(r.findings.filter((f) => f.status === "fail")).toEqual([]);
+      const held = [...ex.held.values()];
+      expect(held.length).toBeGreaterThan(0);
+      for (const h of held) expect([h.table, h.stream, [...h.columns]]).toEqual(["todos", "user_data", ["description"]]);
+      expect(exposureFindings(ex)[0]?.detail).toMatch(/^u\d's device held description \[free text, marked in its comment\] of \d other run users?'s? todos rows, sent by stream user_data \(\d+ rows? over \d+ datasets?\)$/);
+    } finally {
+      await client.query("comment on column public.todos.description is null");
+    }
+  }, 300_000);
 });
 
 describe("coverage on the demo", () => {

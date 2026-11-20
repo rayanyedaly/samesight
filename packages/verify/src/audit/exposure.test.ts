@@ -22,7 +22,10 @@ const MEMBERS = table("members", [column("user_id", "uuid"), column("email"), co
 const NOTES = table("notes", [column("owner_id", "uuid"), column("chief_complaint", "text", "Why the patient came. samesight:personal=health"), column("email", "text", "A shared inbox. samesight:not-personal")], "owner_id");
 const ORGS = table("orgs", [column("name"), column("billing_email")]);
 const LISTS = table("lists", [column("owner_id", "uuid"), column("name")], "owner_id");
-const VISITS = table("visits", [column("patient_id", "uuid"), column("allergy", "boolean"), column("lat", "numeric"), column("lng", "numeric")], "patient_id");
+const VISITS = table("visits", [column("doctor_id", "uuid"), column("patient_id", "uuid"), column("allergy", "boolean"), column("lat", "numeric"), column("lng", "numeric")], "doctor_id", "patient_id");
+// Rows whose id the run cannot match: one from a sequence, one with no id column.
+const LOGS = { ...table("logs", [column("user_id", "uuid"), column("email")], "user_id"), columns: [{ ...column("id", "bigint"), autoKey: true }, column("user_id", "uuid"), column("email")] };
+const PINS = { ...table("pins", [column("user_id", "uuid"), column("email")], "user_id"), primaryKey: ["user_id"], columns: [column("user_id", "uuid"), column("email")] };
 const MESSAGES = table("messages", [column("sender_id", "uuid"), column("recipient_id", "uuid"), column("recipient_phone")], "sender_id", "recipient_id");
 // Keyed by its user, as the access token hook's per-user tables can be.
 const PROFILES = table("profiles", [column("phone")], "id");
@@ -42,13 +45,20 @@ describe("exposureScope", () => {
       ["messages", ["sender_id", "recipient_id"], ["recipient_phone:contact:name"]],
     ]);
     // No column for a user: not measured, and said so. A table with nothing personal is left out.
-    expect(ex.unowned).toEqual([{ table: "orgs", columns: ["billing_email"] }]);
+    expect(ex.unowned).toEqual([{ table: "orgs", columns: ["billing_email"], why: "no column of it references auth.users" }]);
+  });
+
+  it("names tables whose rows the run cannot match by id as not measured", () => {
+    expect(exposureScope([LOGS, PINS], ["logs", "pins"]).unowned).toEqual([
+      { table: "logs", columns: ["email"], why: "its id comes from a sequence the run does not read back" },
+      { table: "pins", columns: ["email"], why: "it has no id column to match its rows by" },
+    ]);
   });
 
   it("passes types and sibling names to the matcher, and never counts a user key as personal", () => {
-    // allergy is a flag here, not data; lat counts beside lng; patient_id names whose row it is.
+    // allergy is a flag here, not data; lat counts beside lng; patient_id, a second key to a user, names whose row it is.
     const ex = exposureScope([VISITS], ["visits"]);
-    expect(ex.tables.map((t) => [t.table, t.owners, [...t.columns.keys()]])).toEqual([["visits", ["patient_id"], ["lat", "lng"]]]);
+    expect(ex.tables.map((t) => [t.table, t.owners, [...t.columns.keys()]])).toEqual([["visits", ["doctor_id", "patient_id"], ["lat", "lng"]]]);
   });
 
   it("leaves out tables the run does not sync", () => {
@@ -66,6 +76,8 @@ describe("noteExposure", () => {
     ins("members", { id: "m7", user_id: "b" }),
     ins("notes", { id: "n1", owner_id: "c" }),
     ins("notes", { id: "n2", owner_id: "a" }),
+    // A row of a table outside the scope, as the run passes every table's.
+    ins("lists", { id: "l1", owner_id: "b" }),
   ];
 
   it("counts the likely personal values a device holds of other run users' rows, by stream", () => {
@@ -89,6 +101,7 @@ describe("noteExposure", () => {
       ["b", [row("notes", { id: "n2", owner_id: "a", chief_complaint: "headache" }, "notes")]],
     ]);
     noteExposure(run, ex, inserted, devices);
+    expect(ex.unmatched).toEqual(new Set());
     expect([...ex.held.values()].map((h) => [h.reader, h.table, h.stream, [...h.columns], [...h.owners], [...h.rows]])).toEqual([
       ["u0", "members", "org_members", ["email", "full_name"], ["b", "c"], ["m1", "m2"]],
       ["u1", "notes", "notes", ["chief_complaint"], ["a"], ["n2"]],
@@ -96,25 +109,39 @@ describe("noteExposure", () => {
     expect(ex.datasets).toBe(1);
   });
 
-  it("leaves a row to each of its users, and reads a table keyed by its user", () => {
+  it("counts a row against each of its users but the reader, and reads a table keyed by its user", () => {
     const ex = scoped();
     noteExposure(
       run,
       ex,
       [ins("messages", { id: "x1", sender_id: "a", recipient_id: "b" })],
       new Map([
-        // A message is both its sender's and its recipient's row: each holds it as their own.
+        // A message is its sender's and its recipient's: each holds the other's share of it.
         ["b", [row("messages", { id: "x1", recipient_phone: "555" }, "inbox")]],
         ["a", [row("messages", { id: "x1", recipient_phone: "555" }, "outbox")]],
         // A third user holding it holds both users' row.
         ["c", [row("messages", { id: "x1", recipient_phone: "555" }, "everyone")]],
       ]),
     );
-    expect([...ex.held.values()].map((h) => [h.reader, h.table, [...h.owners]])).toEqual([["u2", "messages", ["a", "b"]]]);
+    expect([...ex.held.values()].map((h) => [h.reader, h.table, [...h.owners]])).toEqual([
+      ["u0", "messages", ["b"]],
+      ["u1", "messages", ["a"]],
+      ["u2", "messages", ["a", "b"]],
+    ]);
     // A profile keyed by its user is that user's row.
     const other = scoped();
     noteExposure(run, other, [ins("profiles", { id: "c" })], new Map([["a", [row("profiles", { id: "c", phone: "777" }, "everyone")]]]));
     expect([...other.held.values()].map((h) => [h.reader, h.table, [...h.owners]])).toEqual([["u0", "profiles", ["c"]]]);
+  });
+
+  it("names a table some of whose rows took their id from the database", () => {
+    const ex = scoped();
+    noteExposure(run, ex, [ins("members", { user_id: "b" })], new Map([["a", [row("members", { id: "m9", user_id: "b", email: "b@x" })]]]));
+    expect(ex.held.size).toBe(0);
+    expect(exposureFindings(ex).map((f) => f.detail)).toEqual([
+      "no likely personal column of one run user's rows reached another run user's device",
+      "members: some run rows took their id from the database, so those were not matched and are not counted here",
+    ]);
   });
 
   it("keeps each stream that sent a row apart, and counts a row kept for every dataset once", () => {
@@ -160,13 +187,13 @@ describe("exposureFindings", () => {
       [own("m1", "id0"), ins("notes", { id: "n1", owner_id: "id0" })],
       new Map([
         ["id10", [row("members", { id: "m1", user_id: "id0", email: "e@x", full_name: "F" }, "org", ["id", "email"])]],
-        ["id2", [row("notes", { id: "n1", chief_complaint: "x" }, "notes"), row("members", { id: "m1", email: "e@x" }, "b-stream"), row("members", { id: "m1", email: "e@x" }, "a-stream")]],
+        ["id2", [row("notes", { id: "n1", chief_complaint: "x" }, "0-notes"), row("members", { id: "m1", email: "e@x" }, "b-stream"), row("members", { id: "m1", email: "e@x" }, "a-stream")]],
       ]),
     );
     expect(exposureFindings(ex).map((f) => f.detail)).toEqual([
       "u2's device held email [contact] of 1 other run user's members rows, sent by stream a-stream (1 row over 1 dataset)",
       "u2's device held email [contact] of 1 other run user's members rows, sent by stream b-stream (1 row over 1 dataset)",
-      "u2's device held chief_complaint [health, marked in its comment] of 1 other run user's notes rows, sent by stream notes (1 row over 1 dataset)",
+      "u2's device held chief_complaint [health, marked in its comment] of 1 other run user's notes rows, sent by stream 0-notes (1 row over 1 dataset)",
       "u10's device held email [contact] of 1 other run user's members rows, sent by stream org (1 row over 1 dataset)",
     ]);
   });
@@ -178,7 +205,7 @@ describe("exposureFindings", () => {
     // No dataset passed: claim nothing.
     expect(exposureFindings(exposureScope([MEMBERS], ["members"])).map((f) => f.detail)).toEqual(["no dataset passed before the run stopped, so nothing was measured"]);
     expect(exposureFindings(exposureScope([ORGS], ["orgs"])).map((f) => f.detail)).toEqual([
-      "no synced table with a likely personal column has a column for its user, so none was measured",
+      "no synced table with a likely personal column could be measured",
       "orgs: billing_email likely personal, but no column of it references auth.users, so whose rows reach whom is not read here",
     ]);
     expect(exposureFindings(exposureScope([LISTS], ["lists"])).map((f) => f.detail)).toEqual(["no synced table has a column that looks personal, by its name or a comment marker"]);
