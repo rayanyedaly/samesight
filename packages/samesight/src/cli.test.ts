@@ -253,7 +253,7 @@ describe("samesight agent hook", () => {
     expect([accepted.code, JSON.parse(accepted.stdout).hookSpecificOutput.additionalContext]).toEqual([0, expect.stringMatching(/^samesight lint: no findings in sync-config\.yaml\./)]);
   });
 
-  it("takes only init or hook, and refuses options it does not use", { timeout: 30_000 }, async () => {
+  it("takes only init or hook, and notes options the hook does not take", { timeout: 30_000 }, async () => {
     const none = await cli(["agent"]);
     expect([none.code, none.stderr]).toEqual([2, expect.stringMatching(/^samesight: agent takes init or hook: samesight agent init \[file \.\.\.\] .*, or samesight agent hook \[file \.\.\.\] /)]);
     expect((await cli(["agent", "frob"])).stderr).toMatch(/^samesight: agent takes init or hook, not "frob": /);
@@ -263,6 +263,8 @@ describe("samesight agent hook", () => {
       expect([r.code, r.stdout], args.join(" ")).toEqual([0, ""]);
       expect(r.stderr, args.join(" ")).toMatch(/^samesight agent hook: (it does not take --\w+|--migrations and --allow each take a value); nothing checked\./);
     }
+    const help = await cli(["agent", "hook", "--help"]);
+    expect([help.code, help.stdout]).toEqual([0, expect.stringMatching(/^Usage: samesight agent hook \[file \.\.\.\] /)]);
     const late = await cli(["--allow", "rls-off", "agent", "hook"]);
     expect([late.code, late.stderr]).toEqual([2, expect.stringMatching(/^samesight: agent hook must come first, before any flag: /)]);
   });

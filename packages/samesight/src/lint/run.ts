@@ -89,7 +89,7 @@ export function migrationsIn(given: string | undefined, cwd: string): { dir: str
         ? `no migrations directory at ${dir}; check the path given to --migrations`
         : code === "ENOTDIR"
           ? `${dir} is not a directory; ${given ? "--migrations takes the directory that holds the .sql files" : "make it the directory of .sql migrations, or pass --migrations <dir>"}`
-          : `cannot read the migrations in ${dir}: ${(e as Error).message}; fix it, or pass --migrations with another directory`,
+          : `cannot read the migrations in ${dir}: ${(e as Error).message.split(resolve(cwd, dir)).join(dir)}; fix it, or pass --migrations with another directory`,
     );
   }
 }

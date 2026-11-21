@@ -9,7 +9,7 @@
  */
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { type LintFinding, sortFindings } from "../lint/finding.ts";
 import { findSyncConfig, MIGRATIONS_DIR, RULE_NAMES } from "../lint/lint.ts";
@@ -77,9 +77,9 @@ function answer(input: string, options: HookOptions, env: HookEnv): HookResult {
     const r = relative(base, p);
     return r !== "" && r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r);
   };
-  // In the project by name, and still once symlinks are followed: a link out is not read.
-  // In the project once symlinks are followed (the project's own folder may be a link); by name when not there yet.
-  const inside = (p: string) => (existsSync(p) ? under(real(root), real(p)) : under(root, p));
+  // In the project once symlinks are followed (the project's own folder may be a link): an
+  // edited file a link takes out of it is not read. A file no longer there (deleted) by its folder.
+  const inside = (p: string) => (existsSync(p) ? under(real(root), real(p)) : under(root, p) || under(real(root), join(real(dirname(p)), basename(p))));
 
   const named = options.given.length ? options.given : [findSyncConfig(root)].filter((f): f is string => f !== undefined);
   const configs = named.map((f) => resolve(root, f));
@@ -114,20 +114,20 @@ function answer(input: string, options: HookOptions, env: HookEnv): HookResult {
   try {
     run = runLint({ given: files, migrationsDir: options.migrationsDir, allow: options.allow, cwd: root });
   } catch (e) {
-    return context([`samesight lint could not run: ${(e as Error).message}`, ...stale]);
+    return context([`samesight lint could not run: ${oneLine((e as Error).message)}`, ...stale]);
   }
   const notes = [...(run.rlsChecked ? [] : [`No migrations were read (none in ${options.migrationsDir ?? MIGRATIONS_DIR}), so the RLS rules (rls-off, rls-open) did not run.`]), ...stale];
   const errors = run.kept.filter((f) => f.level === "error");
   if (!errors.length && !run.unreadable.length) {
-    if (!run.kept.length) return context([`samesight lint: no findings in ${run.files.join(", ")}. Lint reads files only; a clean lint does not show that no rows leak (samesight audit tests that on the local stack).`, ...notes]);
-    return context([`samesight lint found ${count(run.kept.length, "finding")} in ${run.files.join(", ")}, none of them an error. Decide each with the user; they do not block.`, ...entries(sortFindings(run.kept))], notes);
+    if (!run.kept.length) return context([`samesight lint: no findings in ${run.files.map(oneLine).join(", ")}. Lint reads files only; a clean lint does not show that no rows leak (samesight audit tests that on the local stack).`, ...notes]);
+    return context([`samesight lint found ${count(run.kept.length, "finding")} in ${run.files.map(oneLine).join(", ")}, none of them an error. Decide each with the user; none is an error.`, ...entries(sortFindings(run.kept))], notes);
   }
   const rest = run.kept.filter((f) => f.level !== "error");
   const text = [
     `samesight lint found ${[errors.length ? count(errors.length, "error") : "", run.unreadable.length ? `${count(run.unreadable.length, "sync config")} it cannot read` : ""].filter(Boolean).join(" and ")} after this edit:`,
     ...entries(sortFindings(errors)),
     ...run.unreadable.map((u) => `${oneLine(u.file)}: cannot be read as a sync config: ${oneLine(u.error.split("\n")[0] ?? "")}`),
-    ...(rest.length ? ["Not blocking (decide these with the user):", ...entries(sortFindings(rest))] : []),
+    ...(rest.length ? ["Not errors (decide these with the user):", ...entries(sortFindings(rest))] : []),
   ];
   // What to do comes last, and is kept however much is cut.
   return { code: 2, stdout: "", stderr: `${cap(text, [...notes, "Fix the errors above before going on. If a finding is intended, ask the user before accepting it with --allow."])}\n` };
@@ -168,7 +168,7 @@ function cap(text: string[], tail: string[] = []): string {
   let size = 0;
   for (const [i, entry] of text.entries()) {
     if (size + entry.length + 1 > room) {
-      out.push(`and ${text.length - i} more: run samesight lint --format json to see them all`);
+      out.push("and more not shown here: run samesight lint --format json to see them all");
       break;
     }
     out.push(entry);

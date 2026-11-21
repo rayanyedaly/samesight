@@ -68,11 +68,11 @@ Options:
                     supabase/config.toml, else 54322)
   --table <name>    explain: one table only
   --migrations <dir>
-                    lint, exposure and agent hook: the SQL migrations to read tables, keys,
-                    column comments and (lint) RLS from (default: supabase/migrations)
+                    lint, exposure and agent init/hook: the SQL migrations to read tables,
+                    keys, column comments and (lint) RLS from (default: supabase/migrations)
   --allow <rule>[:<name>]
-                    lint and agent hook: accept a rule's findings, all of them or those about
-                    one stream, bucket, table or policy; repeatable
+                    lint and agent init/hook: accept a rule's findings, all of them or those
+                    about one stream, bucket, table or policy; repeatable
   --format <text|json|sarif|github>
                     lint: text (default), one JSON object, one SARIF 2.1.0 log, or GitHub
                     Actions annotations, on stdout; notes on stderr; exposure: text
@@ -366,6 +366,10 @@ async function agent(args: string[], values: ReturnType<typeof flags>["values"])
  */
 async function agentHookLine(argv: string[]): Promise<number> {
   const { positionals: given, values, tokens } = parseArgs({ args: argv, allowPositionals: true, strict: false, tokens: true, options: { migrations: { type: "string" }, allow: { type: "string", multiple: true } } });
+  if (tokens.some((t) => t.kind === "option" && (t.name === "help" || t.name === "h"))) {
+    process.stdout.write("Usage: samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]\nRun by an agent's post-edit hook, with the hook's JSON on stdin; samesight agent init installs it.\n");
+    return 0;
+  }
   const other = tokens.filter((t) => t.kind === "option" && t.name !== "migrations" && t.name !== "allow").map((t) => (t.kind === "option" ? t.rawName : ""));
   const migrations = values.migrations;
   const allow = values.allow ?? [];

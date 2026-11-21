@@ -66,7 +66,7 @@ describe("runLint", () => {
     writeFileSync(join(dir, "supabase", "migrations", "0001.sql"), `${migration}create policy "open" on public.lists for select using (true);\n`);
     const run = runLint({ given: ["sync-config.yaml", "gone.yaml"], allow: [], cwd: dir });
     const open = run.kept.find((f) => f.rule === "rls-open");
-    expect(open?.message).toMatch(/\(supabase\/migrations\/0001\.sql:3\)/);
+    expect(open?.message).toContain(`(${join("supabase", "migrations", "0001.sql")}:3)`);
     expect(JSON.stringify(run)).not.toContain(dir);
     expect(run.unreadable[0]?.error).toMatch(/'gone\.yaml'/);
   });
