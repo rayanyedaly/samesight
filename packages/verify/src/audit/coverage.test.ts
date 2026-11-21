@@ -259,6 +259,7 @@ describe("coverageTitle and qualifyDifferential", () => {
     expect(coverageTitle(cov([]), { findings: [ok], runs: 3, stopped: true })).toBe("Coverage of the 3 datasets run before the time limit");
     // Tables no dataset reached fail the run, but every dataset passed and was measured.
     expect(coverageTitle(cov([]), { findings: [{ ...ok, status: "fail" }], runs: 3 })).toMatch(/^Coverage \(per policy and per stream;/);
+    expect(coverageTitle({ ...cov([]), datasets: 1 }, { findings: [{ ...ok, status: "fail" }], runs: 2 })).toBe("Coverage of the 1 dataset run before the failure");
   });
 
   it("owns up on the Differential line to rules not tested both ways, and leaves it alone otherwise", () => {

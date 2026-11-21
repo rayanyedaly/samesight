@@ -783,7 +783,10 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   let datasets = x.datasets;
   for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {
     const left = options.timeLimitMs - (Date.now() - started);
-    if (left <= 0) break;
+    if (left <= 0) {
+      x = { ...x, stopped: true };
+      break;
+    }
     x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, seed: (seed + pass) % (MAX_SEED + 1) });
     datasets += x.datasets;
   }
@@ -818,7 +821,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
     };
   }
   if (x.crash !== undefined) return { ...fail(`${RUN_FAILED}${String(x.crash)}`, x.datasets, true), stopped: x.stopped };
-  if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit", incomplete: true }] };
+  if (x.datasets === 0) return { runs: 0, stopped: true, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit", incomplete: true }] };
   const untested = s.tables
     .filter((t) => s.synced.includes(t.name))
     .flatMap((t) =>
@@ -830,7 +833,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
             ? [`no device received any ${t.name} row (is PowerSync serving this sync config?)`]
             : [],
     );
-  if (untested.length) return fail(`${x.datasets} datasets left tables untested: ${untested.join("; ")}`, x.datasets);
+  if (untested.length) return { ...fail(`${x.datasets} datasets left tables untested${x.stopped ? " before the time limit" : ""}: ${untested.join("; ")}`, x.datasets), stopped: x.stopped };
   const unread = (s.asFound ?? []).filter((t) => !visible.get(t));
   const notes: Finding[] = unread.map((t) => ({
     status: "warn",

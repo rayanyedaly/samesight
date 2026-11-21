@@ -263,8 +263,12 @@ describe("exposureTitle", () => {
     expect(exposureTitle(ex, { findings: [fail], runs: 3 })).toBe("Exposure (columns that likely hold personal data, by name or comment marker, of other run users' rows)");
     ex.datasets = 1;
     expect(exposureTitle(ex, { findings: [fail], runs: 2 })).toBe("Exposure in the 1 dataset run before the failure");
-    // The time limit came before the first dataset.
+    // The time limit came before the first dataset; or the run broke down before it.
     ex.datasets = 0;
-    expect(exposureTitle(ex, { findings: [{ ...fail, incomplete: true }], runs: 0 })).toBe("Exposure in the 0 datasets run before the time limit");
+    expect(exposureTitle(ex, { findings: [{ ...fail, incomplete: true }], runs: 0, stopped: true })).toBe("Exposure in the 0 datasets run before the time limit");
+    expect(exposureTitle(ex, { findings: [{ ...fail, incomplete: true }], runs: 0 })).toBe("Exposure in the 0 datasets run before the failure");
+    // Tables left untested when the time limit stopped the run: cut short by the limit.
+    ex.datasets = 3;
+    expect(exposureTitle(ex, { findings: [fail], runs: 3, stopped: true })).toBe("Exposure in the 3 datasets run before the time limit");
   });
 });

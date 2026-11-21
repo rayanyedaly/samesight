@@ -484,19 +484,22 @@ export function untested(cov: Coverage): number {
 export type RunCut = { findings: Finding[]; runs: number; stopped?: boolean };
 
 /**
- * What cut the datasets a section measured short, as a title says it: a dataset that failed or
- * broke down (fewer measured than run), else the time limit, else nothing. A failure about the
- * run as a whole (tables no dataset reached) leaves every dataset measured.
+ * What cut the datasets a section measured short, as a title says it: a dataset that failed (fewer
+ * measured than run), the time limit before the first dataset, a run that broke down, else the
+ * time limit, else nothing. A failure about the run as a whole (tables no dataset reached) leaves
+ * every dataset measured.
  */
 export function cutShort(measured: number, result: RunCut): string {
-  if (measured < result.runs || (result.runs > 0 && result.findings.some((f) => f.incomplete))) return " before the failure";
-  return result.stopped || !result.runs ? " before the time limit" : "";
+  if (measured < result.runs) return " before the failure";
+  if (result.stopped && !result.runs) return " before the time limit";
+  if (!result.runs || result.findings.some((f) => f.incomplete)) return " before the failure";
+  return result.stopped ? " before the time limit" : "";
 }
 
 /** The section's title: what it covers, and how much when a failure or the time limit cut the run short. */
 export function coverageTitle(cov: Coverage, result: RunCut): string {
   const cut = cutShort(cov.datasets, result);
-  return cut ? `Coverage of the ${cov.datasets} datasets run${cut}` : "Coverage (per policy and per stream; OR branches and the queries of one stream are not told apart)";
+  return cut ? `Coverage of the ${cov.datasets} ${cov.datasets === 1 ? "dataset" : "datasets"} run${cut}` : "Coverage (per policy and per stream; OR branches and the queries of one stream are not told apart)";
 }
 
 /** The Differential's ok line, owning up to the rules it passed without testing both ways. */
