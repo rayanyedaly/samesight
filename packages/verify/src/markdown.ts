@@ -17,25 +17,30 @@ export interface MarkdownReport {
 
 const MARK = { ok: "ok", warn: "**warn**", fail: "**FAIL**" } as const;
 
-/** Text with every character Markdown could read as markup escaped, on one line. */
+/** Text with every character Markdown could read as markup escaped, on one line: a lone carriage return ends a Markdown line too. */
 export function inline(s: string): string {
   return s
-    .replace(/\s*\n\s*/g, " ")
+    .replace(/\s*[\r\n]\s*/g, " ")
     .replace(/[\\`*_[\]<>|~&#]/g, "\\$&");
 }
 
 /** A code span for a table cell: a backtick run longer than any inside, and `|` escaped as GFM tables need. */
 export function code(s: string): string {
-  const text = s.replace(/\s*\n\s*/g, " ");
+  const text = s.replace(/\s*[\r\n]\s*/g, " ");
   const ticks = "`".repeat(Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length)) + 1);
   const pad = /^[` ]|[` ]$/.test(text) ? " " : "";
   return `${ticks}${pad}${text}${pad}${ticks}`.replace(/\|/g, "\\|");
 }
 
+/** Text's lines. A lone carriage return (in a quoted name) would end a Markdown line: it stays on its line, as a space. */
+function lines(text: string): string[] {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, " ").split("\n");
+}
+
 /** A fenced block that no line of `text` can close early. */
 export function fence(text: string, lang = ""): string[] {
   const ticks = "`".repeat(Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length)) + 1);
-  return [`${ticks}${lang}`, ...text.split("\n"), ticks];
+  return [`${ticks}${lang}`, ...text.split(/\r\n?|\n/), ticks];
 }
 
 /** Lines without the indent they all share. */
@@ -85,9 +90,9 @@ export function toMarkdown(r: MarkdownReport): string {
     if (!s.findings.length) out.push("Nothing to report.");
     let listOpen = false;
     for (const f of s.findings) {
-      const [head = "", ...rest] = f.detail.split("\n");
+      const [head = "", ...rest] = lines(f.detail);
       // The row blocks below say what the detail's own lines for the rows say.
-      const shown = new Set((f.rows ?? []).flatMap((r) => formatRow(r)).map((l) => l.trim()));
+      const shown = new Set((f.rows ?? []).flatMap((r) => formatRow(r).flatMap(lines)).map((l) => l.trim()));
       const more = rest.filter((l) => l.trim() && !shown.has(l.trim()));
       if (!listOpen) {
         if (out.at(-1) !== "") out.push("");

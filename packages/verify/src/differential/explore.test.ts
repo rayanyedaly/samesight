@@ -2,7 +2,8 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Problem } from "./compare.ts";
 import type { TableModel } from "./model.ts";
-import { auditRefusals, explore, splitProblems, type UserProblems } from "./run.ts";
+import { coverageTitle } from "../audit/coverage.ts";
+import { auditRefusals, differential, explore, type Run, splitProblems, type UserProblems } from "./run.ts";
 import type { Member } from "./world.ts";
 
 describe("explore", () => {
@@ -68,6 +69,13 @@ describe("explore", () => {
     const x = await explore(fc.integer(), async () => true, { runs: 5, seed: 1, timeLimitMs: -1 });
     expect(x.datasets).toBe(0);
     expect(x.stopped).toBe(true);
+  });
+
+  it("says a differential with no dataset before the limit stopped at the time limit", async () => {
+    const result = await differential({ tables: [], synced: [], fixed: { users: [] } } as unknown as Run, { runs: 1, seed: 1, timeLimitMs: -1 });
+    expect(result).toMatchObject({ runs: 0, stopped: true });
+    expect(result.findings[0]?.detail).toBe("no dataset was tested before the time limit");
+    expect(coverageTitle({ policies: [], units: [], inserted: new Map(), datasets: 0, triggers: [], notes: [] }, result)).toBe("Coverage of the 0 datasets run before the time limit");
   });
 });
 

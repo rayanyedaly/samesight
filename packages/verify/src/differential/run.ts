@@ -639,7 +639,7 @@ export interface DifferentialResult {
   runs: number;
   /** The shrunk failing world's problems, as row reports. */
   counterexample?: RowReport[];
-  /** The time limit ended the run before every dataset. */
+  /** The time limit ended the run before every dataset asked for, or a failure's shrinking, or the extra passes for a table still untested. */
   stopped?: boolean;
 }
 
@@ -764,7 +764,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
       const devices = await syncAll(s);
       const passed = failing(await compareAll(s, { devices, tally: visible, received })).length === 0;
       if (passed && !failedOnce && options.coverage) await measure(s, options.coverage, rowsIn, devices, (s.fixedRows ?? []).filter((r) => s.synced.includes(r.table)));
-      if (passed && !failedOnce && options.exposure) noteExposure(s, options.exposure, [...rowsIn, ...(s.fixedRows ?? [])], devices);
+      if (passed && !failedOnce && options.exposure) noteExposure(s, options.exposure, rowsIn, devices);
       return passed;
     });
     failedOnce ||= !ok;
@@ -781,13 +781,22 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const seed = options.seed ?? Math.floor(Math.random() * (MAX_SEED + 1));
   let x = await explore(worldArbitrary(s.tables), evaluate, { ...options, seed });
   let datasets = x.datasets;
+  // Whether the time limit cut the datasets asked for: only the first pass runs those.
+  const stopped = x.stopped;
+  // The time limit ended the extra passes, before one or during it: every dataset asked for ran,
+  // but what they were for (a table, a rule seen one way) stays untested.
+  let outOfTime = false;
   for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {
     const left = options.timeLimitMs - (Date.now() - started);
-    if (left <= 0) break;
+    if (left <= 0) {
+      outOfTime = true;
+      break;
+    }
     x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, seed: (seed + pass) % (MAX_SEED + 1) });
     datasets += x.datasets;
+    outOfTime ||= x.stopped;
   }
-  x = { ...x, datasets };
+  x = { ...x, datasets, stopped: stopped || (x.stopped && (x.lastFailing !== undefined || x.crash !== undefined)) };
   // A run that failed after the counterexample was found: said on its own, as incomplete.
   const crashed: Finding[] = x.crash === undefined ? [] : [{ status: "fail", check, detail: `then ${RUN_FAILED}${String(x.crash)}`, incomplete: true }];
   if (x.lastFailing) {
@@ -818,7 +827,7 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
     };
   }
   if (x.crash !== undefined) return { ...fail(`${RUN_FAILED}${String(x.crash)}`, x.datasets, true), stopped: x.stopped };
-  if (x.datasets === 0) return { runs: 0, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit", incomplete: true }] };
+  if (x.datasets === 0) return { runs: 0, stopped: true, findings: [{ status: "fail", check, detail: "no dataset was tested before the time limit", incomplete: true }] };
   const untested = s.tables
     .filter((t) => s.synced.includes(t.name))
     .flatMap((t) =>
@@ -830,7 +839,8 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
             ? [`no device received any ${t.name} row (is PowerSync serving this sync config?)`]
             : [],
     );
-  if (untested.length) return fail(`${x.datasets} datasets left tables untested: ${untested.join("; ")}`, x.datasets);
+  const timeUp = x.stopped || outOfTime;
+  if (untested.length) return { ...fail(`${x.datasets} ${x.datasets === 1 ? "dataset" : "datasets"} left tables untested${timeUp ? " before the time limit" : ""}: ${untested.join("; ")}`, x.datasets), stopped: timeUp };
   const unread = (s.asFound ?? []).filter((t) => !visible.get(t));
   const notes: Finding[] = unread.map((t) => ({
     status: "warn",
