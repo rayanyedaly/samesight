@@ -20,6 +20,8 @@ npx samesight audit --project . --sync-config sync-config.yaml
 
 [How sync configs leak](https://rayanyedaly.github.io/samesight/how-sync-configs-leak) walks through the patterns, and [CI and the GitHub Action](https://rayanyedaly.github.io/samesight/ci) runs both on pull requests.
 
+When a coding agent edits the sync config or the migrations, `npx samesight agent init` makes it run lint after each edit and fix what it finds, and installs a skill that teaches it each rule's fix, for Claude Code, Codex and Cursor. See [coding agents](https://rayanyedaly.github.io/samesight/agents).
+
 ## One policy for both sides
 
 Write who can see what once, in TypeScript, and generate both the Postgres row level security and the PowerSync sync streams from it, so the rows a device receives are always the rows RLS would return.

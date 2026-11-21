@@ -167,6 +167,17 @@ samesight exposure [file ...] [--migrations <dir>] [--format text|json]
 
 Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. See [the exposure map](exposure.md) for an example, how to read it, and how columns are matched.
 
+### `agent`
+
+```text
+samesight agent init [file ...] [--migrations <dir>] [--allow <rule>[:<name>]] [--agents claude,codex,cursor] [--print]
+samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]
+```
+
+`agent init` installs the samesight skill for coding agents (in `.claude/skills`, `.agents/skills` and `.cursor/skills`) and the post-edit hook (in `.claude/settings.json` and `.codex/hooks.json`). It only adds and never removes; `--agents` picks among `claude`, `codex` and `cursor` (default: all three), `--print` says what it would write and writes nothing, and the sync configs, `--migrations` and `--allow` given are passed to the hook. It exits 2 when a settings file cannot be read or a path leads out of the project through a symlink, and 0 otherwise.
+
+`agent hook` is the hook: it reads the hook's JSON on stdin and, when the edit touched a sync config or a migration, lints the sync configs. It exits 2 with the findings on stderr when one is an error or a sync config cannot be read, and 0 otherwise, with warnings, notes or a clean result as `additionalContext` on stdout. See [coding agents](agents.md).
+
 ### `audit`
 
 ```console
