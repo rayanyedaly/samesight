@@ -14,13 +14,13 @@ PowerSync replicates past row level security (RLS). The sync config alone decide
 
 `samesight lint` compares the sync config with the RLS in the project's migrations. It flags rows that reach users RLS would refuse, personal columns sent to users other than the row's owner, and synced tables whose RLS is off or open to everyone.
 
-Lint reads files only. It needs no database, no network and no PowerSync service, and it takes about 0.2 seconds. Run it as often as you like.
+Lint reads files only. It needs no database, no network and no PowerSync service, and it takes well under a second. Run it as often as you like.
 
 ## When to run lint
 
 Run lint after every edit to:
 
-- a sync config: `sync-config.yaml`, `sync-rules.yaml`, or a file under `powersync/`;
+- a sync config: `sync-config.yaml`, `sync-rules.yaml`, or one under `powersync/` (not PowerSync's `service.yaml`);
 - a Supabase migration (`supabase/migrations/*.sql`) that creates, alters or drops a table, an RLS policy or a grant.
 
 Run it even when no hook output arrived after your edit. A hook may not be installed, or may not have matched the file.
@@ -115,3 +115,5 @@ prints, for each table the sync config sends, who receives its rows and which co
 
 - Every option of lint: https://rayanyedaly.github.io/samesight/cli#lint
 - The rule pages, with what each rule catches and what audit does with it: https://rayanyedaly.github.io/samesight/rules/
+
+samesight and this skill are under the MIT license, copyright (c) 2026 Rayan Yedaly: https://github.com/rayanyedaly/samesight/blob/main/LICENSE

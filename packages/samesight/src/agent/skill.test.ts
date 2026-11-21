@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { RULE_NAMES } from "../lint/lint.ts";
+import { SKILL_DIR as SHIPPED, skillFiles } from "./skill.ts";
 
 const SKILL_DIR = fileURLToPath(new URL("../../skills/samesight/", import.meta.url));
 const REFERENCES = join(SKILL_DIR, "references");
@@ -21,6 +22,10 @@ function linkTargets(text: string): string[] {
 }
 
 describe("the samesight skill", () => {
+  it("is where agent init and the hook look for it, with every file", () => {
+    expect(skillFiles(SHIPPED)).toEqual(["SKILL.md", ...references.map((f) => `references/${f}`)]);
+  });
+
   const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(skill);
 
   it("has frontmatter with only a name, a description and a license", () => {

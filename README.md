@@ -41,7 +41,7 @@ npx samesight exposure sync-config.yaml --migrations supabase/migrations
 
 The [`personal-columns`](docs/rules/personal-columns.md) lint rule flags the same columns in CI. See [the exposure map](docs/exposure.md).
 
-When a coding agent writes the sync config or the migrations, it can run lint after each edit and fix what it finds: `npx samesight agent init` installs the hook and a skill for Claude Code, Codex and Cursor. See [coding agents](docs/agents.md).
+When a coding agent writes the sync config or the migrations, lint can run after each of its edits and hand it what it found: `npx samesight agent init` installs the hook (for Claude Code, and Codex and Cursor as the page says) and a skill that teaches each rule's fix. See [coding agents](docs/agents.md).
 
 ## Lint and audit in CI
 
