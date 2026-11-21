@@ -639,7 +639,7 @@ export interface DifferentialResult {
   runs: number;
   /** The shrunk failing world's problems, as row reports. */
   counterexample?: RowReport[];
-  /** The time limit ended the run before every dataset. */
+  /** The time limit ended the run before every dataset asked for, or a failure's shrinking, or the extra passes for a table still untested. */
   stopped?: boolean;
 }
 

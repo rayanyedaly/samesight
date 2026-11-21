@@ -5,7 +5,7 @@
  *
  * Informational: whether a user may have a row at all is the comparison's question; this
  * says which of its columns came with it. A row belongs to the run users its columns for a
- * user hold (each key to auth.users, as the run inserted it), so a stream that leaves those
+ * user hold (each single-column key to auth.users' id, as the run inserted it), so a stream that leaves those
  * columns out still counts. A row the reader is one of the users of (a doctor's visit with a
  * patient) is counted apart, as shared: its values may be the reader's own. Ownership through
  * a parent row is not read, and neither are rows the run did not insert. Datasets that pass
@@ -50,7 +50,7 @@ export interface Exposure {
   tables: ExposedTable[];
   /** Synced tables with likely personal columns whose rows the run cannot tie to a user: not measured, and why. */
   unowned: { table: string; columns: string[]; why: string }[];
-  /** Synced tables whose only likely personal columns are their keys to auth.users, which name whose a row is. */
+  /** Synced tables whose only likely personal columns are their keys to auth.users' id, which name whose a row is. */
   keysOnly: string[];
   datasets: number;
   held: Map<string, Held>;
@@ -169,7 +169,7 @@ export function exposureFindings(ex: Exposure): Finding[] {
         ? `${partial ? "in the rows it could match, " : ""}no likely personal column of one run user's rows reached another run user's device`
         : ex.unowned.length
           ? "no synced table with a likely personal column could be measured"
-          : `no synced table has a column that looks personal, by its name or a comment marker${ex.keysOnly.length ? `, apart from keys to auth.users, which say whose a row is (${ex.keysOnly.join(", ")})` : ""}`,
+          : `no synced table has a column that looks personal, by its name or a comment marker${ex.keysOnly.length ? `, apart from keys to auth.users' id, which say whose a row is (${ex.keysOnly.join(", ")})` : ""}`,
     });
   }
   for (const table of [...ex.unmatched].sort()) {

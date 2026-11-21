@@ -252,7 +252,7 @@ describe("exposureFindings", () => {
     const CHARTS = table("charts", [column("doctor_id", "uuid"), column("patient_id", "uuid")], "doctor_id", "patient_id");
     const ex = exposureScope([CHARTS, LISTS], ["charts", "lists"]);
     expect(ex.keysOnly).toEqual(["charts"]);
-    expect(exposureFindings(ex).map((f) => f.detail)).toEqual(["no synced table has a column that looks personal, by its name or a comment marker, apart from keys to auth.users, which say whose a row is (charts)"]);
+    expect(exposureFindings(ex).map((f) => f.detail)).toEqual(["no synced table has a column that looks personal, by its name or a comment marker, apart from keys to auth.users' id, which say whose a row is (charts)"]);
   });
 });
 
