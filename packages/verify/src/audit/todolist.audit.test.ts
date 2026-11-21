@@ -14,6 +14,7 @@ import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectLocal, rolledBack } from "../db.ts";
 import { compareAll, differential, PREFIX, type Run, setUpUsers, tearDown, withWorld } from "../differential/run.ts";
+import { readModel } from "../differential/model.ts";
 import { sendingQueries } from "../differential/attribute.ts";
 import { likelyFixes } from "../differential/fix.ts";
 import { policyVerdicts } from "../differential/policies.ts";
@@ -24,6 +25,7 @@ import { readStack } from "../stack.ts";
 import { checkAuditCatalog } from "./catalog.ts";
 import { claimFindings, planClaims, policyFunctions, policyRules } from "./claims.ts";
 import { coverageScope, stateOf } from "./coverage.ts";
+import { exposureFindings, exposureScope } from "./exposure.ts";
 import { executeAdvice, planHook } from "./hook.ts";
 import { auditTables, cleanupScope } from "./run.ts";
 import { checkWriteEscape } from "./writes.ts";
@@ -92,6 +94,18 @@ describe("the audit catalog on the demo", () => {
     expect(findings).toContainEqual(expect.objectContaining({ status: "fail", check: "row level security", detail: expect.stringMatching(/off on todos/) }));
     expect(findings).toContainEqual(expect.objectContaining({ status: "fail", check: "publication", detail: expect.stringMatching(/does not publish todos/) }));
     expect(findings).toContainEqual(expect.objectContaining({ status: "warn", check: "anon", detail: expect.stringMatching(/"anyone" on lists/) }));
+  });
+});
+
+describe("the model of the demo's tables", () => {
+  it("reads a column's comment, and none where it has none", async () => {
+    const model = await rolledBack(client, async () => {
+      await client.query("comment on column public.todos.description is 'What the task says. samesight:personal=free-text'");
+      return readModel(client, [{ name: "todos" }]);
+    });
+    const columns = model[0]?.columns ?? [];
+    expect(columns.find((c) => c.name === "description")?.comment).toBe("What the task says. samesight:personal=free-text");
+    expect(columns.find((c) => c.name === "id")).not.toHaveProperty("comment");
   });
 });
 
@@ -414,6 +428,42 @@ describe("the write path on the demo", () => {
     // The new row must pass the SELECT policy too, since the WHERE reads the table.
     expect(refused).toBe("42501");
   });
+});
+
+describe("exposure on the demo", () => {
+  it("reads a comment marker on a synced column, and finds no run user's list on another's device", async () => {
+    // Set for the run, outside any transaction the run's own steps open, and cleared after.
+    await client.query("comment on column public.lists.name is 'samesight:personal=free-text'");
+    try {
+      const ex = exposureScope(await readModel(client, SYNCED.map((name) => ({ name }))), SYNCED);
+      expect(ex.tables.map((t) => [t.table, t.owners, [...t.columns.keys()]])).toEqual([["lists", ["owner_id"], ["name"]]]);
+      const r = await differential(s, { runs: 2, seed: 3, timeLimitMs: 120_000, exposure: ex });
+      expect(r.findings.filter((f) => f.status === "fail")).toEqual([]);
+      expect(ex.datasets).toBeGreaterThanOrEqual(2);
+      expect(exposureFindings(ex)).toEqual([{ status: "ok", check: "exposure", detail: "no likely personal column of one run user's rows reached another run user's device" }]);
+    } finally {
+      await client.query("comment on column public.lists.name is null");
+    }
+  }, 300_000);
+  it("counts a to-do another run user created in the reader's own list, as the run's devices hold it", async () => {
+    // A to-do belongs to its creator and its completer (keys to auth.users), so in someone
+    // else's list it is their row on the list owner's device.
+    await client.query("comment on column public.todos.description is 'samesight:personal=free-text'");
+    try {
+      const ex = exposureScope(await readModel(client, SYNCED.map((name) => ({ name }))), SYNCED);
+      expect(ex.tables.map((t) => [t.table, [...t.owners].sort(), [...t.columns.keys()]])).toEqual([["todos", ["completed_by", "created_by"], ["description"]]]);
+      const r = await differential(s, { runs: 3, seed: 5, timeLimitMs: 120_000, exposure: ex });
+      expect(r.findings.filter((f) => f.status === "fail")).toEqual([]);
+      const held = [...ex.held.values()];
+      expect(held.length).toBeGreaterThan(0);
+      for (const h of held) expect([h.table, h.stream, [...h.columns]]).toEqual(["todos", "user_data", ["description"]]);
+      for (const f of exposureFindings(ex)) {
+        expect(f.detail).toMatch(/^u\d's device held description \[free text, marked in its comment\] of (\d other run users?'s? todos rows|todos rows u\d shares with \d other run users?), sent by stream user_data \(\d+ rows? over \d+ datasets?\)$/);
+      }
+    } finally {
+      await client.query("comment on column public.todos.description is null");
+    }
+  }, 300_000);
 });
 
 describe("coverage on the demo", () => {

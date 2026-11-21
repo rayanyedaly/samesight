@@ -26,7 +26,7 @@
 #   - run row ids (5a3e5a3e-xxxx-xxxx-xxxx-xxxxxxxxxxxx) are shortened to 5a3e5a3e-xxxx…;
 #   - in a finding with several row blocks, only the first is kept, and the others become
 #     one line naming how many were left out and their users; the replay line stays;
-#   - the Coverage and Write path sections become one line saying they were left out;
+#   - the Coverage, Exposure and Write path sections become one line saying they were left out;
 #   - every other line, the summary line included, is kept as printed.
 set -euo pipefail
 
@@ -54,9 +54,9 @@ trim() {
       skipping { next }
       # A section title: unindented, after a blank line.
       blank && /^[A-Z]/ && !/^(ok|warn|FAIL) / && !/^(PASSED|FAILED|INCOMPLETE)/ {
-        if ($0 ~ /^Coverage/ || $0 == "Write path") {
+        if ($0 ~ /^(Coverage|Exposure)/ || $0 == "Write path") {
           skipping = 1
-          if (!noted) emit("(Coverage and Write path sections left out of this capture)")
+          if (!noted) emit("(Coverage, Exposure and Write path sections left out of this capture)")
           noted = 1
           next
         }

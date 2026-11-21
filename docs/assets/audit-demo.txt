@@ -30,6 +30,6 @@ FAIL  differential: devices and RLS disagree (seed 1842, shrunk 6 times to 3 row
     (2 more row blocks, for u2 and u3, left out of this capture)
       replay     samesight-verify audit --project upstream --sync-config upstream/sync-config.planted.yaml --runs 3 --time-limit 60 --seed 1842
 
-(Coverage and Write path sections left out of this capture)
+(Coverage, Exposure and Write path sections left out of this capture)
 
 FAILED: 1 failing, 3 warnings (90s)

@@ -32,7 +32,7 @@ FAIL  differential: devices and RLS disagree (seed 1842, shrunk 6 times to 3 row
     (2 more row blocks, for u2 and u3, left out of this capture)
       replay     samesight-verify audit --project upstream --sync-config upstream/sync-config.planted.yaml --runs 3 --time-limit 60 --seed 1842
 
-(Coverage and Write path sections left out of this capture)
+(Coverage, Exposure and Write path sections left out of this capture)
 
 FAILED: 1 failing, 3 warnings (90s)</desc>
 <style>
@@ -74,6 +74,6 @@ text{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberatio
 <text x="20" y="653" xml:space="preserve"><tspan class="dim">    (2 more row blocks, for u2 and u3, left out of this capture)</tspan></text>
 <text x="20" y="672" xml:space="preserve">      <tspan class="dim">replay</tspan>     samesight-verify audit --project upstream --sync-config upstream/sync-config.planted.yaml \</text>
 <text x="20" y="691" xml:space="preserve">                 --runs 3 --time-limit 60 --seed 1842</text>
-<text x="20" y="729" xml:space="preserve"><tspan class="dim">(Coverage and Write path sections left out of this capture)</tspan></text>
+<text x="20" y="729" xml:space="preserve"><tspan class="dim">(Coverage, Exposure and Write path sections left out of this capture)</tspan></text>
 <text x="20" y="767" xml:space="preserve"><tspan class="red b">FAILED: 1 failing</tspan>, 3 warnings (90s)</text>
 </svg>
