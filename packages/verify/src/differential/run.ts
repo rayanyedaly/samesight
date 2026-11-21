@@ -781,7 +781,10 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const seed = options.seed ?? Math.floor(Math.random() * (MAX_SEED + 1));
   let x = await explore(worldArbitrary(s.tables), evaluate, { ...options, seed });
   let datasets = x.datasets;
-  // The time limit ended the extra passes: every dataset asked for ran, but a table they were for stays untested.
+  // Whether the time limit cut the datasets asked for: only the first pass runs those.
+  const stopped = x.stopped;
+  // The time limit ended the extra passes, before one or during it: every dataset asked for ran,
+  // but what they were for (a table, a rule seen one way) stays untested.
   let outOfTime = false;
   for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {
     const left = options.timeLimitMs - (Date.now() - started);
@@ -791,8 +794,9 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
     }
     x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, seed: (seed + pass) % (MAX_SEED + 1) });
     datasets += x.datasets;
+    outOfTime ||= x.stopped;
   }
-  x = { ...x, datasets };
+  x = { ...x, datasets, stopped: stopped || (x.stopped && (x.lastFailing !== undefined || x.crash !== undefined)) };
   // A run that failed after the counterexample was found: said on its own, as incomplete.
   const crashed: Finding[] = x.crash === undefined ? [] : [{ status: "fail", check, detail: `then ${RUN_FAILED}${String(x.crash)}`, incomplete: true }];
   if (x.lastFailing) {
