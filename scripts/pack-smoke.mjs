@@ -13,7 +13,7 @@
  * the scratch directory in place and prints its path.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -206,6 +206,35 @@ step("samesight lint catches a leak", () => {
     expectIn(e.stdout, "(unscoped-query)", "lint leak");
   } finally {
     rmSync(join(cli, "leaky.yaml"));
+  }
+});
+step("samesight agent init installs the skill and a hook command that blocks a leak", () => {
+  const leaky = "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM inspections\n";
+  writeFileSync(join(cli, "leaky.yaml"), leaky);
+  const made = [".claude", ".agents", ".cursor", ".codex"];
+  try {
+    expectIn(samesight("agent", "init", "leaky.yaml"), ".claude/settings.json: created, with the samesight hook", "agent init");
+    if (!existsSync(join(cli, ".agents/skills/samesight/references/unscoped-query.md"))) throw new Error("agent init: no skill in .agents/skills/samesight");
+    expectIn(samesight("agent", "init", "leaky.yaml"), ".codex/hooks.json: up to date", "agent init, again");
+    // The exact command the settings hold, through the platform's shell, as an agent runs it.
+    const settings = JSON.parse(readFileSync(join(cli, ".claude/settings.json"), "utf8"));
+    const command = settings.hooks.PostToolUse[0].hooks[0].command;
+    const payload = (file) => JSON.stringify({ session_id: "s", cwd: cli, hook_event_name: "PostToolUse", tool_name: "Edit", tool_input: { file_path: join(cli, file) } });
+    const hook = (file) => execSync(command, { cwd: cli, input: payload(file), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, CLAUDE_PROJECT_DIR: cli } });
+    const started = performance.now();
+    if (hook("README.md") !== "") throw new Error("the hook said something about an unrelated file");
+    const unrelatedMs = Math.round(performance.now() - started);
+    try {
+      hook("leaky.yaml");
+      throw new Error("the hook passed a leak");
+    } catch (e) {
+      if (e.status !== 2) throw e;
+      expectIn(e.stderr, "error  unscoped-query", "hook");
+    }
+    process.stdout.write(`(${unrelatedMs} ms for an unrelated edit) `);
+  } finally {
+    rmSync(join(cli, "leaky.yaml"));
+    for (const d of made) rmSync(join(cli, d), { recursive: true, force: true });
   }
 });
 step("samesight exposure maps who receives which columns", () => {

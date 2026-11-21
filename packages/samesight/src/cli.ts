@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * samesight init | generate | check | doctor | explain | lint | exposure | agent hook | audit
+ * samesight init | generate | check | doctor | explain | lint | exposure | agent init | agent hook | audit
  *
  * Runs on Node's built-in TypeScript support (type stripping), so a policy file is
  * imported as written. Paths in the policy's `output` are relative to the policy file.
@@ -13,6 +13,7 @@ import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
 import { exposureJson, formatExposure, type MappedConfig } from "./exposure/format.ts";
 import { agentHook } from "./agent/hook.ts";
+import { AGENTS, type Agent, agentInit } from "./agent/init.ts";
 import { exposureMap } from "./exposure/map.ts";
 import { forwardAudit } from "./forward.ts";
 import { outputPaths, plan } from "./generate.ts";
@@ -47,10 +48,14 @@ Commands:
   exposure [file ...]
              print who receives which columns of which tables, marking the ones whose
              name or comment looks personal; reads the files only (default: as lint)
+  agent init [file ...]
+             install the samesight skill for coding agents and the hook that lints after
+             each edit to a sync config or migration (.claude/, .agents/, .cursor/, .codex/);
+             only adds, never removes; --print shows what it would write
   agent hook [file ...]
-             the post-edit hook for coding agents (Claude Code, Codex): reads the hook's
-             JSON on stdin and, when the edit touched a sync config or a migration, lints
-             the sync configs; exit 2 with the findings on stderr when one is an error
+             the post-edit hook agent init installs: reads the hook's JSON on stdin and,
+             when the edit touched a sync config or a migration, lints the sync configs;
+             exit 2 with the findings on stderr when one is an error
   audit [options]
              run samesight-verify audit: the project's own RLS against its sync config, on
              the local stack; needs @samesight/verify, and takes its flags (audit --help)
@@ -70,6 +75,8 @@ Options:
                     lint: text (default), one JSON object, one SARIF 2.1.0 log, or GitHub
                     Actions annotations, on stdout; notes on stderr; exposure: text
                     (default) or one JSON object
+  --agents <list>   agent init: claude, codex, cursor, comma-separated (default: all three)
+  --print           agent init: say what it would write, and write nothing
   -v, --version     print the version
   -h, --help        print this help
 
@@ -326,13 +333,17 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
   return unreadable.length ? 2 : 0;
 }
 
-const AGENT_USAGE = "samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]";
+const AGENT_USAGE = "samesight agent init [file ...] [--migrations <dir>] [--allow <rule>[:<name>]] [--agents claude,codex,cursor] [--print], or samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]";
 
-/** `samesight agent hook`: the post-edit hook an agent runs, with its JSON on stdin. */
+/**
+ * `samesight agent init`: installs the skill and the post-edit hook. `samesight agent hook`:
+ * the post-edit hook an agent runs, with its JSON on stdin.
+ */
 async function agent(args: string[], values: ReturnType<typeof flags>["values"]): Promise<number> {
   const [sub, ...given] = args;
+  if (sub === "init") return agentInitCommand(given, values);
   if (sub !== "hook") {
-    console.error(`samesight: agent takes hook${sub ? `, not "${sub}"` : ""}: ${AGENT_USAGE}`);
+    console.error(`samesight: agent takes init or hook${sub ? `, not "${sub}"` : ""}: ${AGENT_USAGE}`);
     return 2;
   }
   // Accepting an option it does not use would look like it worked.
@@ -344,6 +355,29 @@ async function agent(args: string[], values: ReturnType<typeof flags>["values"])
   const result = agentHook(await readStdin(), { given, migrationsDir: values.migrations, allow: values.allow ?? [] }, { projectDir: process.env.CLAUDE_PROJECT_DIR, cwd: process.cwd(), win32: process.platform === "win32" });
   process.stdout.write(result.stdout);
   process.stderr.write(result.stderr);
+  return result.code;
+}
+
+function agentInitCommand(given: string[], values: ReturnType<typeof flags>["values"]): number {
+  const unused = (["policy", "db", "table", "format"] as const).find((o) => values[o] !== undefined);
+  if (unused) {
+    console.error(`samesight: agent init does not take --${unused}; it takes [file ...], --migrations, --allow, --agents and --print`);
+    return 2;
+  }
+  const agents = (values.agents ?? AGENTS.join(",")).split(",").map((a) => a.trim()).filter(Boolean);
+  const unknownAgent = agents.filter((a) => !(AGENTS as readonly string[]).includes(a));
+  if (unknownAgent.length || !agents.length) {
+    console.error(`samesight: --agents takes ${AGENTS.join(", ")}, comma-separated${unknownAgent.length ? `, not ${unknownAgent.join(", ")}` : ""}`);
+    return 2;
+  }
+  const allow = values.allow ?? [];
+  const unknown = unknownRules(allow);
+  if (unknown.length) {
+    console.error(`samesight: --allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
+    return 2;
+  }
+  const result = agentInit({ root: process.cwd(), agents: [...new Set(agents)] as Agent[], given, migrationsDir: values.migrations, allow, print: values.print ?? false });
+  for (const line of result.lines) console.log(line);
   return result.code;
 }
 

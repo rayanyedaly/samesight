@@ -253,10 +253,10 @@ describe("samesight agent hook", () => {
     expect([accepted.code, JSON.parse(accepted.stdout).hookSpecificOutput.additionalContext]).toEqual([0, expect.stringMatching(/^samesight lint: no findings in sync-config\.yaml\./)]);
   });
 
-  it("takes only hook, and refuses options it does not use", { timeout: 30_000 }, async () => {
+  it("takes only init or hook, and refuses options it does not use", { timeout: 30_000 }, async () => {
     const none = await cli(["agent"]);
-    expect([none.code, none.stderr]).toEqual([2, "samesight: agent takes hook: samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]\n"]);
-    expect((await cli(["agent", "frob"])).stderr).toMatch(/^samesight: agent takes hook, not "frob": /);
+    expect([none.code, none.stderr]).toEqual([2, expect.stringMatching(/^samesight: agent takes init or hook: samesight agent init \[file \.\.\.\] .*, or samesight agent hook \[file \.\.\.\] /)]);
+    expect((await cli(["agent", "frob"])).stderr).toMatch(/^samesight: agent takes init or hook, not "frob": /);
     const format = await cli(["agent", "hook", "--format", "json"]);
     expect([format.code, format.stderr]).toEqual([2, "samesight: agent hook does not take --format; it takes [file ...], --migrations and --allow\n"]);
   });
