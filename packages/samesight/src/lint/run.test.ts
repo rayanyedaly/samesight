@@ -58,6 +58,18 @@ describe("runLint", () => {
     writeFileSync(join(dir, "sync-config.yaml"), owned);
     expect(() => runLint({ given: [], migrationsDir: "nowhere", allow: [], cwd: dir })).toThrow("no migrations directory at nowhere; check the path given to --migrations");
   });
+
+  it("names migration files and files it cannot read as given, never by where they are on this machine", () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "sync-config.yaml"), owned);
+    mkdirSync(join(dir, "supabase", "migrations"), { recursive: true });
+    writeFileSync(join(dir, "supabase", "migrations", "0001.sql"), `${migration}create policy "open" on public.lists for select using (true);\n`);
+    const run = runLint({ given: ["sync-config.yaml", "gone.yaml"], allow: [], cwd: dir });
+    const open = run.kept.find((f) => f.rule === "rls-open");
+    expect(open?.message).toMatch(/\(supabase\/migrations\/0001\.sql:3\)/);
+    expect(JSON.stringify(run)).not.toContain(dir);
+    expect(run.unreadable[0]?.error).toMatch(/'gone\.yaml'/);
+  });
 });
 
 describe("unknownRules", () => {

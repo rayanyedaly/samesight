@@ -49,9 +49,12 @@ export function runLint(o: LintOptions): LintRun {
   const unreadable: Unreadable[] = [];
   const messages: string[] = [];
   for (const file of files) {
+    const path = resolve(o.cwd, file);
     try {
-      findings.push(...lintSyncConfig(readFileSync(resolve(o.cwd, file), "utf8"), file, undefined, migrations));
+      findings.push(...lintSyncConfig(readFileSync(path, "utf8"), file, undefined, migrations));
     } catch (e) {
+      // The system's message names the path read; say the file as given, as for the rest.
+      if (e instanceof Error && path !== file) e.message = e.message.split(path).join(file);
       const bad = cannotRead(file, e);
       unreadable.push(bad.unreadable);
       messages.push(bad.message);
@@ -77,7 +80,8 @@ export function migrationsIn(given: string | undefined, cwd: string): { dir: str
   const dir = given ?? (existsSync(resolve(cwd, MIGRATIONS_DIR)) ? MIGRATIONS_DIR : undefined);
   if (!dir) return undefined;
   try {
-    return { dir, migrations: readMigrations(resolve(cwd, dir)) };
+    // Read from `cwd`, named as given: findings say supabase/migrations/1.sql, not a path on this machine.
+    return { dir, migrations: readMigrations(resolve(cwd, dir), dir) };
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     throw new Error(
