@@ -33,11 +33,11 @@ npx samesight agent init --print            # say what it would write, write not
 npx samesight agent init --agents claude    # only Claude Code (claude, codex, cursor)
 ```
 
-It refuses to write through a symlink or a hard link that leads out of the project, and refuses hook arguments the command could not carry safely in every shell: they may hold only ASCII letters and digits, spaces and `_+:./-`, and may not start with `-`.
+It writes each file by renaming a new one into place, so a symlink or a hard link at that name is replaced, never written through; it refuses a folder that leads out of the project through a symlink. It refuses values in the hook command that it could not carry safely in every shell: they may hold only ASCII letters and digits, spaces and `_+:./-`, must hold a letter or digit, and may not start with `-`.
 
 Commit the files, so every agent working on the project runs the hook. Codex asks you to review and trust a new hook first: run `/hooks` in Codex.
 
-The hook command is `npx --no-install samesight agent hook` (`yarn samesight agent hook` under Yarn Plug'n'Play). npx runs the samesight it finds, the project's first, then a parent folder's or a global one, and never installs one; with none of those it asks the registry first, which is slower. So install samesight in the project (at its root in a monorepo, or run `agent init` from the package that has it), and keep it installed for everyone who works on it:
+The hook command is `npx --no-install samesight agent hook` (`yarn samesight agent hook` under Yarn Plug'n'Play). npx runs the samesight it finds, the project's first, then a parent folder's or a global one, and never installs one; with none of those it asks the registry, which is slower, and runs a copy it has cached only when that is the latest version. So install samesight in the project (at its root in a monorepo, or run `agent init` from the package that has it), and keep it installed for everyone who works on it:
 
 - With no samesight to run, npx exits 1. Claude Code shows that to you as a hook error, not to the agent, and nothing is checked.
 - samesight 0.1.0, from before `agent hook`, answers `unknown command "agent"` with exit 2 on each edit, which reaches the agent as an error. Update it.

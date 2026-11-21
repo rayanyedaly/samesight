@@ -109,7 +109,7 @@ function answer(input: string, options: HookOptions, env: HookEnv): HookResult {
 
   const stale = staleCopies(root, env.skillDir).map((t) => `The samesight skill in ${t} differs from the one this samesight ships; npx samesight agent init updates it.`);
   const unknown = unknownRules(options.allow);
-  if (unknown.length) return context([`samesight lint could not run: --allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}.`, ...stale]);
+  if (unknown.length) return context([`samesight lint could not run: --allow names no rule ${oneLine(unknown.join(", "))}; the rules are ${RULE_NAMES.join(", ")}.`, ...stale]);
   let run: LintRun;
   try {
     run = runLint({ given: files, migrationsDir: options.migrationsDir, allow: options.allow, cwd: root });
@@ -120,7 +120,7 @@ function answer(input: string, options: HookOptions, env: HookEnv): HookResult {
   const errors = run.kept.filter((f) => f.level === "error");
   if (!errors.length && !run.unreadable.length) {
     if (!run.kept.length) return context([`samesight lint: no findings in ${run.files.map(oneLine).join(", ")}. Lint reads files only; a clean lint does not show that no rows leak (samesight audit tests that on the local stack).`, ...notes]);
-    return context([`samesight lint found ${count(run.kept.length, "finding")} in ${run.files.map(oneLine).join(", ")}, none of them an error. Decide each with the user; none is an error.`, ...entries(sortFindings(run.kept))], notes);
+    return context([`samesight lint found ${count(run.kept.length, "finding")} in ${run.files.map(oneLine).join(", ")}, none of them an error. Decide each with the user.`, ...entries(sortFindings(run.kept))], notes);
   }
   const rest = run.kept.filter((f) => f.level !== "error");
   const text = [
@@ -161,12 +161,12 @@ function entries(findings: LintFinding[]): string[] {
   });
 }
 
-/** The entries, cut to what an agent's hook may pass and saying how many were cut, then `tail` whole. */
+/** The entries, cut to what an agent's hook may pass and saying more were cut, then `tail` whole. */
 function cap(text: string[], tail: string[] = []): string {
   const room = LIMIT - tail.reduce((n, t) => n + t.length + 1, 0) - 100;
   const out: string[] = [];
   let size = 0;
-  for (const [i, entry] of text.entries()) {
+  for (const entry of text) {
     if (size + entry.length + 1 > room) {
       out.push("and more not shown here: run samesight lint --format json to see them all");
       break;

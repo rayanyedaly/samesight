@@ -6,7 +6,7 @@ license: MIT
 
 # samesight
 
-This directory is installed by `npx samesight agent init` and replaced when samesight updates it; edit a copy under another name to keep changes.
+This directory is installed by `npx samesight agent init`, which replaces its files when samesight updates them; edit a copy under another name to keep changes.
 
 ## What samesight checks
 

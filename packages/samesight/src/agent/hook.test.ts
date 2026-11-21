@@ -53,7 +53,7 @@ describe("agentHook", () => {
     expect([r.code, r.stderr]).toEqual([0, ""]);
     expect(JSON.parse(r.stdout).hookSpecificOutput.hookEventName).toBe("PostToolUse");
     expect(context(r).split("\n")).toEqual([
-      "samesight lint found 1 finding in sync-config.yaml, none of them an error. Decide each with the user; none is an error.",
+      "samesight lint found 1 finding in sync-config.yaml, none of them an error. Decide each with the user.",
       expect.stringMatching(/^sync-config\.yaml:7:9 {2}warning {2}unscoped-query {2}/),
       "  Fix: references/unscoped-query.md in the samesight skill, or https://rayanyedaly.github.io/samesight/rules/unscoped-query",
       "No migrations were read (none in supabase/migrations), so the RLS rules (rls-off, rls-open) did not run.",
