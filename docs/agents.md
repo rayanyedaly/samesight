@@ -33,14 +33,14 @@ npx samesight agent init --print            # say what it would write, write not
 npx samesight agent init --agents claude    # only Claude Code (claude, codex, cursor)
 ```
 
-It refuses to write through a symlink that leads out of the project, and refuses hook arguments the command could not carry safely in every shell: they may hold only letters, digits, spaces and `_@+=:,./-`.
+It refuses to write through a symlink or a hard link that leads out of the project, and refuses hook arguments the command could not carry safely in every shell: they may hold only ASCII letters and digits, spaces and `_+:./-`, and may not start with `-`.
 
 Commit the files, so every agent working on the project runs the hook. Codex asks you to review and trust a new hook first: run `/hooks` in Codex.
 
-The hook command is `npx --no-install samesight agent hook` (`yarn samesight agent hook` under Yarn Plug'n'Play). npx runs the samesight it finds, the project's first, then a parent folder's, a global one or one it has cached, and never installs one. So install samesight in the project (at its root in a monorepo, or run `agent init` from the package that has it), and keep it installed for everyone who works on it:
+The hook command is `npx --no-install samesight agent hook` (`yarn samesight agent hook` under Yarn Plug'n'Play). npx runs the samesight it finds, the project's first, then a parent folder's or a global one, and never installs one; with none of those it asks the registry first, which is slower. So install samesight in the project (at its root in a monorepo, or run `agent init` from the package that has it), and keep it installed for everyone who works on it:
 
 - With no samesight to run, npx exits 1. Claude Code shows that to you as a hook error, not to the agent, and nothing is checked.
-- A samesight older than the one that wrote the hook does not know `agent hook`, and exits 2 on each edit, which reaches the agent as an error. Update it.
+- samesight 0.1.0, from before `agent hook`, answers `unknown command "agent"` with exit 2 on each edit, which reaches the agent as an error. Update it.
 
 ## Where your files are
 
@@ -64,15 +64,15 @@ It lints the whole sync config each time, so a migration edit also reports error
 
 What the agent sees:
 
-- **An error finding, or a sync config lint cannot read**: the hook exits 2. Its message lists each finding (file, line, column, rule, message) with where to read the fix (the skill's reference for the rule, and its page here), and ends "Fix the errors above before going on. If a finding is intended, ask the user before accepting it with --allow." Claude Code and Codex give this to the agent as an error. The edit itself has already been made, and nothing undoes it.
+- **An error finding, or a sync config lint cannot read**: the hook exits 2. Its message lists each finding (file, line, column, level, rule, message) with where to read the fix (the skill's reference for the rule, and its page here), and ends "Fix the errors above before going on. If a finding is intended, ask the user before accepting it with --allow." Claude Code and Codex give this to the agent as an error. The edit itself has already been made, and nothing undoes it.
 - **Warnings and notes only**: they are passed as context, and do not count as an error. The skill tells the agent to decide them with you.
 - **Nothing found**: one line of context, which says lint reads files only and a clean lint does not show that no rows leak. [Audit](verify.md#audit-mode) tests that, on the local stack, when you run it.
-- **No migrations read**: the context says the RLS rules (`rls-off`, `rls-open`) did not run.
+- **No migrations read**: the message or the context says the RLS rules (`rls-off`, `rls-open`) did not run.
 - **An installed skill that differs from the package's**: one line saying `agent init` updates it.
 
-Names from the project's files (streams, tables, policies) are put on one line each, so a name cannot pose as a line of the hook's own. A long list is cut to what a hook may pass, keeping the closing instruction.
+Names from the project's files (file names, streams, tables, policies) are put on one line each, so a name cannot pose as a line of the hook's own. A long list is cut to what a hook may pass, keeping the closing instruction.
 
-A problem of the hook's own (a payload it cannot read or over 5 MB, an option it does not take, a `--migrations` directory that is not there) never reaches the agent as an error: it exits 0, with a note.
+A problem of the hook's own never reaches the agent as an error. A payload it cannot read or over 5 MB, or an option it does not take, is a note on stderr with exit 0, which Claude Code shows only in its transcript view, so check the hook command if lint seems never to run. A `--migrations` directory that is not there, or an `--allow` rule that does not exist, is said to the agent as context ("samesight lint could not run: ..."), with exit 0.
 
 An agent that cannot fix a finding gets the error again on each edit to those files. The skill tells it to stop after two tries and ask you.
 
