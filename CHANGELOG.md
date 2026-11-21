@@ -15,7 +15,9 @@ The four npm packages (`samesight`, `@samesight/verify`, `@samesight/supabase`, 
 ### @samesight/verify
 
 - `samesight-verify --help` and the npm page link to the docs site's page on the verifier and audit mode.
-- Audit has an Exposure section, after Coverage: for each run user's device, the columns that likely hold personal data (by name or a `samesight:personal` comment marker, matched as `samesight exposure` matches them) of other run users' rows it held, and the stream that sent them; a row belongs to the run users its keys to `auth.users` hold. Every line is `ok`, so exit codes and the summary are unchanged. Audit reads column comments from the database for it.
+- Audit has an Exposure section, after Coverage: for each run user's device, the columns that likely hold personal data (by name, as `samesight exposure` matches them, or a `samesight:personal` marker in the column comment, which audit reads from the database) of other run users' rows it held, and the stream that sent them; a row belongs to the run users its keys to `auth.users` hold, and rows the reader shares with them get lines of their own. A key to `auth.users` never counts as personal. Every line is `ok`, so exit codes and the summary are unchanged.
+- Coverage's title says it stopped "before the failure" only when a dataset failed or the run broke down; a run whose datasets all passed but left a table untested is covered in full, and one stopped before its first dataset stopped at the time limit.
+- `--report`: a carriage return in a table, column or stream name no longer splits a line of the Markdown file.
 
 ## 0.1.0 (2026-10-28)
 

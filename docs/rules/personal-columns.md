@@ -97,7 +97,7 @@ The user's own email is in their session (`supabase.auth.getUser()`), so the app
 
 ## What audit does
 
-Audit's differential compares the rows each device holds with the rows RLS returns its user, so a personal column sent with rows the user may read is no leak to it: here each device holds only the members of its user's organisations, which RLS returns too, and the differential does not fail. Its Exposure section then names the columns that went with those rows, from real devices: `u0's device held email [contact], full_name [identifier] of 2 other run users' members rows, sent by stream org_members (6 rows over 3 datasets)`, as a note, not a failure. See [audit mode](../verify.md#audit-mode).
+Audit's differential compares the rows each device holds with the rows RLS returns its user, so a personal column sent with rows the user may read is no leak to it: here each device holds only the members of its user's organisations, which RLS returns too, and the differential does not fail. Its Exposure section then names the columns that went with those rows, from real devices: `u0's device held email [contact], full_name [identifier] of 2 other run users' members rows, sent by stream org_members (14 rows over 5 datasets)`, an `ok` line, not a failure. See [audit mode](../verify.md#audit-mode).
 
 ## Accepting it
 
