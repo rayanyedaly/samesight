@@ -152,7 +152,7 @@ comment on column patients.chief_complaint is 'samesight:personal=health';
 comment on column members.email is 'The team''s shared inbox. samesight:not-personal';
 ```
 
-The categories are `identifier`, `contact`, `location`, `birth`, `health`, `financial`, `secret`, `free-text` and `personal`; `samesight:personal` alone means `personal`, and so does a category it does not know. Markers are read from the migrations, so they count only when it reads them.
+The categories are `identifier`, `contact`, `location`, `birth`, `health`, `financial`, `secret`, `free-text` and `personal`; `samesight:personal` alone means `personal`, and so does a category it does not know. The map reads markers from the migrations, so they count only when it reads them; audit reads them from the database's column comments.
 
 ## Limits
 
