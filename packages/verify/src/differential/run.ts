@@ -781,10 +781,12 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
   const seed = options.seed ?? Math.floor(Math.random() * (MAX_SEED + 1));
   let x = await explore(worldArbitrary(s.tables), evaluate, { ...options, seed });
   let datasets = x.datasets;
+  // The time limit ended the extra passes: every dataset asked for ran, but a table they were for stays untested.
+  let outOfTime = false;
   for (let pass = 1; pass <= 3 && !x.lastFailing && x.crash === undefined && !x.stopped && untestedTables(); pass++) {
     const left = options.timeLimitMs - (Date.now() - started);
     if (left <= 0) {
-      x = { ...x, stopped: true };
+      outOfTime = true;
       break;
     }
     x = await explore(worldArbitrary(s.tables), evaluate, { runs: options.runs, timeLimitMs: left, seed: (seed + pass) % (MAX_SEED + 1) });
@@ -833,7 +835,8 @@ export async function differential(s: Run, options: DifferentialOptions): Promis
             ? [`no device received any ${t.name} row (is PowerSync serving this sync config?)`]
             : [],
     );
-  if (untested.length) return { ...fail(`${x.datasets} datasets left tables untested${x.stopped ? " before the time limit" : ""}: ${untested.join("; ")}`, x.datasets), stopped: x.stopped };
+  const timeUp = x.stopped || outOfTime;
+  if (untested.length) return { ...fail(`${x.datasets} ${x.datasets === 1 ? "dataset" : "datasets"} left tables untested${timeUp ? " before the time limit" : ""}: ${untested.join("; ")}`, x.datasets), stopped: timeUp };
   const unread = (s.asFound ?? []).filter((t) => !visible.get(t));
   const notes: Finding[] = unread.map((t) => ({
     status: "warn",
