@@ -99,7 +99,8 @@ export function noteExposure(s: Pick<Run, "fixed" | "fixedRows">, ex: Exposure, 
   // kept for every dataset is one row however many hold it; a dataset's row is that dataset's
   // own, even when it takes an id the next dataset takes again (a key a claim holds).
   const owners = new Map<string, { users: string[]; row: string }>();
-  const rows = [...(s.fixedRows ?? []).map((i) => ({ i, kept: true })), ...inserted.map((i) => ({ i, kept: false }))];
+  // A kept row given again with the dataset's rows is still the kept one: it comes last, so it wins.
+  const rows = [...inserted.map((i) => ({ i, kept: false })), ...(s.fixedRows ?? []).map((i) => ({ i, kept: true }))];
   for (const { i, kept } of rows) {
     const t = ex.tables.find((x) => x.table === i.table);
     if (!t) continue;

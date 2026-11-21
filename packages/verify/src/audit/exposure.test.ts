@@ -159,7 +159,8 @@ describe("noteExposure", () => {
     const kept = { ...run, fixedRows: [ins("members", { id: "m1", user_id: "b" })] } as unknown as Run;
     const both: DeviceRow = { table: "members", id: "m1", data: { id: "m1", user_id: "b", email: "b@x", full_name: "B" }, sources: [{ stream: "org", columns: ["id", "user_id", "email"] }, { stream: "directory", columns: ["id", "user_id", "full_name"] }] };
     noteExposure(kept, ex, [], new Map([["a", [both]]]));
-    noteExposure(kept, ex, [], new Map([["a", [both]]]));
+    // Given with the dataset's rows too, it is still the row kept for every dataset.
+    noteExposure(kept, ex, [ins("members", { id: "m1", user_id: "b" })], new Map([["a", [both]]]));
     expect([...ex.held.values()].map((h) => [h.stream, [...h.columns], h.rows.size])).toEqual([
       ["org", ["email"], 1],
       ["directory", ["full_name"], 1],
@@ -176,7 +177,8 @@ describe("noteExposure", () => {
 
   it("matches a device row only to the run's row of its own table", () => {
     const ex = scoped();
-    noteExposure(run, ex, [ins("notes", { id: "x", owner_id: "b" }), ins("members", { id: "x", user_id: "a" })], new Map([["a", [row("members", { id: "x", user_id: "a", email: "a@x" })]]]));
+    // The members row is u0's own; a notes row with its id, given after it, is another user's.
+    noteExposure(run, ex, [ins("members", { id: "x", user_id: "a" }), ins("notes", { id: "x", owner_id: "b" })], new Map([["a", [row("members", { id: "x", user_id: "a", email: "a@x" })]]]));
     expect(ex.held.size).toBe(0);
   });
 });
