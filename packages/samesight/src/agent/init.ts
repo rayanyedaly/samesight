@@ -38,19 +38,24 @@ export interface InitResult {
 }
 
 /**
- * What an argument of the hook command may hold: letters, digits, spaces and `_@+=:,./-`.
- * Bash, cmd.exe and PowerShell each expand something else inside quotes ($(...), backticks,
- * %VAR%), and the command runs on every edit for everyone who commits it, so anything else
- * is refused rather than quoted.
+ * What a value in the hook command may hold: ASCII letters and digits, spaces and `_+:./-`,
+ * not starting with `-`. Bash, zsh, cmd.exe and PowerShell each read something else
+ * specially, inside quotes or out ($(...), backticks, %VAR%, `,` and a leading `@` in
+ * PowerShell, a leading `=` in zsh), a leading `-` would be read as an option, and the
+ * command runs on every edit for everyone who commits it: anything else is refused rather
+ * than quoted.
  */
-const SAFE_ARG = /^[\w@+=:,./ -]+$/;
+const SAFE_VALUE = /^(?!-)[A-Za-z0-9_+:./ -]+$/;
+
+/** The values the hook command carries: lint's sync configs, migrations directory and --allow entries. */
+const hookValues = (o: Pick<InitOptions, "given" | "migrationsDir" | "allow">) => [...o.given, ...(o.migrationsDir ? [o.migrationsDir] : []), ...o.allow];
 
 /** The hook command's arguments: lint's sync configs, migrations and --allow. */
 const hookArgs = (o: Pick<InitOptions, "given" | "migrationsDir" | "allow">) => [...o.given, ...(o.migrationsDir ? ["--migrations", o.migrationsDir] : []), ...o.allow.flatMap((a) => ["--allow", a])];
 
-/** The arguments the hook command cannot carry safely. */
+/** The values the hook command cannot carry safely. */
 export function unsafeArgs(o: Pick<InitOptions, "given" | "migrationsDir" | "allow">): string[] {
-  return hookArgs(o).filter((a) => !SAFE_ARG.test(a));
+  return hookValues(o).filter((a) => !SAFE_VALUE.test(a));
 }
 
 /**
@@ -66,6 +71,25 @@ export function hookCommand(o: Pick<InitOptions, "root" | "given" | "migrationsD
 }
 
 /** Whether `path`, once symlinks are followed (its own included), stays in the project. */
+/** The real path, or the path when it has none. */
+const realpathOr = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
+/** Whether a file exists with more than one name: a hard link. */
+function hardLinked(path: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    return stat.isFile() && stat.nlink > 1;
+  } catch {
+    return false;
+  }
+}
+
 function staysInside(root: string, path: string): boolean {
   // lstat, not exists: a dangling symlink exists for a write, which would create its target.
   const there = (p: string) => {
@@ -93,17 +117,25 @@ export function agentInit(o: InitOptions): InitResult {
   const root = resolve(o.root);
   const unsafe = unsafeArgs(o);
   if (unsafe.length) {
-    return { code: 2, lines: [`not writing anything: the hook command would carry ${unsafe.map((a) => JSON.stringify(a)).join(", ")}; its arguments may hold only letters, digits, spaces and _@+=:,./- (use / in paths)`] };
+    return { code: 2, lines: [`not writing anything: the hook command would carry ${unsafe.map((a) => JSON.stringify(a)).join(", ")}; its values may hold only ASCII letters and digits, spaces and _+:./-, and may not start with - (use / in paths)`] };
   }
   const lines: string[] = [];
   let code: 0 | 2 = 0;
   let changed = false;
   const would = (done: string, todo: string) => (o.print ? todo : done);
-  const write = (path: string, text: string | Buffer) => {
+  /** Writes a file; false, said in `lines`, when the system refuses (a file where a folder must go, say). */
+  const write = (path: string, text: string | Buffer): boolean => {
     changed = true;
-    if (o.print) return;
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, text);
+    if (o.print) return true;
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, text);
+      return true;
+    } catch (e) {
+      lines.push(`cannot write ${relative(root, path).split(sep).join("/")}: ${(e as Error).message.split(realpathOr(root)).join(".")}`);
+      code = 2;
+      return false;
+    }
   };
 
   // The skill, for each agent asked for.
@@ -122,16 +154,17 @@ export function agentInit(o: InitOptions): InitResult {
       continue;
     }
     // Each file is checked too: a symlinked SKILL.md or references/ would otherwise be written through.
-    const outside = files.filter((f) => !staysInside(root, join(at, f)));
+    // A hard link shares its contents with a file elsewhere: writing it would change that file too.
+    const outside = files.filter((f) => !staysInside(root, join(at, f)) || hardLinked(join(at, f)));
     if (outside.length) {
-      lines.push(`not writing ${target}: ${outside.join(", ")} lead${outside.length === 1 ? "s" : ""} out of the project through a symlink`);
+      lines.push(`not writing ${target}: ${outside.join(", ")} lead${outside.length === 1 ? "s" : ""} out of the project (a symlink or a hard link)`);
       code = 2;
       continue;
     }
     // The files missing or different, in the skill's order.
     const touched = files.filter((f) => !existsSync(join(at, f)) || !readFileSync(join(at, f)).equals(readFileSync(join(dir, f))));
     const fresh = touched.length === files.length && !existsSync(at);
-    for (const f of touched) write(join(at, f), readFileSync(join(dir, f)));
+    if (!touched.every((f) => write(join(at, f), readFileSync(join(dir, f))))) continue;
     if (!touched.length) lines.push(`${target}: up to date`);
     else if (fresh) lines.push(`${target}: ${would("created", "would create")} (${files.length} files)`);
     else lines.push(`${target}: ${would("updated", "would update")} ${touched.join(", ")}`);
@@ -151,7 +184,7 @@ export function agentInit(o: InitOptions): InitResult {
     }
     const merge: Merge = mergeHook(existsSync(path) ? readFileSync(path, "utf8") : undefined, entry);
     if (merge.status === "create" || merge.status === "update") {
-      write(path, merge.text as string);
+      if (!write(path, merge.text as string)) continue;
       lines.push(`${file}: ${merge.status === "create" ? would("created, with the samesight hook", "would create, with the samesight hook") : would("added the samesight hook", "would add the samesight hook")}`);
       if (o.print) lines.push(...(merge.text as string).trimEnd().split("\n").map((l) => `  ${l}`));
     } else if (merge.status === "unchanged") lines.push(`${file}: up to date`);

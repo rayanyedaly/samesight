@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
@@ -102,18 +102,51 @@ describe("agentInit", () => {
     symlinkSync(join(outside, "profile"), join(root, ".claude/skills/samesight/SKILL.md"));
     symlinkSync(join(outside, "nothing-yet"), join(root, ".claude/skills/samesight/references"));
     const result = init(root, { agents: ["claude"] });
-    expect([result.code, result.lines[0]]).toEqual([2, "not writing .claude/skills/samesight: SKILL.md, references/rls-off.md lead out of the project through a symlink"]);
+    expect([result.code, result.lines[0]]).toEqual([2, "not writing .claude/skills/samesight: SKILL.md, references/rls-off.md lead out of the project (a symlink or a hard link)"]);
     expect(readFileSync(join(outside, "profile"), "utf8")).toBe("mine\n");
     expect(readdirSync(outside)).toEqual(["profile"]);
   });
 
+  it.skipIf(process.platform === "win32")("does not write through a hard link to a file elsewhere", () => {
+    const root = project({ "sync-config.yaml": CONFIG });
+    const outside = project({ profile: "mine\n" });
+    mkdirSync(join(root, ".claude/skills/samesight"), { recursive: true });
+    linkSync(join(outside, "profile"), join(root, ".claude/skills/samesight/SKILL.md"));
+    expect(init(root, { agents: ["claude"] }).code).toBe(2);
+    expect(readFileSync(join(outside, "profile"), "utf8")).toBe("mine\n");
+  });
+
+  it("says when it cannot write a file, rather than failing", () => {
+    const root = project({ "sync-config.yaml": CONFIG, ".claude": "a file where a folder goes\n" });
+    const result = init(root, { agents: ["claude"] });
+    expect(result.code).toBe(2);
+    expect(result.lines[0]).toMatch(/^cannot write \.claude\/skills\/samesight\/SKILL\.md: /);
+  });
+
   it("refuses arguments the hook command could not carry safely in every shell, and writes nothing", () => {
     const root = project({ "sync-config.yaml": CONFIG });
-    for (const bad of [{ allow: ["rls-off:$(curl -s x|sh)"] }, { allow: ["unscoped-query:`id`"] }, { given: ["a&b.yaml"] }, { given: ["%PATH%.yaml"] }, { migrationsDir: "db\\migrations" }, { given: ['a".yaml'] }, { given: ["a\nb.yaml"] }]) {
-      const result = init(root, bad);
-      expect([result.code, result.lines.length], JSON.stringify(bad)).toEqual([2, 1]);
-      expect(result.lines[0], JSON.stringify(bad)).toMatch(/^not writing anything: the hook command would carry .*; its arguments may hold only letters, digits, spaces and _@\+=:,\.\/- \(use \/ in paths\)$/);
+    const bad = [
+      { allow: ["rls-off:$(curl -s x|sh)"] },
+      { allow: ["unscoped-query:`id`"] },
+      { given: ["a&b.yaml"] },
+      { given: ["%PATH%.yaml"] },
+      { migrationsDir: "db\\migrations" },
+      { given: ['a".yaml'] },
+      { given: ["a\nb.yaml"] },
+      // Read as an option by the hook; splatting and an array in PowerShell; EQUALS expansion in zsh.
+      { given: ["-a.yaml"] },
+      { given: ["--help"] },
+      { given: ["@acme/sync.yaml"] },
+      { allow: ["unscoped-query:a,b"] },
+      { given: ["=foo.yaml"] },
+      { given: ["café.yaml"] },
+    ];
+    for (const args of bad) {
+      const result = init(root, args);
+      expect([result.code, result.lines.length], JSON.stringify(args)).toEqual([2, 1]);
+      expect(result.lines[0], JSON.stringify(args)).toMatch(/^not writing anything: the hook command would carry .*; its values may hold only ASCII letters and digits, spaces and _\+:\.\/-, and may not start with - \(use \/ in paths\)$/);
     }
+    expect(init(root, { given: ["app/sync config.yaml"], migrationsDir: "db/migrations-2", allow: ["unscoped-query:public_posts", "rls-off:a.b"], print: true }).code).toBe(0);
     expect(readdirSync(root)).toEqual(["sync-config.yaml"]);
     expect(() => hookCommand({ root, given: [], allow: ["rls-off:$(x)"] })).toThrow('the hook command cannot carry "rls-off:$(x)"');
   });
