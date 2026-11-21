@@ -106,9 +106,9 @@ describe("noteExposure", () => {
     ]);
     noteExposure(run, ex, inserted, devices);
     expect(ex.unmatched).toEqual(new Set());
-    expect([...ex.held.values()].map((h) => [h.reader, h.table, h.stream, [...h.columns], [...h.owners], [...h.rows]])).toEqual([
-      ["u0", "members", "org_members", ["email", "full_name"], ["b", "c"], ["m1", "m2"]],
-      ["u1", "notes", "notes", ["chief_complaint"], ["a"], ["n2"]],
+    expect([...ex.held.values()].map((h) => [h.reader, h.table, h.stream, [...h.columns], [...h.owners], h.rows.size])).toEqual([
+      ["u0", "members", "org_members", ["email", "full_name"], ["b", "c"], 2],
+      ["u1", "notes", "notes", ["chief_complaint"], ["a"], 1],
     ]);
     expect(ex.datasets).toBe(1);
   });
@@ -156,14 +156,28 @@ describe("noteExposure", () => {
 
   it("keeps each stream that sent a row apart, and counts a row kept for every dataset once", () => {
     const ex = scoped();
+    const kept = { ...run, fixedRows: [ins("members", { id: "m1", user_id: "b" })] } as unknown as Run;
     const both: DeviceRow = { table: "members", id: "m1", data: { id: "m1", user_id: "b", email: "b@x", full_name: "B" }, sources: [{ stream: "org", columns: ["id", "user_id", "email"] }, { stream: "directory", columns: ["id", "user_id", "full_name"] }] };
-    noteExposure(run, ex, inserted, new Map([["a", [both]]]));
-    noteExposure(run, ex, inserted, new Map([["a", [both]]]));
+    noteExposure(kept, ex, [], new Map([["a", [both]]]));
+    noteExposure(kept, ex, [], new Map([["a", [both]]]));
     expect([...ex.held.values()].map((h) => [h.stream, [...h.columns], h.rows.size])).toEqual([
       ["org", ["email"], 1],
       ["directory", ["full_name"], 1],
     ]);
     expect(ex.datasets).toBe(2);
+  });
+
+  it("counts a dataset's own rows in each dataset, though the next one takes the same id", () => {
+    // A key a claim holds is the id of the first rows of every dataset, each a new row.
+    const ex = scoped();
+    for (const user of ["b", "c"]) noteExposure(run, ex, [ins("members", { id: "k1", user_id: user })], new Map([["a", [row("members", { id: "k1", email: `${user}@x` })]]]));
+    expect([...ex.held.values()].map((h) => [h.reader, [...h.owners], h.rows.size])).toEqual([["u0", ["b", "c"], 2]]);
+  });
+
+  it("matches a device row only to the run's row of its own table", () => {
+    const ex = scoped();
+    noteExposure(run, ex, [ins("notes", { id: "x", owner_id: "b" }), ins("members", { id: "x", user_id: "a" })], new Map([["a", [row("members", { id: "x", user_id: "a", email: "a@x" })]]]));
+    expect(ex.held.size).toBe(0);
   });
 });
 

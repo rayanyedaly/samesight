@@ -40,7 +40,7 @@ export interface Held {
   columns: Set<string>;
   /** The run users whose rows they were. */
   owners: Set<string>;
-  /** The rows, by id: a row the run keeps for every dataset counts once. */
+  /** The rows: a row the run keeps for every dataset counts once, a dataset's own row once per dataset. */
   rows: Set<string>;
 }
 
@@ -81,15 +81,18 @@ export function exposureScope(model: TableModel[], synced: string[]): Exposure {
 
 /**
  * Adds one passing dataset: each likely personal value a device holds of another run user's
- * row, by stream. `inserted`: the run's rows, the dataset's and those it keeps for every
- * dataset, which say whose each row is.
+ * row, by stream. `inserted`: the dataset's own rows; the rows the run keeps for every dataset
+ * come from `s.fixedRows`. Together they say whose each row is.
  */
-export function noteExposure(s: Pick<Run, "fixed">, ex: Exposure, inserted: Inserted[], devices: Map<string, DeviceRow[]>): void {
+export function noteExposure(s: Pick<Run, "fixed" | "fixedRows">, ex: Exposure, inserted: Inserted[], devices: Map<string, DeviceRow[]>): void {
   ex.datasets++;
   const label = new Map(s.fixed.users.map((u) => [u.id, u.label.split(" ")[0] as string]));
-  // Whose each run row is, by table and id: the run users its columns for a user hold.
-  const owners = new Map<string, string[]>();
-  for (const i of inserted) {
+  // Whose each run row is, by table and id: the run users its columns for a user hold. A row
+  // kept for every dataset is one row however many hold it; a dataset's row is that dataset's
+  // own, even when it takes an id the next dataset takes again (a key a claim holds).
+  const owners = new Map<string, { users: string[]; row: string }>();
+  const rows = [...(s.fixedRows ?? []).map((i) => ({ i, kept: true })), ...inserted.map((i) => ({ i, kept: false }))];
+  for (const { i, kept } of rows) {
     const t = ex.tables.find((x) => x.table === i.table);
     if (!t) continue;
     // Left to a default, the id is the database's, and the row cannot be found again by it.
@@ -98,17 +101,18 @@ export function noteExposure(s: Pick<Run, "fixed">, ex: Exposure, inserted: Inse
       continue;
     }
     const users = t.owners.map((c) => i.row[c]).filter((v): v is string => typeof v === "string" && label.has(v));
-    if (users.length) owners.set(`${i.table}\0${String(i.row.id)}`, users);
+    const id = String(i.row.id);
+    if (users.length) owners.set(`${i.table}\0${id}`, { users, row: kept ? id : `${ex.datasets}\0${id}` });
   }
   for (const [order, u] of s.fixed.users.entries()) {
     const reader = label.get(u.id) as string;
     for (const r of devices.get(u.id) ?? []) {
       const t = ex.tables.find((x) => x.table === r.table);
-      const all = t ? owners.get(`${r.table}\0${r.id}`) : undefined;
+      const owned = t ? owners.get(`${r.table}\0${r.id}`) : undefined;
       // The other run users whose row it is; when the reader is one too, the row is shared.
-      const users = all?.filter((o) => o !== u.id);
-      if (!t || !all || !users?.length) continue;
-      const shared = users.length < all.length;
+      const users = owned?.users.filter((o) => o !== u.id);
+      if (!t || !owned || !users?.length) continue;
+      const shared = users.length < owned.users.length;
       for (const source of r.sources) {
         const present = source.columns.filter((c) => t.columns.has(c) && r.data[c] !== null && r.data[c] !== undefined);
         if (!present.length) continue;
@@ -116,7 +120,7 @@ export function noteExposure(s: Pick<Run, "fixed">, ex: Exposure, inserted: Inse
         const held = ex.held.get(key) ?? { reader, order, shared, table: t.table, stream: source.stream, columns: new Set<string>(), owners: new Set<string>(), rows: new Set<string>() };
         for (const c of present) held.columns.add(c);
         for (const o of users) held.owners.add(o);
-        held.rows.add(r.id);
+        held.rows.add(owned.row);
         ex.held.set(key, held);
       }
     }
