@@ -145,7 +145,7 @@ jobs:
       # Planted catalog, RLS and insert-policy breakages (rolled back), and auto-start's
       # clean-up on Ctrl+C, SIGTERM and SIGKILL.
       - run: pnpm --filter @samesight/verify test:audit
-      # The Phase 5 gate: the demo as published passes, with both policies and both stream
+      # The audit gate: the demo as published passes, with both policies and both stream
       # tables seen allowing and refusing, and a planted sync config divergence is caught.
       - name: samesight-verify audit
         run: >-

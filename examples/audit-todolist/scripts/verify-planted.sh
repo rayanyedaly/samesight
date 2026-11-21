@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The other half of the Phase 5 gate: the audit must catch a divergence planted in the
+# The other half of the audit gate in CI: the audit must catch a divergence planted in the
 # demo's sync config. The lists query loses its owner filter, so every device receives
 # every list; RLS still returns each user only their own. The audit starts PowerSync on
 # the planted copy and must fail with that leak.
