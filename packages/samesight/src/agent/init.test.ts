@@ -37,8 +37,8 @@ describe("agentInit", () => {
         ".cursor/skills/samesight: created (2 files)",
         ".claude/settings.json: created, with the samesight hook",
         ".codex/hooks.json: created, with the samesight hook",
-        "Cursor runs the hook in .claude/settings.json when its third-party hooks setting is on (the default).",
-        "Codex asks you to review and trust a new hook: run /hooks in Codex.",
+        "Cursor runs the hook in .claude/settings.json when its third-party hooks setting is on; see https://rayanyedaly.github.io/samesight/agents for what is known to work.",
+        "Codex asks you to review and trust a new hook: run /hooks in Codex. The Codex hook follows Codex's documented format and has not been tried with a running Codex yet.",
         "Commit these files so every agent working on the project runs the hook.",
       ],
     });
@@ -56,7 +56,7 @@ describe("agentInit", () => {
       ".agents/skills/samesight: would create (2 files)",
       ".codex/hooks.json: would create, with the samesight hook",
       ...JSON.stringify({ hooks: { PostToolUse: [{ matcher: "apply_patch|Edit|Write", hooks: [{ type: "command", command: "npx --no-install samesight agent hook", timeout: 30 }] }] } }, null, 2).split("\n").map((l) => `  ${l}`),
-      "Codex asks you to review and trust a new hook: run /hooks in Codex.",
+      "Codex asks you to review and trust a new hook: run /hooks in Codex. The Codex hook follows Codex's documented format and has not been tried with a running Codex yet.",
     ]);
     expect(readdirSync(root)).toEqual(["sync-config.yaml"]);
   });
@@ -80,12 +80,12 @@ describe("agentInit", () => {
     const result = init(root, { agents: ["claude", "codex"] });
     expect(result.code).toBe(2);
     expect(result.lines).toContain(".claude/settings.json: left as it is (it already runs pnpm exec samesight agent hook app.yaml)");
-    expect(result.lines).toContain(".codex/hooks.json: cannot add the hook: it is not JSON samesight can read (Expected property name or '}' in JSON at position 2 (line 1 column 3)); add this entry to hooks.PostToolUse by hand:");
+    expect(result.lines).toContainEqual(expect.stringMatching(/^\.codex\/hooks\.json: cannot add the hook: it is not JSON samesight can read \(.*\); add this entry to hooks\.PostToolUse by hand:$/));
     expect(readFileSync(join(root, ".claude/settings.json"), "utf8")).toBe(mine);
     expect(readFileSync(join(root, ".codex/hooks.json"), "utf8")).toBe("{ not json");
   });
 
-  it("refuses to write through a symlink that leads out of the project", () => {
+  it.skipIf(process.platform === "win32")("refuses to write through a symlink that leads out of the project", () => {
     const root = project({ "sync-config.yaml": CONFIG });
     const outside = project();
     symlinkSync(outside, join(root, ".claude"));
@@ -93,6 +93,29 @@ describe("agentInit", () => {
     expect(result.code).toBe(2);
     expect(result.lines.slice(0, 2)).toEqual(["not writing .claude/skills/samesight: it leads out of the project through a symlink", "not writing .claude/settings.json: it leads out of the project through a symlink"]);
     expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("checks each skill file for a symlink out of the project, a dangling one included", () => {
+    const root = project({ "sync-config.yaml": CONFIG });
+    const outside = project({ "profile": "mine\n" });
+    mkdirSync(join(root, ".claude/skills/samesight"), { recursive: true });
+    symlinkSync(join(outside, "profile"), join(root, ".claude/skills/samesight/SKILL.md"));
+    symlinkSync(join(outside, "nothing-yet"), join(root, ".claude/skills/samesight/references"));
+    const result = init(root, { agents: ["claude"] });
+    expect([result.code, result.lines[0]]).toEqual([2, "not writing .claude/skills/samesight: SKILL.md, references/rls-off.md lead out of the project through a symlink"]);
+    expect(readFileSync(join(outside, "profile"), "utf8")).toBe("mine\n");
+    expect(readdirSync(outside)).toEqual(["profile"]);
+  });
+
+  it("refuses arguments the hook command could not carry safely in every shell, and writes nothing", () => {
+    const root = project({ "sync-config.yaml": CONFIG });
+    for (const bad of [{ allow: ["rls-off:$(curl -s x|sh)"] }, { allow: ["unscoped-query:`id`"] }, { given: ["a&b.yaml"] }, { given: ["%PATH%.yaml"] }, { migrationsDir: "db\\migrations" }, { given: ['a".yaml'] }, { given: ["a\nb.yaml"] }]) {
+      const result = init(root, bad);
+      expect([result.code, result.lines.length], JSON.stringify(bad)).toEqual([2, 1]);
+      expect(result.lines[0], JSON.stringify(bad)).toMatch(/^not writing anything: the hook command would carry .*; its arguments may hold only letters, digits, spaces and _@\+=:,\.\/- \(use \/ in paths\)$/);
+    }
+    expect(readdirSync(root)).toEqual(["sync-config.yaml"]);
+    expect(() => hookCommand({ root, given: [], allow: ["rls-off:$(x)"] })).toThrow('the hook command cannot carry "rls-off:$(x)"');
   });
 
   it("says when there is no sync config for the hook to lint, or the one named is not there yet", () => {
