@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,7 +28,7 @@ describe("samesight exit codes", () => {
     expect((await cli(["--help"])).code).toBe(0);
     expect((await cli([])).code).toBe(2);
     const unknown = await cli(["frobnicate"]);
-    expect([unknown.code, unknown.stderr]).toEqual([2, 'samesight: unknown command "frobnicate"; the commands are init, generate, check, doctor, explain, lint, exposure, audit; see samesight --help\n']);
+    expect([unknown.code, unknown.stderr]).toEqual([2, 'samesight: unknown command "frobnicate"; the commands are init, generate, check, doctor, explain, lint, exposure, agent, audit; see samesight --help\n']);
   });
 
   it("names a flag it cannot read in Node's words, and where to look", { timeout: 30_000 }, async () => {
@@ -224,5 +224,40 @@ describe("samesight exposure", () => {
       const unused = await cli(["exposure", flag as string, value as string], project());
       expect([unused.code, unused.stderr]).toEqual([2, `samesight: exposure does not take ${flag}; it takes [file ...], --migrations and --format\n`]);
     }
+  });
+});
+
+/** Runs the CLI with `input` on stdin, as an agent's hook does; resolves with its exit code, stderr and stdout. */
+const piped = (args: string[], input: string, env: NodeJS.ProcessEnv = process.env) =>
+  new Promise<{ code: number | null; stderr: string; stdout: string }>((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(input);
+  });
+
+describe("samesight agent hook", () => {
+  it("reads a Claude Code payload on stdin: exit 2 with the findings on stderr for a leak, nothing for another file", { timeout: 30_000 }, async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
+    const payload = (file: string) => JSON.stringify({ session_id: "s", transcript_path: "/t.jsonl", cwd: dir, permission_mode: "default", hook_event_name: "PostToolUse", tool_name: "Write", tool_input: { file_path: join(dir, file), content: "x" }, tool_response: { filePath: join(dir, file), success: true } });
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: dir };
+    const leak = await piped(["agent", "hook"], payload("sync-config.yaml"), env);
+    expect([leak.code, leak.stdout]).toEqual([2, ""]);
+    expect(leak.stderr).toMatch(/^samesight lint found 1 error after this edit:\nsync-config\.yaml:6:12 {2}error {2}unscoped-query /);
+    expect(await piped(["agent", "hook"], payload("notes.md"), env)).toEqual({ code: 0, stdout: "", stderr: "" });
+    const accepted = await piped(["agent", "hook", "--allow", "unscoped-query"], payload("sync-config.yaml"), env);
+    expect([accepted.code, JSON.parse(accepted.stdout).hookSpecificOutput.additionalContext]).toEqual([0, expect.stringMatching(/^samesight lint: no findings in sync-config\.yaml\./)]);
+  });
+
+  it("takes only hook, and refuses options it does not use", { timeout: 30_000 }, async () => {
+    const none = await cli(["agent"]);
+    expect([none.code, none.stderr]).toEqual([2, "samesight: agent takes hook: samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]\n"]);
+    expect((await cli(["agent", "frob"])).stderr).toMatch(/^samesight: agent takes hook, not "frob": /);
+    const format = await cli(["agent", "hook", "--format", "json"]);
+    expect([format.code, format.stderr]).toEqual([2, "samesight: agent hook does not take --format; it takes [file ...], --migrations and --allow\n"]);
   });
 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * samesight init | generate | check | doctor | explain | lint | exposure | audit
+ * samesight init | generate | check | doctor | explain | lint | exposure | agent hook | audit
  *
  * Runs on Node's built-in TypeScript support (type stripping), so a policy file is
  * imported as written. Paths in the policy's `output` are relative to the policy file.
@@ -12,6 +12,7 @@ import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
 import { exposureJson, formatExposure, type MappedConfig } from "./exposure/format.ts";
+import { agentHook } from "./agent/hook.ts";
 import { exposureMap } from "./exposure/map.ts";
 import { forwardAudit } from "./forward.ts";
 import { outputPaths, plan } from "./generate.ts";
@@ -46,6 +47,10 @@ Commands:
   exposure [file ...]
              print who receives which columns of which tables, marking the ones whose
              name or comment looks personal; reads the files only (default: as lint)
+  agent hook [file ...]
+             the post-edit hook for coding agents (Claude Code, Codex): reads the hook's
+             JSON on stdin and, when the edit touched a sync config or a migration, lints
+             the sync configs; exit 2 with the findings on stderr when one is an error
   audit [options]
              run samesight-verify audit: the project's own RLS against its sync config, on
              the local stack; needs @samesight/verify, and takes its flags (audit --help)
@@ -56,11 +61,11 @@ Options:
                     supabase/config.toml, else 54322)
   --table <name>    explain: one table only
   --migrations <dir>
-                    lint and exposure: the SQL migrations to read tables, keys, column
-                    comments and (lint) RLS from (default: supabase/migrations)
+                    lint, exposure and agent hook: the SQL migrations to read tables, keys,
+                    column comments and (lint) RLS from (default: supabase/migrations)
   --allow <rule>[:<name>]
-                    lint: accept a rule's findings, all of them or those about one stream,
-                    bucket, table or policy; repeatable
+                    lint and agent hook: accept a rule's findings, all of them or those about
+                    one stream, bucket, table or policy; repeatable
   --format <text|json|sarif|github>
                     lint: text (default), one JSON object, one SARIF 2.1.0 log, or GitHub
                     Actions annotations, on stdout; notes on stderr; exposure: text
@@ -97,10 +102,15 @@ async function main(argv: string[]): Promise<number> {
     return command || values.help ? 0 : 2;
   }
   // Lint and exposure need no policy: they are for any PowerSync project.
+  if (command === "lint" && (values.agents !== undefined || values.print !== undefined)) {
+    console.error(`samesight: lint does not take --${values.agents !== undefined ? "agents" : "print"}`);
+    return 2;
+  }
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
+  if (command === "agent") return agent(positionals.slice(1), values);
   if (command === "exposure") {
     // Accepting an option it does not use would look like it worked.
-    const unused = (["allow", "policy", "db", "table"] as const).find((o) => values[o] !== undefined);
+    const unused = (["allow", "policy", "db", "table", "agents", "print"] as const).find((o) => values[o] !== undefined);
     if (unused) {
       console.error(`samesight: exposure does not take --${unused}; it takes [file ...], --migrations and --format`);
       return 2;
@@ -176,7 +186,7 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-const COMMANDS = ["init", "generate", "check", "doctor", "explain", "lint", "exposure", "audit"];
+const COMMANDS = ["init", "generate", "check", "doctor", "explain", "lint", "exposure", "agent", "audit"];
 
 /**
  * The flags, read strictly. A flag Node cannot read is reported in its own words, with
@@ -197,6 +207,8 @@ const OPTIONS = {
   migrations: { type: "string" },
   allow: { type: "string", multiple: true },
   format: { type: "string" },
+  agents: { type: "string" },
+  print: { type: "boolean" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean", short: "v" },
 } as const;
@@ -312,6 +324,47 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
     if (unreadable.length) console.error(`${unreadable.length} of ${found.length} file(s) could not be read, so nothing in them is mapped.`);
   }
   return unreadable.length ? 2 : 0;
+}
+
+const AGENT_USAGE = "samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]";
+
+/** `samesight agent hook`: the post-edit hook an agent runs, with its JSON on stdin. */
+async function agent(args: string[], values: ReturnType<typeof flags>["values"]): Promise<number> {
+  const [sub, ...given] = args;
+  if (sub !== "hook") {
+    console.error(`samesight: agent takes hook${sub ? `, not "${sub}"` : ""}: ${AGENT_USAGE}`);
+    return 2;
+  }
+  // Accepting an option it does not use would look like it worked.
+  const unused = (["policy", "db", "table", "format", "agents", "print"] as const).find((o) => values[o] !== undefined);
+  if (unused) {
+    console.error(`samesight: agent hook does not take --${unused}; it takes [file ...], --migrations and --allow`);
+    return 2;
+  }
+  const result = agentHook(await readStdin(), { given, migrationsDir: values.migrations, allow: values.allow ?? [] }, { projectDir: process.env.CLAUDE_PROJECT_DIR, cwd: process.cwd(), win32: process.platform === "win32" });
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  return result.code;
+}
+
+/** All of stdin, up to 5 MB and 5 seconds; empty from a terminal, where no hook payload comes. */
+async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  const chunks: Buffer[] = [];
+  let size = 0;
+  const read = new Promise<void>((done) => {
+    process.stdin.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 5_000_000) chunks.push(chunk);
+    });
+    process.stdin.on("end", done);
+    process.stdin.on("error", () => done());
+  });
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([read, new Promise<void>((done) => (timer = setTimeout(done, 5_000)))]);
+  clearTimeout(timer);
+  process.stdin.pause();
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {
