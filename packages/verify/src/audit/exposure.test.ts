@@ -45,7 +45,7 @@ describe("exposureScope", () => {
       ["messages", ["sender_id", "recipient_id"], ["recipient_phone:contact:name"]],
     ]);
     // No column for a user: not measured, and said so. A table with nothing personal is left out.
-    expect(ex.unowned).toEqual([{ table: "orgs", columns: ["billing_email"], why: "no column of it references auth.users" }]);
+    expect(ex.unowned).toEqual([{ table: "orgs", columns: ["billing_email"], why: "none of its columns is a key to auth.users' id" }]);
   });
 
   it("names tables whose rows the run cannot match by id as not measured", () => {
@@ -63,6 +63,12 @@ describe("exposureScope", () => {
     // allergy is a flag here, not data; lat counts beside lng; patient_id, a second key to a user, names whose row it is.
     const ex = exposureScope([VISITS], ["visits"]);
     expect(ex.tables.map((t) => [t.table, t.owners, [...t.columns.keys()]])).toEqual([["visits", ["doctor_id", "patient_id"], ["lat", "lng"]]]);
+  });
+
+  it("reads only a key to a user's id as whose the row is", () => {
+    // A key to auth.users(phone) holds a phone number, not a user: it stays personal, and gives the row no user.
+    const CALLS = { ...table("calls", [column("caller_phone")]), foreignKeys: [{ columns: ["caller_phone"], schema: "auth", table: "users", references: ["phone"] }] };
+    expect(exposureScope([CALLS], ["calls"]).unowned).toEqual([{ table: "calls", columns: ["caller_phone"], why: "none of its columns is a key to auth.users' id" }]);
   });
 
   it("leaves out tables the run does not sync", () => {
@@ -198,7 +204,7 @@ describe("exposureFindings", () => {
     expect(exposureFindings(ex)).toEqual([
       { status: "ok", check: "exposure", detail: "u0's device held email [contact], full_name [identifier] of 2 other run users' members rows, sent by stream org_members (2 rows over 1 dataset)" },
       { status: "ok", check: "exposure", detail: "u1's device held chief_complaint [health, marked in its comment] of 1 other run user's notes rows, sent by stream notes (1 row over 1 dataset)" },
-      { status: "ok", check: "exposure", detail: "orgs: billing_email likely personal, but no column of it references auth.users, so whose rows reach whom is not read here" },
+      { status: "ok", check: "exposure", detail: "orgs: billing_email likely personal, but none of its columns is a key to auth.users' id, so whose rows reach whom is not read here" },
     ]);
   });
 
@@ -232,7 +238,7 @@ describe("exposureFindings", () => {
     expect(exposureFindings(exposureScope([MEMBERS], ["members"])).map((f) => f.detail)).toEqual(["no dataset passed before the run stopped, so nothing was measured"]);
     expect(exposureFindings(exposureScope([ORGS], ["orgs"])).map((f) => f.detail)).toEqual([
       "no synced table with a likely personal column could be measured",
-      "orgs: billing_email likely personal, but no column of it references auth.users, so whose rows reach whom is not read here",
+      "orgs: billing_email likely personal, but none of its columns is a key to auth.users' id, so whose rows reach whom is not read here",
     ]);
     expect(exposureFindings(exposureScope([LISTS], ["lists"])).map((f) => f.detail)).toEqual(["no synced table has a column that looks personal, by its name or a comment marker"]);
     // A table measured beside one that is not: nothing reached, in the rows it could read.

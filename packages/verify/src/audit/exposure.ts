@@ -24,7 +24,7 @@ import { cutShort, type RunCut } from "./coverage.ts";
 /** A synced table with likely personal columns and a column for its user. */
 export interface ExposedTable {
   table: string;
-  /** The columns that hold a user the row belongs to: each single-column key to auth.users. */
+  /** The columns that hold a user the row belongs to: each single-column key to auth.users' id. */
   owners: string[];
   /** Each likely personal column, with what matched. */
   columns: Map<string, PersonalMatch>;
@@ -71,7 +71,8 @@ export function exposureScope(model: TableModel[], synced: string[]): Exposure {
       if (match) columns.set(c.name, match);
     }
     if (!columns.size) continue;
-    const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
+    // A key to a user's id: a key to another column of auth.users (a phone) holds that column's data, not whose the row is.
+    const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1 && fk.references[0] === "id").map((fk) => fk.columns[0] as string);
     // A user's id names whose row it is; it is no one else's personal data on it.
     for (const o of owners) columns.delete(o);
     if (!columns.size) {
@@ -80,7 +81,7 @@ export function exposureScope(model: TableModel[], synced: string[]): Exposure {
     }
     // Rows are matched to the run's by id: a sequence's id is not read back, so its rows would never match.
     const id = t.columns.find((c) => c.name === "id");
-    const why = !owners.length ? "no column of it references auth.users" : !id ? "it has no id column to match its rows by" : id.autoKey || id.computed ? "the database sets its id, which the run does not read back" : undefined;
+    const why = !owners.length ? "none of its columns is a key to auth.users' id" : !id ? "it has no id column to match its rows by" : id.autoKey || id.computed ? "the database sets its id, which the run does not read back" : undefined;
     if (why) unowned.push({ table: t.name, columns: [...columns.keys()], why });
     else tables.push({ table: t.name, owners, columns });
   }
