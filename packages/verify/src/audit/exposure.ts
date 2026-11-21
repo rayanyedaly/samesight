@@ -7,9 +7,10 @@
  * says which of its columns came with it. A row belongs to the run users its columns for a
  * user hold (each key to auth.users, as the run inserted it), so a stream that leaves those
  * columns out still counts. A row the reader is one of the users of (a doctor's visit with a
- * patient) is counted apart, as shared: its values may be the reader's own. Ownership through a parent row is not read, and neither are rows
- * the run did not insert. Datasets that pass hold the columns under their own names: a
- * renamed or computed column fails the comparison first.
+ * patient) is counted apart, as shared: its values may be the reader's own. Ownership through
+ * a parent row is not read, and neither are rows the run did not insert. Datasets that pass
+ * hold the columns under their own names: a renamed or computed column fails the comparison
+ * first.
  */
 
 import { type PersonalMatch, personalColumn } from "samesight/compiler";
@@ -18,11 +19,12 @@ import type { TableModel } from "../differential/model.ts";
 import type { Run } from "../differential/run.ts";
 import type { Inserted } from "../differential/world.ts";
 import type { Finding } from "../report.ts";
+import { cutShort, type RunCut } from "./coverage.ts";
 
 /** A synced table with likely personal columns and a column for its user. */
 export interface ExposedTable {
   table: string;
-  /** The columns that hold a user the row belongs to: every key to auth.users. */
+  /** The columns that hold a user the row belongs to: each single-column key to auth.users. */
   owners: string[];
   /** Each likely personal column, with what matched. */
   columns: Map<string, PersonalMatch>;
@@ -46,11 +48,13 @@ export interface Held {
 
 export interface Exposure {
   tables: ExposedTable[];
-  /** Synced tables with likely personal columns whose rows cannot be told apart by user: not measured, and why. */
+  /** Synced tables with likely personal columns whose rows the run cannot tie to a user: not measured, and why. */
   unowned: { table: string; columns: string[]; why: string }[];
+  /** Synced tables whose only likely personal columns are their keys to auth.users, which name whose a row is. */
+  keysOnly: string[];
   datasets: number;
   held: Map<string, Held>;
-  /** Tables some of whose run rows took their id from the database, so those rows were not matched. */
+  /** Tables some of whose run rows had no id the run set (the database's default, or none), so those rows were not matched. */
   unmatched: Set<string>;
 }
 
@@ -58,6 +62,7 @@ export interface Exposure {
 export function exposureScope(model: TableModel[], synced: string[]): Exposure {
   const tables: ExposedTable[] = [];
   const unowned: Exposure["unowned"] = [];
+  const keysOnly: string[] = [];
   for (const t of model.filter((m) => synced.includes(m.name))) {
     const siblings = t.columns.map((c) => c.name);
     const columns = new Map<string, PersonalMatch>();
@@ -69,14 +74,17 @@ export function exposureScope(model: TableModel[], synced: string[]): Exposure {
     const owners = t.foreignKeys.filter((fk) => fk.schema === "auth" && fk.table === "users" && fk.columns.length === 1).map((fk) => fk.columns[0] as string);
     // A user's id names whose row it is; it is no one else's personal data on it.
     for (const o of owners) columns.delete(o);
-    if (!columns.size) continue;
+    if (!columns.size) {
+      keysOnly.push(t.name);
+      continue;
+    }
     // Rows are matched to the run's by id: a sequence's id is not read back, so its rows would never match.
     const id = t.columns.find((c) => c.name === "id");
     const why = !owners.length ? "no column of it references auth.users" : !id ? "it has no id column to match its rows by" : id.autoKey || id.computed ? "the database sets its id, which the run does not read back" : undefined;
     if (why) unowned.push({ table: t.name, columns: [...columns.keys()], why });
     else tables.push({ table: t.name, owners, columns });
   }
-  return { tables, unowned, datasets: 0, held: new Map(), unmatched: new Set() };
+  return { tables, unowned, keysOnly, datasets: 0, held: new Map(), unmatched: new Set() };
 }
 
 /**
@@ -95,7 +103,7 @@ export function noteExposure(s: Pick<Run, "fixed" | "fixedRows">, ex: Exposure, 
   for (const { i, kept } of rows) {
     const t = ex.tables.find((x) => x.table === i.table);
     if (!t) continue;
-    // Left to a default, the id is the database's, and the row cannot be found again by it.
+    // Left to a default, the id is the database's; left null, there is none: either way the row cannot be found again by it.
     if (i.row.id === undefined || i.row.id === null) {
       ex.unmatched.add(t.table);
       continue;
@@ -147,6 +155,8 @@ export function exposureFindings(ex: Exposure): Finding[] {
       detail: `${h.reader}'s device held ${columns.join(", ")} of ${whose}, sent by stream ${h.stream} (${plural(h.rows.size, "row")} over ${plural(ex.datasets, "dataset")})`,
     });
   }
+  // Rows or tables it could not read: a line that nothing reached says it holds for the rest only.
+  const partial = ex.unmatched.size > 0 || ex.unowned.length > 0;
   if (!held.length && ex.tables.length && !ex.datasets) {
     out.push({ status: "ok", check, detail: "no dataset passed before the run stopped, so nothing was measured" });
   } else if (!held.length) {
@@ -154,14 +164,14 @@ export function exposureFindings(ex: Exposure): Finding[] {
       status: "ok",
       check,
       detail: ex.tables.length
-        ? "no likely personal column of one run user's rows reached another run user's device"
+        ? `${partial ? "in the rows it could match, " : ""}no likely personal column of one run user's rows reached another run user's device`
         : ex.unowned.length
           ? "no synced table with a likely personal column could be measured"
-          : "no synced table has a column that looks personal, by its name or a comment marker",
+          : `no synced table has a column that looks personal, by its name or a comment marker${ex.keysOnly.length ? `, apart from keys to auth.users, which say whose a row is (${ex.keysOnly.join(", ")})` : ""}`,
     });
   }
   for (const table of [...ex.unmatched].sort()) {
-    out.push({ status: "ok", check, detail: `${table}: some run rows took their id from the database, so those were not matched and are not counted here` });
+    out.push({ status: "ok", check, detail: `${table}: some run rows had no id the run set (the database's default, or none), so those were not matched and are not counted here` });
   }
   for (const u of ex.unowned) {
     out.push({ status: "ok", check, detail: `${u.table}: ${u.columns.join(", ")} likely personal, but ${u.why}, so whose rows reach whom is not read here` });
@@ -170,7 +180,7 @@ export function exposureFindings(ex: Exposure): Finding[] {
 }
 
 /** The section's title, and how much it covers when a failure or the time limit cut the run short. */
-export function exposureTitle(ex: Exposure, result: { findings: Finding[]; stopped?: boolean }): string {
-  const cut = result.findings.some((f) => f.status === "fail") ? " before the failure" : result.stopped ? " before the time limit" : "";
+export function exposureTitle(ex: Exposure, result: RunCut): string {
+  const cut = cutShort(ex.datasets, result);
   return cut ? `Exposure in the ${plural(ex.datasets, "dataset")} run${cut}` : "Exposure (columns that likely hold personal data, by name or comment marker, of other run users' rows)";
 }

@@ -144,13 +144,13 @@ describe("noteExposure", () => {
     expect([...other.held.values()].map((h) => [h.reader, h.table, [...h.owners]])).toEqual([["u0", "profiles", ["c"]]]);
   });
 
-  it("names a table some of whose rows took their id from the database", () => {
+  it("names a table some of whose rows had no id the run set, and claims nothing about them", () => {
     const ex = scoped();
     noteExposure(run, ex, [ins("members", { user_id: "b" }), ins("members", { id: null, user_id: "c" })], new Map([["a", [row("members", { id: "m9", user_id: "b", email: "b@x" })]]]));
     expect(ex.held.size).toBe(0);
     expect(exposureFindings(ex).map((f) => f.detail)).toEqual([
-      "no likely personal column of one run user's rows reached another run user's device",
-      "members: some run rows took their id from the database, so those were not matched and are not counted here",
+      "in the rows it could match, no likely personal column of one run user's rows reached another run user's device",
+      "members: some run rows had no id the run set (the database's default, or none), so those were not matched and are not counted here",
     ]);
   });
 
@@ -233,17 +233,38 @@ describe("exposureFindings", () => {
       "orgs: billing_email likely personal, but no column of it references auth.users, so whose rows reach whom is not read here",
     ]);
     expect(exposureFindings(exposureScope([LISTS], ["lists"])).map((f) => f.detail)).toEqual(["no synced table has a column that looks personal, by its name or a comment marker"]);
+    // A table measured beside one that is not: nothing reached, in the rows it could read.
+    const some = exposureScope([MEMBERS, ORGS], ["members", "orgs"]);
+    noteExposure(run, some, [], new Map());
+    expect(exposureFindings(some)[0]?.detail).toBe("in the rows it could match, no likely personal column of one run user's rows reached another run user's device");
+  });
+
+  it("says a table's keys to auth.users look personal, rather than that nothing does", () => {
+    // patient_id reads as an identifier, but it names whose the visit is: it is not someone else's data on the row.
+    const CHARTS = table("charts", [column("doctor_id", "uuid"), column("patient_id", "uuid")], "doctor_id", "patient_id");
+    const ex = exposureScope([CHARTS, LISTS], ["charts", "lists"]);
+    expect(ex.keysOnly).toEqual(["charts"]);
+    expect(exposureFindings(ex).map((f) => f.detail)).toEqual(["no synced table has a column that looks personal, by its name or a comment marker, apart from keys to auth.users, which say whose a row is (charts)"]);
   });
 });
 
 describe("exposureTitle", () => {
   it("says how many datasets it covers when a failure or the time limit cut the run short", () => {
     const ex = exposureScope([MEMBERS], ["members"]);
+    const fail = { status: "fail", check: "differential", detail: "x" } as const;
     ex.datasets = 3;
-    expect(exposureTitle(ex, { findings: [] })).toBe("Exposure (columns that likely hold personal data, by name or comment marker, of other run users' rows)");
-    expect(exposureTitle(ex, { findings: [{ status: "fail", check: "differential", detail: "x" }] })).toBe("Exposure in the 3 datasets run before the failure");
-    expect(exposureTitle(ex, { findings: [], stopped: true })).toBe("Exposure in the 3 datasets run before the time limit");
+    expect(exposureTitle(ex, { findings: [], runs: 3 })).toBe("Exposure (columns that likely hold personal data, by name or comment marker, of other run users' rows)");
+    // The fourth dataset failed, so it was not measured.
+    expect(exposureTitle(ex, { findings: [fail], runs: 4 })).toBe("Exposure in the 3 datasets run before the failure");
+    // A run that broke down in its last dataset, measured or not.
+    expect(exposureTitle(ex, { findings: [{ ...fail, incomplete: true }], runs: 3 })).toBe("Exposure in the 3 datasets run before the failure");
+    expect(exposureTitle(ex, { findings: [], runs: 3, stopped: true })).toBe("Exposure in the 3 datasets run before the time limit");
+    // Every dataset passed, and a failure about the run as a whole cut nothing short.
+    expect(exposureTitle(ex, { findings: [fail], runs: 3 })).toBe("Exposure (columns that likely hold personal data, by name or comment marker, of other run users' rows)");
     ex.datasets = 1;
-    expect(exposureTitle(ex, { findings: [{ status: "fail", check: "differential", detail: "x" }] })).toBe("Exposure in the 1 dataset run before the failure");
+    expect(exposureTitle(ex, { findings: [fail], runs: 2 })).toBe("Exposure in the 1 dataset run before the failure");
+    // The time limit came before the first dataset.
+    ex.datasets = 0;
+    expect(exposureTitle(ex, { findings: [{ ...fail, incomplete: true }], runs: 0 })).toBe("Exposure in the 0 datasets run before the time limit");
   });
 });

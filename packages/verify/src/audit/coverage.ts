@@ -480,9 +480,22 @@ export function untested(cov: Coverage): number {
   return [...policies, ...cov.units.filter((u) => !u.sameForAll)].filter((x) => x.tally.error !== undefined || stateOf(x.tally) !== "exercised").length;
 }
 
+/** What a section measured over passing datasets needs from the differential's result. */
+export type RunCut = { findings: Finding[]; runs: number; stopped?: boolean };
+
+/**
+ * What cut the datasets a section measured short, as a title says it: a dataset that failed or
+ * broke down (fewer measured than run), else the time limit, else nothing. A failure about the
+ * run as a whole (tables no dataset reached) leaves every dataset measured.
+ */
+export function cutShort(measured: number, result: RunCut): string {
+  if (measured < result.runs || (result.runs > 0 && result.findings.some((f) => f.incomplete))) return " before the failure";
+  return result.stopped || !result.runs ? " before the time limit" : "";
+}
+
 /** The section's title: what it covers, and how much when a failure or the time limit cut the run short. */
-export function coverageTitle(cov: Coverage, result: { findings: Finding[]; stopped?: boolean }): string {
-  const cut = result.findings.some((f) => f.status === "fail") ? " before the failure" : result.stopped ? " before the time limit" : "";
+export function coverageTitle(cov: Coverage, result: RunCut): string {
+  const cut = cutShort(cov.datasets, result);
   return cut ? `Coverage of the ${cov.datasets} datasets run${cut}` : "Coverage (per policy and per stream; OR branches and the queries of one stream are not told apart)";
 }
 
