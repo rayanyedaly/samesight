@@ -12,6 +12,8 @@ The four npm packages (`samesight`, `@samesight/verify`, `@samesight/supabase`, 
 - A new lint rule, `personal-columns`: a column that likely holds personal data (by whole words of its name, or a `samesight:personal` marker in its column comment; never by its data) sent to users other than the row's owner. A warning for a group's members, a fixed filter, or a token check that ties no row to the user (`org_id IN (auth.parameter('org_id'), 'public')`); a note for a role check, or when every user or any client gets it, which `unscoped-query` or `client-scoped` usually fails already. Existing projects may see new warnings: decide for each column, then drop it from the query, accept it with `--allow personal-columns:<table.column>`, or mark it with `COMMENT ON COLUMN ... IS 'samesight:not-personal'`.
 - The migrations reader also reads the tables they create: columns and their types, primary keys (a key made from a unique index, as `supabase db diff` writes it, included), columns that reference `auth.users`, and column comments (`E'...'` strings included), following ALTER TABLE. `drop table a, b` now forgets every table it names, not only the first.
 
+- `samesight lint --format json` is a versioned document: it adds `$schema`, `version` (1), `tool` and `toolVersion` to the fields it had, and the schema ships in the package as `samesight/schema/lint.schema.json`. It is printed on every exit, so a run that cannot start (no sync config, a bad `--migrations` directory, an unknown `--allow` rule, a wrong flag) also writes one, with `error` saying why. Text, SARIF and GitHub output are unchanged.
+
 ### @samesight/verify
 
 - `samesight-verify --help` and the npm page link to the docs site's page on the verifier and audit mode.

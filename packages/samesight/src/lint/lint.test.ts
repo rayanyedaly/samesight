@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,7 +144,12 @@ describe("samesight lint", () => {
     const out = run(dir, "sync-config.yaml", "bad.yaml", "--format", "json");
     expect(out.status).toBe(2);
     expect(out.stderr).toMatch(/note: no supabase\/migrations here/);
+    const version = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
     expect(JSON.parse(out.stdout)).toEqual({
+      $schema: `https://unpkg.com/samesight@${version}/schema/lint.schema.json`,
+      version: 1,
+      tool: "samesight",
+      toolVersion: version,
       files: ["sync-config.yaml", "bad.yaml"],
       rlsChecked: false,
       findings: [expect.objectContaining({ rule: "unscoped-query", level: "error", file: "sync-config.yaml", line: 6, column: 12, subjects: ["all", "customers"] })],
@@ -157,6 +162,24 @@ describe("samesight lint", () => {
     });
     const xml = run(dir, "--format", "xml");
     expect([xml.status, xml.stderr]).toEqual([2, 'samesight: --format must be text, json, sarif or github, not "xml"\n']);
+  });
+
+  it("prints one JSON document saying why when lint cannot run, as well as the message on stderr", { timeout: 30_000 }, () => {
+    const empty = tempDir();
+    const cases: [string, string[], RegExp][] = [
+      [empty, [], /^no sync config found \(tried /],
+      [empty, ["--allow", "unscoped-querry"], /^--allow names no rule unscoped-querry; the rules are /],
+      [empty, ["--frob"], /^unknown option '--frob'; see samesight --help$/],
+    ];
+    const dir = tempDir();
+    writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
+    cases.push([dir, ["--migrations", "nowhere"], /^no migrations directory at nowhere; check the path given to --migrations$/]);
+    for (const [cwd, args, error] of cases) {
+      const out = run(cwd, ...args, "--format", "json");
+      const doc = JSON.parse(out.stdout);
+      expect([out.status, doc.exitCode, doc.version, doc.tool, doc.files, doc.findings, doc.error], args.join(" ")).toEqual([2, 2, 1, "samesight", [], [], expect.stringMatching(error)]);
+      expect(out.stderr, args.join(" ")).toBe(`samesight: ${doc.error}\n`);
+    }
   });
 
   it("prints one SARIF log with --format sarif, with the same exit codes", { timeout: 30_000 }, () => {

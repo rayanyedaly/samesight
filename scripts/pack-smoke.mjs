@@ -177,7 +177,23 @@ step("samesight lint on Fieldbook", () => {
   expectIn(samesight("lint"), "No problems found.", "lint");
   // The RLS rules ran too: lint found the copied migrations.
   const report = JSON.parse(samesight("lint", "--format", "json"));
-  if (!report.rlsChecked || report.exitCode !== 0) throw new Error(`lint --format json: ${JSON.stringify(report)}`);
+  if (!report.rlsChecked || report.exitCode !== 0 || report.version !== 1 || !report.$schema.includes(`samesight@${version.samesight}/schema/lint.schema.json`)) {
+    throw new Error(`lint --format json: ${JSON.stringify(report)}`);
+  }
+});
+step("samesight lint --format json writes its document when lint cannot run", () => {
+  try {
+    run("npx", ["--no-install", "samesight", "lint", "--format", "json", "--migrations", "nowhere"], { cwd: cli });
+    throw new Error("lint ran with no migrations directory");
+  } catch (e) {
+    if (e.status !== 2) throw e;
+    const doc = JSON.parse(e.stdout);
+    if (doc.exitCode !== 2 || !/^no migrations directory at nowhere/.test(doc.error)) throw new Error(`lint --format json: ${e.stdout}`);
+  }
+});
+step("the lint schema is exported", () => {
+  const code = 'import s from "samesight/schema/lint.schema.json" with { type: "json" }; console.log(Object.keys(s.$defs).join(" "));';
+  expectIn(run("node", ["--input-type=module", "-e", code], { cwd: cli }), "Finding Unreadable", "lint schema export");
 });
 step("samesight lint catches a leak", () => {
   writeFileSync(join(cli, "leaky.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM inspections\n");

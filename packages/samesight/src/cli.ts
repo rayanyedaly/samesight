@@ -18,8 +18,9 @@ import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
-import { formatLint, sortFindings, type Unreadable } from "./lint/finding.ts";
+import { formatLint, type Unreadable } from "./lint/finding.ts";
 import { formatGithub } from "./lint/github.ts";
+import { lintDocument } from "./lint/json.ts";
 import { lineFinder, MIGRATIONS_DIR, RULE_NAMES } from "./lint/lint.ts";
 import { cannotRead, migrationsIn, runLint, syncConfigs, unknownRules } from "./lint/run.ts";
 import { formatSarif } from "./lint/sarif.ts";
@@ -77,7 +78,15 @@ async function main(argv: string[]): Promise<number> {
     console.error("samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help");
     return 2;
   }
-  const { positionals, values } = flags(argv);
+  const { positionals, values } = (() => {
+    try {
+      return flags(argv);
+    } catch (e) {
+      // A JSON run gets its document even when its flags are wrong.
+      if (lintJsonRun(argv)) printLintError(e);
+      throw e;
+    }
+  })();
   const command = positionals[0];
   if (values.version) {
     process.stdout.write(`${VERSION}\n`);
@@ -216,6 +225,17 @@ function flagError(e: unknown, help: string): unknown {
 
 const FORMATS = ["text", "json", "sarif", "github"];
 
+/** Whether the arguments ask for lint's JSON, read loosely: a run whose flags are wrong still gets its document. */
+function lintJsonRun(argv: string[]): boolean {
+  const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, strict: false, options: OPTIONS });
+  return positionals[0] === "lint" && values.format === "json";
+}
+
+/** Lint's JSON document for a run that could not start, on stdout; the message itself still goes to stderr. */
+function printLintError(e: unknown): void {
+  console.log(JSON.stringify(lintDocument(VERSION, { error: e instanceof Error ? e.message : String(e) }), null, 2));
+}
+
 /** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read; in every format. */
 function lint(given: string[], migrationsDir: string | undefined, allow: string[], format: string): number {
   if (!FORMATS.includes(format)) {
@@ -224,17 +244,24 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
   }
   const unknown = unknownRules(allow);
   if (unknown.length) {
-    console.error(`samesight: --allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
+    const message = `--allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`;
+    if (format === "json") printLintError(new Error(message));
+    console.error(`samesight: ${message}`);
     return 2;
   }
-  const run = runLint({ given, migrationsDir, allow, cwd: process.cwd() });
+  const run = (() => {
+    try {
+      return runLint({ given, migrationsDir, allow, cwd: process.cwd() });
+    } catch (e) {
+      if (format === "json") printLintError(e);
+      throw e;
+    }
+  })();
   if (!run.rlsChecked) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run, and personal-columns saw only the columns queries list (not those a SELECT * sends), no column comments, and every table as keyed by id; pass --migrations <dir> to check them`);
   for (const m of run.messages) console.error(m);
   const { files: found, kept, allowed, unreadable, code } = run;
   if (format === "json") {
-    const count = (level: string) => kept.filter((f) => f.level === level).length;
-    const report = { files: found, rlsChecked: run.rlsChecked, findings: sortFindings(kept), allowed: sortFindings(allowed), unreadable, errors: count("error"), warnings: count("warning"), notes: count("info"), exitCode: code };
-    console.log(JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(lintDocument(VERSION, run), null, 2));
     return code;
   }
   if (format === "sarif") {

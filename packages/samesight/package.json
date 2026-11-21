@@ -35,7 +35,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./compiler": "./src/compiler.ts"
+    "./compiler": "./src/compiler.ts",
+    "./schema/lint.schema.json": "./schema/lint.schema.json"
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
@@ -56,10 +57,12 @@
   },
   "files": [
     "dist",
+    "schema",
     "src",
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
     "!src/fixtures",
+    "!src/testing",
     "!src/**/__golden__",
     "!src/**/__snapshots__"
   ],
@@ -77,6 +80,7 @@
         "types": "./dist/compiler.d.ts",
         "default": "./dist/compiler.js"
       },
+      "./schema/lint.schema.json": "./schema/lint.schema.json",
       "./package.json": "./package.json"
     },
     "bin": {
