@@ -17,16 +17,16 @@ export interface MarkdownReport {
 
 const MARK = { ok: "ok", warn: "**warn**", fail: "**FAIL**" } as const;
 
-/** Text with every character Markdown could read as markup escaped, on one line. */
+/** Text with every character Markdown could read as markup escaped, on one line: a lone carriage return ends a Markdown line too. */
 export function inline(s: string): string {
   return s
-    .replace(/\s*\n\s*/g, " ")
+    .replace(/\s*[\r\n]\s*/g, " ")
     .replace(/[\\`*_[\]<>|~&#]/g, "\\$&");
 }
 
 /** A code span for a table cell: a backtick run longer than any inside, and `|` escaped as GFM tables need. */
 export function code(s: string): string {
-  const text = s.replace(/\s*\n\s*/g, " ");
+  const text = s.replace(/\s*[\r\n]\s*/g, " ");
   const ticks = "`".repeat(Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length)) + 1);
   const pad = /^[` ]|[` ]$/.test(text) ? " " : "";
   return `${ticks}${pad}${text}${pad}${ticks}`.replace(/\|/g, "\\|");

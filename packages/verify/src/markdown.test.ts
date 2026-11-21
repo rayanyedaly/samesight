@@ -181,6 +181,15 @@ describe("escaping", () => {
     expect(fence("select '```'", "sql")).toEqual(["````sql", "select '```'", "````"]);
   });
 
+  it("keeps a name holding a carriage return on its list item and table row", () => {
+    // A quoted Postgres name can hold one, and Markdown ends a line at a lone \r as at \n.
+    expect(inline("members.\r# heading")).toBe("members. \\# heading");
+    expect(code("s\rt")).toBe("`s t`");
+    const odd = toMarkdown({ mode: "audit", exitCode: 0, sections: [{ title: "Exposure", findings: [{ status: "ok", check: "exposure", detail: "u0's device held email of t\r- x rows" }] }] });
+    expect(odd).toContain("- ok exposure: u0's device held email of t - x rows");
+    expect(odd).not.toContain("\r");
+  });
+
   it("escapes what a row's values hold in its table", () => {
     const odd = toMarkdown({ mode: "audit", exitCode: 1, sections: [{ title: "D", findings: [differential("fail", "x:", [{ ...leak, row: "lists 1 (title a|b`c)", sentBy: [{ stream: "s|t" }] }])] }] });
     expect(odd).toContain("| Row | lists 1 (title a\\|b\\`c) |");
