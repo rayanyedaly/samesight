@@ -41,6 +41,8 @@ npx samesight exposure sync-config.yaml --migrations supabase/migrations
 
 The [`personal-columns`](docs/rules/personal-columns.md) lint rule flags the same columns in CI. See [the exposure map](docs/exposure.md).
 
+When a coding agent writes the sync config or the migrations, lint can run after each of its edits and hand it what it found: `npx samesight agent init` installs the hook (for Claude Code, and Codex and Cursor as the page says) and a skill that teaches each rule's fix. See [coding agents](docs/agents.md).
+
 ## Lint and audit in CI
 
 The repository is also a GitHub Action: `mode: lint` annotates pull requests and can upload SARIF to code scanning, and `mode: audit` runs the audit on pull requests that change the sync config or the migrations. See [CI and the GitHub Action](docs/ci.md).
@@ -160,6 +162,7 @@ The docs are also a website, with search: [rayanyedaly.github.io/samesight](http
 - [How sync configs leak](docs/how-sync-configs-leak.md): the patterns lint and audit catch
 - [The exposure map](docs/exposure.md): who receives which columns, and the ones that likely hold personal data
 - [CI and the GitHub Action](docs/ci.md): lint and audit on pull requests
+- [Coding agents](docs/agents.md): lint after each edit an agent makes, and a skill that teaches it the fixes
 - [Fieldbook](examples/fieldbook), the example app: multi-tenant inspections with three roles, offline writes and append-only records
 - [Quickstart](examples/quickstart): what the getting-started guide produces, verified in CI
 - [Audit to-do list](examples/audit-todolist): audit on PowerSync's Supabase to-do list demo as published, and with a leak planted, in CI

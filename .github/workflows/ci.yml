@@ -46,6 +46,9 @@ jobs:
       # map's page its example and samesight exposure's output.
       - run: pnpm build:packages
       - run: node scripts/docs/leaks.mjs --check
+      # The samesight skill's rule references and rules table are what scripts/docs/skill.mjs
+      # makes of the rule pages and RULE_INFO.
+      - run: node scripts/docs/skill.mjs --check
       # The terminal capture's SVGs are what scripts/demo/render.mjs makes of its transcript.
       - run: node scripts/demo/render.mjs --check
       # The docs site builds; a link to a missing page or file fails it.

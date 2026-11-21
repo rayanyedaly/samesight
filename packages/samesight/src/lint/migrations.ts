@@ -58,12 +58,12 @@ export interface Migrations {
   tables: Map<string, TableDef>;
 }
 
-/** Every `.sql` file in `dir`, in name order, read into one Migrations. */
-export function readMigrations(dir: string): Migrations {
+/** Every `.sql` file in `dir`, in name order, read into one Migrations; findings name the files under `name` (default: `dir`). */
+export function readMigrations(dir: string, name = dir): Migrations {
   const files = readdirSync(dir)
     .filter((f) => f.endsWith(".sql"))
     .sort();
-  return applyMigrations(files.map((f) => ({ file: join(dir, f), sql: readFileSync(join(dir, f), "utf8") })));
+  return applyMigrations(files.map((f) => ({ file: join(name, f), sql: readFileSync(join(dir, f), "utf8") })));
 }
 
 export function applyMigrations(files: { file: string; sql: string }[]): Migrations {

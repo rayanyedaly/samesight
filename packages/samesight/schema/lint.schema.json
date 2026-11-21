@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "samesight lint --format json",
+  "description": "One document per run on stdout, for exits 0, 1 and 2. Fields may be added in a later version 1; a field's meaning does not change without a new version.",
+  "type": "object",
+  "required": ["$schema", "version", "tool", "toolVersion", "files", "rlsChecked", "findings", "allowed", "unreadable", "errors", "warnings", "notes", "exitCode"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string", "description": "This schema, for the samesight version that wrote the document." },
+    "version": { "const": 1 },
+    "tool": { "const": "samesight" },
+    "toolVersion": { "type": "string" },
+    "files": { "type": "array", "items": { "type": "string" }, "description": "The sync configs read, as named or as found; empty when lint could not run." },
+    "rlsChecked": { "type": "boolean", "description": "Whether migrations were read, so rls-off and rls-open ran." },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/Finding" }, "description": "Findings --allow did not accept." },
+    "allowed": { "type": "array", "items": { "$ref": "#/$defs/Finding" }, "description": "Findings --allow accepted." },
+    "unreadable": { "type": "array", "items": { "$ref": "#/$defs/Unreadable" } },
+    "errors": { "type": "integer", "minimum": 0, "description": "Error-level findings among findings." },
+    "warnings": { "type": "integer", "minimum": 0 },
+    "notes": { "type": "integer", "minimum": 0, "description": "Info-level findings among findings." },
+    "exitCode": { "enum": [0, 1, 2], "description": "0 clean or warnings only, 1 an error-level finding, 2 a file could not be read or lint could not run." },
+    "error": { "type": "string", "description": "Why lint could not run (no sync config, a bad --migrations directory, an unknown --allow rule, a bad flag); only then." }
+  },
+  "$defs": {
+    "Finding": {
+      "type": "object",
+      "required": ["rule", "level", "file", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "rule": { "type": "string", "description": "The rule's id; a later version may add rules." },
+        "level": { "enum": ["error", "warning", "info"] },
+        "file": { "type": "string", "description": "The sync config the finding is about." },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "message": { "type": "string" },
+        "subjects": { "type": "array", "items": { "type": "string" }, "description": "The stream or bucket, table, policy or column it is about: what --allow <rule>:<name> matches." }
+      }
+    },
+    "Unreadable": {
+      "type": "object",
+      "required": ["file", "error"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string" },
+        "error": { "type": "string" }
+      }
+    }
+  }
+}

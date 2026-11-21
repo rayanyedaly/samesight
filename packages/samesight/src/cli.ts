@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * samesight init | generate | check | doctor | explain | lint | exposure | audit
+ * samesight init | generate | check | doctor | explain | lint | exposure | agent init | agent hook | audit
  *
  * Runs on Node's built-in TypeScript support (type stripping), so a policy file is
  * imported as written. Paths in the policy's `output` are relative to the policy file.
@@ -12,16 +12,19 @@ import { parseArgs } from "node:util";
 import { doctor, type Finding } from "./doctor.ts";
 import { explainPolicy } from "./explain.ts";
 import { exposureJson, formatExposure, type MappedConfig } from "./exposure/format.ts";
+import { agentHook } from "./agent/hook.ts";
+import { AGENTS, type Agent, agentInit } from "./agent/init.ts";
 import { exposureMap } from "./exposure/map.ts";
 import { forwardAudit } from "./forward.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
-import { applyAllow, exitCode, formatLint, type LintFinding, sortFindings, type Unreadable } from "./lint/finding.ts";
+import { formatLint, type Unreadable } from "./lint/finding.ts";
 import { formatGithub } from "./lint/github.ts";
-import { findSyncConfig, lineFinder, lintSyncConfig, MIGRATIONS_DIR, RULE_NAMES, SYNC_CONFIG_FILES } from "./lint/lint.ts";
-import { type Migrations, readMigrations } from "./lint/migrations.ts";
+import { lintDocument } from "./lint/json.ts";
+import { lineFinder, MIGRATIONS_DIR, RULE_NAMES } from "./lint/lint.ts";
+import { cannotRead, migrationsIn, runLint, syncConfigs, unknownRules } from "./lint/run.ts";
 import { formatSarif } from "./lint/sarif.ts";
 import { loadPolicy, POLICY_FILES, resolvePolicyPath, tsIsModule } from "./load.ts";
 import type { Policy } from "./policy.ts";
@@ -45,6 +48,16 @@ Commands:
   exposure [file ...]
              print who receives which columns of which tables, marking the ones whose
              name or comment looks personal; reads the files only (default: as lint)
+  agent init [file ...]
+             install the samesight skill for coding agents and the hook that lints after
+             each edit to a sync config or migration (.claude/, .agents/, .cursor/, .codex/);
+             never removes a file or changes a setting of yours; --print shows what it
+             would write
+  agent hook [file ...]
+             the post-edit hook agent init installs: reads the hook's JSON on stdin and,
+             when the edit touched a sync config or a migration, lints the sync configs;
+             exit 2 with the findings on stderr when one is an error or a sync config
+             cannot be read
   audit [options]
              run samesight-verify audit: the project's own RLS against its sync config, on
              the local stack; needs @samesight/verify, and takes its flags (audit --help)
@@ -55,15 +68,17 @@ Options:
                     supabase/config.toml, else 54322)
   --table <name>    explain: one table only
   --migrations <dir>
-                    lint and exposure: the SQL migrations to read tables, keys, column
-                    comments and (lint) RLS from (default: supabase/migrations)
+                    lint, exposure and agent init/hook: the SQL migrations to read tables,
+                    keys, column comments and (lint) RLS from (default: supabase/migrations)
   --allow <rule>[:<name>]
-                    lint: accept a rule's findings, all of them or those about one stream,
-                    bucket, table or policy; repeatable
+                    lint and agent init/hook: accept a rule's findings, all of them or those
+                    about one stream, bucket, table or policy; repeatable
   --format <text|json|sarif|github>
                     lint: text (default), one JSON object, one SARIF 2.1.0 log, or GitHub
                     Actions annotations, on stdout; notes on stderr; exposure: text
                     (default) or one JSON object
+  --agents <list>   agent init: claude, codex, cursor, comma-separated (default: all three)
+  --print           agent init: say what it would write, and write nothing
   -v, --version     print the version
   -h, --help        print this help
 
@@ -73,11 +88,21 @@ Docs: https://rayanyedaly.github.io/samesight/
 async function main(argv: string[]): Promise<number> {
   // Its flags are samesight-verify's, so they are not read here.
   if (argv[0] === "audit") return forwardAudit(argv.slice(1));
+  // The hook runs after every edit an agent makes: a problem of its own must not stop the agent.
+  if (argv[0] === "agent" && argv[1] === "hook") return agentHookLine(argv.slice(2));
   if (auditAfterFlags(argv)) {
     console.error("samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help");
     return 2;
   }
-  const { positionals, values } = flags(argv);
+  const { positionals, values } = (() => {
+    try {
+      return flags(argv);
+    } catch (e) {
+      // A JSON run gets its document even when its flags are wrong.
+      if (lintJsonRun(argv)) printLintError(e);
+      throw e;
+    }
+  })();
   const command = positionals[0];
   if (values.version) {
     process.stdout.write(`${VERSION}\n`);
@@ -88,7 +113,16 @@ async function main(argv: string[]): Promise<number> {
     return command || values.help ? 0 : 2;
   }
   // Lint and exposure need no policy: they are for any PowerSync project.
+  // Only agent init takes these: init or generate given --print would write files all the same.
+  const initOnly = (["agents", "print"] as const).find((o) => values[o] !== undefined);
+  if (initOnly && !(command === "agent" && positionals[1] === "init")) {
+    const message = `--${initOnly} is for samesight agent init only`;
+    if (command === "lint" && values.format === "json") printLintError(new Error(message));
+    console.error(`samesight: ${message}`);
+    return 2;
+  }
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
+  if (command === "agent") return agent(positionals.slice(1), values);
   if (command === "exposure") {
     // Accepting an option it does not use would look like it worked.
     const unused = (["allow", "policy", "db", "table"] as const).find((o) => values[o] !== undefined);
@@ -167,7 +201,7 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-const COMMANDS = ["init", "generate", "check", "doctor", "explain", "lint", "exposure", "audit"];
+const COMMANDS = ["init", "generate", "check", "doctor", "explain", "lint", "exposure", "agent", "audit"];
 
 /**
  * The flags, read strictly. A flag Node cannot read is reported in its own words, with
@@ -188,6 +222,8 @@ const OPTIONS = {
   migrations: { type: "string" },
   allow: { type: "string", multiple: true },
   format: { type: "string" },
+  agents: { type: "string" },
+  print: { type: "boolean" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean", short: "v" },
 } as const;
@@ -216,36 +252,43 @@ function flagError(e: unknown, help: string): unknown {
 
 const FORMATS = ["text", "json", "sarif", "github"];
 
+/** Whether the arguments ask for lint's JSON, read loosely: a run whose flags are wrong still gets its document. */
+function lintJsonRun(argv: string[]): boolean {
+  const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, strict: false, options: OPTIONS });
+  return positionals[0] === "lint" && values.format === "json";
+}
+
+/** Lint's JSON document for a run that could not start, on stdout; the message itself still goes to stderr. */
+function printLintError(e: unknown): void {
+  console.log(JSON.stringify(lintDocument(VERSION, { error: e instanceof Error ? e.message : String(e) }), null, 2));
+}
+
 /** Exit 0 clean (or warnings only), 1 on an error finding, 2 when a file cannot be read; in every format. */
 function lint(given: string[], migrationsDir: string | undefined, allow: string[], format: string): number {
   if (!FORMATS.includes(format)) {
     console.error(`samesight: --format must be text, json, sarif or github, not "${format}"`);
     return 2;
   }
-  // A misspelt rule would allow nothing and look like it worked.
-  const unknown = allow.map((a) => a.split(":")[0] as string).filter((r) => !RULE_NAMES.includes(r));
+  const unknown = unknownRules(allow);
   if (unknown.length) {
-    console.error(`samesight: --allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
+    const message = `--allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`;
+    if (format === "json") printLintError(new Error(message));
+    console.error(`samesight: ${message}`);
     return 2;
   }
-  const found = syncConfigs(given, "lint");
-  const migrations = migrationsIn(migrationsDir)?.migrations;
-  if (!migrations) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run, and personal-columns saw only the columns queries list (not those a SELECT * sends), no column comments, and every table as keyed by id; pass --migrations <dir> to check them`);
-  const findings: LintFinding[] = [];
-  const unreadable: Unreadable[] = [];
-  for (const file of found) {
+  const run = (() => {
     try {
-      findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file, undefined, migrations));
+      return runLint({ given, migrationsDir, allow, cwd: process.cwd() });
     } catch (e) {
-      unreadable.push(cannotRead(file, e));
+      if (format === "json") printLintError(e);
+      throw e;
     }
-  }
-  const { kept, allowed } = applyAllow(findings, allow);
-  const code = unreadable.length ? 2 : exitCode(kept);
+  })();
+  if (!run.rlsChecked) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run, and personal-columns saw only the columns queries list (not those a SELECT * sends), no column comments, and every table as keyed by id; pass --migrations <dir> to check them`);
+  for (const m of run.messages) console.error(m);
+  const { files: found, kept, allowed, unreadable, code } = run;
   if (format === "json") {
-    const count = (level: string) => kept.filter((f) => f.level === level).length;
-    const report = { files: found, rlsChecked: migrations !== undefined, findings: sortFindings(kept), allowed: sortFindings(allowed), unreadable, errors: count("error"), warnings: count("warning"), notes: count("info"), exitCode: code };
-    console.log(JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(lintDocument(VERSION, run), null, 2));
     return code;
   }
   if (format === "sarif") {
@@ -273,8 +316,8 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
     console.error(`samesight: --format must be text or json for exposure, not "${format}"`);
     return 2;
   }
-  const found = syncConfigs(given, "exposure");
-  const read = migrationsIn(migrationsDir);
+  const found = syncConfigs(given, "exposure", process.cwd());
+  const read = migrationsIn(migrationsDir, process.cwd());
   if (!read) console.error(`note: no ${MIGRATIONS_DIR} here, so the columns a SELECT * sends are not known, no column comment is read, and every table is taken to be keyed by id; pass --migrations <dir> to read them`);
   const schema = read && ((table: string) => read.migrations.tables.get(table));
   const mapped: MappedConfig[] = [];
@@ -284,7 +327,9 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
       const text = readFileSync(file, "utf8");
       mapped.push({ file, map: exposureMap(parseSyncConfig(text), schema), lineOf: lineFinder(text) });
     } catch (e) {
-      unreadable.push(cannotRead(file, e));
+      const bad = cannotRead(file, e);
+      console.error(bad.message);
+      unreadable.push(bad.unreadable);
     }
   }
   if (format === "json") {
@@ -296,43 +341,94 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
   return unreadable.length ? 2 : 0;
 }
 
-/** The sync configs named, else the first of the usual paths here; throws when there is none. */
-function syncConfigs(given: string[], command: string): string[] {
-  if (given.length) return given;
-  const found = findSyncConfig(process.cwd());
-  if (found === undefined) throw new Error(`no sync config found (tried ${SYNC_CONFIG_FILES.join(", ")}); name one: samesight ${command} <file>`);
-  return [found];
+const AGENT_USAGE = "samesight agent init [file ...] [--migrations <dir>] [--allow <rule>[:<name>]] [--agents claude,codex,cursor] [--print], or samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]";
+
+/**
+ * `samesight agent init`: installs the skill and the post-edit hook. `samesight agent hook`:
+ * the post-edit hook an agent runs, with its JSON on stdin.
+ */
+async function agent(args: string[], values: ReturnType<typeof flags>["values"]): Promise<number> {
+  const [sub, ...given] = args;
+  if (sub === "init") return agentInitCommand(given, values);
+  if (sub !== "hook") {
+    console.error(`samesight: agent takes init or hook${sub ? `, not "${sub}"` : ""}: ${AGENT_USAGE}`);
+    return 2;
+  }
+  // Main runs `agent hook` before any flag is read; here a flag came first.
+  console.error("samesight: agent hook must come first, before any flag: samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]");
+  return 2;
 }
 
 /**
- * The migrations in the directory --migrations names, else in supabase/migrations when it
- * exists; undefined when there is none. Throws, with what to fix, when it cannot be read.
+ * `samesight agent hook`, its arguments read loosely: an option it does not take, or one with
+ * no value, is a note to the user and exit 0, never an error the agent is stopped by after
+ * every edit (a hook command written by a later samesight, say).
  */
-function migrationsIn(given: string | undefined): { dir: string; migrations: Migrations } | undefined {
-  const dir = given ?? (existsSync(MIGRATIONS_DIR) ? MIGRATIONS_DIR : undefined);
-  if (!dir) return undefined;
-  try {
-    return { dir, migrations: readMigrations(dir) };
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    throw new Error(
-      code === "ENOENT"
-        ? `no migrations directory at ${dir}; check the path given to --migrations`
-        : code === "ENOTDIR"
-          ? `${dir} is not a directory; ${given ? "--migrations takes the directory that holds the .sql files" : "make it the directory of .sql migrations, or pass --migrations <dir>"}`
-          : `cannot read the migrations in ${dir}: ${(e as Error).message}; fix it, or pass --migrations with another directory`,
-    );
+async function agentHookLine(argv: string[]): Promise<number> {
+  const { positionals: given, values, tokens } = parseArgs({ args: argv, allowPositionals: true, strict: false, tokens: true, options: { migrations: { type: "string" }, allow: { type: "string", multiple: true } } });
+  if (tokens.some((t) => t.kind === "option" && (t.name === "help" || t.name === "h"))) {
+    process.stdout.write("Usage: samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]\nRun by an agent's post-edit hook, with the hook's JSON on stdin; samesight agent init installs it.\n");
+    return 0;
   }
+  const other = tokens.filter((t) => t.kind === "option" && t.name !== "migrations" && t.name !== "allow").map((t) => (t.kind === "option" ? t.rawName : ""));
+  const migrations = values.migrations;
+  const allow = values.allow ?? [];
+  if (other.length || typeof migrations === "boolean" || !Array.isArray(allow) || allow.some((a) => typeof a !== "string")) {
+    process.stderr.write(`samesight agent hook: ${other.length ? `it does not take ${other.join(", ")}` : "--migrations and --allow each take a value"}; nothing checked. It takes [file ...], --migrations <dir> and --allow <rule>[:<name>]\n`);
+    return 0;
+  }
+  const input = await readStdin();
+  if (input === undefined) {
+    process.stderr.write("samesight agent hook: the hook payload on stdin is over 5 MB; nothing checked\n");
+    return 0;
+  }
+  const result = agentHook(input, { given, migrationsDir: migrations, allow: allow as string[] }, { projectDir: process.env.CLAUDE_PROJECT_DIR, cwd: process.cwd(), win32: process.platform === "win32" });
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  return result.code;
 }
 
-/** Says on stderr why a sync config cannot be read, and what to do; returns it for the report. */
-function cannotRead(file: string, e: unknown): Unreadable {
-  // A file the system could not read (not there, a directory) is a path to fix; anything else is its YAML.
-  const fix = (e as NodeJS.ErrnoException).syscall ? "check the path, or name another file" : "fix the YAML, or name another file";
-  const message = (e as Error).message.trimEnd();
-  // A YAML error ends with the line it points at: the fix goes below it.
-  console.error(`samesight: ${file}: cannot be read as a sync config: ${message}${message.includes("\n") ? "\n" : "; "}${fix}`);
-  return { file, error: (e as Error).message };
+function agentInitCommand(given: string[], values: ReturnType<typeof flags>["values"]): number {
+  const unused = (["policy", "db", "table", "format"] as const).find((o) => values[o] !== undefined);
+  if (unused) {
+    console.error(`samesight: agent init does not take --${unused}; it takes [file ...], --migrations, --allow, --agents and --print`);
+    return 2;
+  }
+  const agents = (values.agents ?? AGENTS.join(",")).split(",").map((a) => a.trim()).filter(Boolean);
+  const unknownAgent = agents.filter((a) => !(AGENTS as readonly string[]).includes(a));
+  if (unknownAgent.length || !agents.length) {
+    console.error(`samesight: --agents takes ${AGENTS.join(", ")}, comma-separated${unknownAgent.length ? `, not ${unknownAgent.join(", ")}` : ""}`);
+    return 2;
+  }
+  const allow = values.allow ?? [];
+  const unknown = unknownRules(allow);
+  if (unknown.length) {
+    console.error(`samesight: --allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
+    return 2;
+  }
+  const result = agentInit({ root: process.cwd(), agents: [...new Set(agents)] as Agent[], given, migrationsDir: values.migrations, allow, print: values.print ?? false });
+  for (const line of result.lines) console.log(line);
+  return result.code;
+}
+
+/** All of stdin, read for up to 5 seconds; empty from a terminal, where no hook payload comes; undefined when over 5 MB. */
+async function readStdin(): Promise<string | undefined> {
+  if (process.stdin.isTTY) return "";
+  const chunks: Buffer[] = [];
+  let size = 0;
+  const read = new Promise<void>((done) => {
+    process.stdin.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 5_000_000) chunks.push(chunk);
+    });
+    process.stdin.on("end", done);
+    process.stdin.on("error", () => done());
+  });
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([read, new Promise<void>((done) => (timer = setTimeout(done, 5_000)))]);
+  clearTimeout(timer);
+  process.stdin.pause();
+  return size > 5_000_000 ? undefined : Buffer.concat(chunks).toString("utf8");
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {

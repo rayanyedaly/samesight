@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,7 +28,7 @@ describe("samesight exit codes", () => {
     expect((await cli(["--help"])).code).toBe(0);
     expect((await cli([])).code).toBe(2);
     const unknown = await cli(["frobnicate"]);
-    expect([unknown.code, unknown.stderr]).toEqual([2, 'samesight: unknown command "frobnicate"; the commands are init, generate, check, doctor, explain, lint, exposure, audit; see samesight --help\n']);
+    expect([unknown.code, unknown.stderr]).toEqual([2, 'samesight: unknown command "frobnicate"; the commands are init, generate, check, doctor, explain, lint, exposure, agent, audit; see samesight --help\n']);
   });
 
   it("names a flag it cannot read in Node's words, and where to look", { timeout: 30_000 }, async () => {
@@ -224,5 +224,79 @@ describe("samesight exposure", () => {
       const unused = await cli(["exposure", flag as string, value as string], project());
       expect([unused.code, unused.stderr]).toEqual([2, `samesight: exposure does not take ${flag}; it takes [file ...], --migrations and --format\n`]);
     }
+  });
+});
+
+/** Runs the CLI with `input` on stdin, as an agent's hook does; resolves with its exit code, stderr and stdout. */
+const piped = (args: string[], input: string, env: NodeJS.ProcessEnv = process.env) =>
+  new Promise<{ code: number | null; stderr: string; stdout: string }>((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(input);
+  });
+
+describe("samesight agent hook", () => {
+  it("reads a Claude Code payload on stdin: exit 2 with the findings on stderr for a leak, nothing for another file", { timeout: 30_000 }, async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers\n");
+    const payload = (file: string) => JSON.stringify({ session_id: "s", transcript_path: "/t.jsonl", cwd: dir, permission_mode: "default", hook_event_name: "PostToolUse", tool_name: "Write", tool_input: { file_path: join(dir, file), content: "x" }, tool_response: { filePath: join(dir, file), success: true } });
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: dir };
+    const leak = await piped(["agent", "hook"], payload("sync-config.yaml"), env);
+    expect([leak.code, leak.stdout]).toEqual([2, ""]);
+    expect(leak.stderr).toMatch(/^samesight lint found 1 error after this edit:\nsync-config\.yaml:6:12 {2}error {2}unscoped-query /);
+    expect(await piped(["agent", "hook"], payload("notes.md"), env)).toEqual({ code: 0, stdout: "", stderr: "" });
+    const accepted = await piped(["agent", "hook", "--allow", "unscoped-query"], payload("sync-config.yaml"), env);
+    expect([accepted.code, JSON.parse(accepted.stdout).hookSpecificOutput.additionalContext]).toEqual([0, expect.stringMatching(/^samesight lint: no findings in sync-config\.yaml\./)]);
+  });
+
+  it("takes only init or hook, and notes options the hook does not take", { timeout: 30_000 }, async () => {
+    const none = await cli(["agent"]);
+    expect([none.code, none.stderr]).toEqual([2, expect.stringMatching(/^samesight: agent takes init or hook: samesight agent init \[file \.\.\.\] .*, or samesight agent hook \[file \.\.\.\] /)]);
+    expect((await cli(["agent", "frob"])).stderr).toMatch(/^samesight: agent takes init or hook, not "frob": /);
+    // The hook never stops an agent on its own arguments: a note to the user, exit 0.
+    for (const args of [["--format", "json"], ["--frob"], ["--migrations"]]) {
+      const r = await piped(["agent", "hook", ...args], "{}");
+      expect([r.code, r.stdout], args.join(" ")).toEqual([0, ""]);
+      expect(r.stderr, args.join(" ")).toMatch(/^samesight agent hook: (it does not take --\w+|--migrations and --allow each take a value); nothing checked\./);
+    }
+    const help = await cli(["agent", "hook", "--help"]);
+    expect([help.code, help.stdout]).toEqual([0, expect.stringMatching(/^Usage: samesight agent hook \[file \.\.\.\] /)]);
+    const late = await cli(["--allow", "rls-off", "agent", "hook"]);
+    expect([late.code, late.stderr]).toEqual([2, expect.stringMatching(/^samesight: agent hook must come first, before any flag: /)]);
+  });
+
+  it("says when a payload is over 5 MB, rather than that there is none", { timeout: 30_000 }, async () => {
+    const r = await piped(["agent", "hook"], JSON.stringify({ tool_input: { content: "x".repeat(5_100_000) } }));
+    expect(r).toEqual({ code: 0, stdout: "", stderr: "samesight agent hook: the hook payload on stdin is over 5 MB; nothing checked\n" });
+  });
+});
+
+describe("samesight agent init", () => {
+  it("installs from the command line, with --print and --agents, and refuses what it cannot do", { timeout: 30_000 }, async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "sync-config.yaml"), "config:\n  edition: 3\nstreams:\n  all:\n    auto_subscribe: true\n    query: SELECT * FROM customers WHERE owner_id = auth.user_id()\n");
+    const print = await cli(["agent", "init", "--print", "--agents", "claude"], dir);
+    expect([print.code, print.stdout.split("\n")[0]]).toEqual([0, ".claude/skills/samesight: would create (10 files)"]);
+    const made = await cli(["agent", "init", "--agents", "codex,codex"], dir);
+    expect([made.code, made.stdout.split("\n").slice(0, 2)]).toEqual([0, [".agents/skills/samesight: created (10 files)", ".codex/hooks.json: created, with the samesight hook"]]);
+    const agents = await cli(["agent", "init", "--agents", "claude,vim"], dir);
+    expect([agents.code, agents.stderr]).toEqual([2, "samesight: --agents takes claude, codex, cursor, comma-separated, not vim\n"]);
+    const allow = await cli(["agent", "init", "--allow", "nope"], dir);
+    expect([allow.code, allow.stderr]).toEqual([2, expect.stringMatching(/^samesight: --allow names no rule nope; the rules are /)]);
+    const injected = await cli(["agent", "init", "--allow", "rls-off:$(id)"], dir);
+    expect([injected.code, injected.stdout]).toEqual([2, expect.stringMatching(/^not writing anything: the hook command would carry "rls-off:\$\(id\)"/)]);
+  });
+
+  it("is the only command that takes --print and --agents", { timeout: 30_000 }, async () => {
+    for (const args of [["generate", "--print"], ["init", "--print"], ["exposure", "--agents", "claude"], ["lint", "--print"]]) {
+      const r = await cli(args);
+      expect([r.code, r.stderr], args.join(" ")).toEqual([2, `samesight: --${args[1]?.slice(2)} is for samesight agent init only\n`]);
+    }
+    const json = await cli(["lint", "--format", "json", "--print"]);
+    expect([json.code, JSON.parse(json.stdout).error]).toEqual([2, "--print is for samesight agent init only"]);
   });
 });

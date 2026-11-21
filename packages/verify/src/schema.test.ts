@@ -1,52 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { type Schema, schemaErrors, unsupported } from "../../samesight/src/testing/json-schema.ts";
 import { reportDocument, type Section } from "./json.ts";
 import type { Finding, RowReport } from "./report.ts";
 
-type Schema = { [k: string]: unknown };
 const schema = JSON.parse(readFileSync(new URL("../schema/report.schema.json", import.meta.url), "utf8")) as Schema;
-
-// A validator for the keywords the schema uses, and no others: the guard below fails if it uses one more.
-const KEYWORDS = new Set(["$schema", "title", "description", "type", "properties", "required", "additionalProperties", "items", "enum", "const", "$ref", "$defs", "minimum", "maximum"]);
-const TYPES = new Set(["object", "array", "string", "integer", "number", "boolean", "null"]);
-
-const isObject = (v: unknown): v is Schema => typeof v === "object" && v !== null && !Array.isArray(v);
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const is = (type: string, v: unknown) =>
-  type === "object" ? isObject(v) : type === "array" ? Array.isArray(v) : type === "integer" ? Number.isInteger(v) : type === "null" ? v === null : typeof v === type;
-
-/** Every subschema, with where it is. */
-function* subschemas(s: Schema, at = "#"): Generator<[string, Schema]> {
-  yield [at, s];
-  for (const [k, v] of Object.entries((s.properties ?? {}) as Schema)) yield* subschemas(v as Schema, `${at}/properties/${k}`);
-  for (const [k, v] of Object.entries((s.$defs ?? {}) as Schema)) yield* subschemas(v as Schema, `${at}/$defs/${k}`);
-  if (isObject(s.items)) yield* subschemas(s.items, `${at}/items`);
-  if (isObject(s.additionalProperties)) yield* subschemas(s.additionalProperties, `${at}/additionalProperties`);
-}
-
-function errors(s: Schema, v: unknown, at = "$"): string[] {
-  const out: string[] = [];
-  if (typeof s.$ref === "string") out.push(...errors(s.$ref.split("/").slice(1).reduce((x: Schema, k) => x[k] as Schema, schema), v, at));
-  if (s.type !== undefined) {
-    const types = [s.type].flat() as string[];
-    if (!types.some((t) => is(t, v))) return [...out, `${at}: not ${types.join(" or ")}`];
-  }
-  if ("const" in s && !same(s.const, v)) out.push(`${at}: not ${JSON.stringify(s.const)}`);
-  if (Array.isArray(s.enum) && !s.enum.some((e) => same(e, v))) out.push(`${at}: not one of ${JSON.stringify(s.enum)}`);
-  if (typeof s.minimum === "number" && typeof v === "number" && v < s.minimum) out.push(`${at}: below ${s.minimum}`);
-  if (typeof s.maximum === "number" && typeof v === "number" && v > s.maximum) out.push(`${at}: above ${s.maximum}`);
-  if (isObject(v)) {
-    for (const k of (s.required ?? []) as string[]) if (!(k in v)) out.push(`${at}: lacks ${k}`);
-    const props = (s.properties ?? {}) as Schema;
-    for (const [k, x] of Object.entries(v)) {
-      if (k in props) out.push(...errors(props[k] as Schema, x, `${at}.${k}`));
-      else if (s.additionalProperties === false) out.push(`${at}: has ${k}`);
-      else if (isObject(s.additionalProperties)) out.push(...errors(s.additionalProperties, x, `${at}.${k}`));
-    }
-  }
-  if (Array.isArray(v) && isObject(s.items)) out.push(...v.flatMap((x, i) => errors(s.items as Schema, x, `${at}[${i}]`)));
-  return out;
-}
+const errors = (s: Schema, v: unknown) => schemaErrors(schema, v, s);
 
 const doc = (exitCode: number, sections: Section[], more: { argv?: string[]; error?: string } = {}) =>
   JSON.parse(JSON.stringify(reportDocument({ toolVersion: "0.1.0", argv: more.argv ?? ["audit"], exitCode, durationMs: 1234.5, sections, ...(more.error ? { error: more.error } : {}) })));
@@ -70,13 +29,7 @@ const differential: Finding = { status: "fail", check: "differential", detail: "
 
 describe("the report schema", () => {
   it("uses only the keywords the test's validator supports", () => {
-    for (const [at, s] of subschemas(schema)) {
-      expect(Object.keys(s).filter((k) => !KEYWORDS.has(k)), at).toEqual([]);
-      if (s.type !== undefined) expect(([s.type].flat() as string[]).filter((t) => !TYPES.has(t)), at).toEqual([]);
-      if (s.$ref !== undefined) expect(s.$ref, at).toMatch(/^#\/\$defs\/\w+$/);
-      if (s.additionalProperties !== undefined) expect(s.additionalProperties === false || isObject(s.additionalProperties), at).toBe(true);
-    }
-    expect(schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(unsupported(schema)).toEqual([]);
   });
 
   it.each([

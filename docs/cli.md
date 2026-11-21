@@ -117,6 +117,8 @@ Warnings do not fail the run, but each one needs a decision: a warning can be a 
 
 Exit codes: `0` when nothing is an error (warnings and notes do not fail a run), `1` on any error, `2` when a file cannot be read, no sync config is found or an option is wrong.
 
+`--format json` prints one object on stdout, for exits 0, 1 and 2: `$schema` (the URL of that version's schema, which the package also ships as `samesight/schema/lint.schema.json`), `version` (1), `tool` (`samesight`), `toolVersion`, `files` (the sync configs read), `rlsChecked` (whether migrations were read), `findings` and `allowed` (each with its `rule`, `level`, `file`, 1-based `line` and `column` where known, `message` and the `subjects` `--allow` matches), `unreadable` (each file with its `error`), the `errors`, `warnings` and `notes` counted among `findings`, and `exitCode`. When lint cannot run at all (no sync config, a migrations directory it cannot read, an unknown `--allow` rule, a wrong flag) it still prints the object, with `error` saying why and the message on stderr too; only a wrong `--format` value prints nothing on stdout. A later version 1 may add fields; a field's meaning changes only with a new `version`.
+
 For CI, `--format sarif` prints one SARIF 2.1.0 log for GitHub code scanning (`github/codeql-action/upload-sarif`), which shows a finding on a pull request when its line is part of the change. Each result names its rule, with a link to the rule's page, its file (relative paths stay relative) and, when known, its line and column; findings `--allow` accepted are included as suppressed, and files that could not be read are reported as tool notifications. On a private repository, code scanning needs GitHub Code Security. `--format github` needs nothing: it prints one workflow command per finding (`::error file=sync-config.yaml,line=6,col=12,title=samesight unscoped-query::...`, `::warning` and `::notice` for the others), which GitHub Actions shows as annotations on the run and on the pull request's changed lines. Allowed findings are counted in one `::notice`, not printed.
 
 The rules, each with a page of its own: an example, what lint prints on it, the fix, and what audit does with it. [Lint rules](rules/index.md) lists them with their levels.
@@ -164,6 +166,17 @@ samesight exposure [file ...] [--migrations <dir>] [--format text|json]
 `--migrations <dir>` names the SQL migrations whose tables give the columns a `SELECT *` sends, the primary keys that tie a row to its parent's owner, and the column comments that may hold a marker (default: `supabase/migrations`, when it exists). Without them, those columns are not known, no comment is read and every table is taken to be keyed by `id`, and it says so. `--format json` prints one JSON object on stdout instead of the text; notes stay on stderr.
 
 Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. See [the exposure map](exposure.md) for an example, how to read it, and how columns are matched.
+
+### `agent`
+
+```text
+samesight agent init [file ...] [--migrations <dir>] [--allow <rule>[:<name>]] [--agents claude,codex,cursor] [--print]
+samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]
+```
+
+`agent init` installs the samesight skill for coding agents (in `.claude/skills`, `.agents/skills` and `.cursor/skills`) and the post-edit hook (in `.claude/settings.json` and `.codex/hooks.json`). It never removes a file or changes a setting of yours: it adds the hook beside your hooks, and adds or updates the skill's own files. `--agents` picks among `claude`, `codex` and `cursor` (default: all three), `--print` says what it would write and writes nothing, and the sync configs, `--migrations` and `--allow` given are passed to the hook; their values may hold only ASCII letters and digits, spaces and `_+:./-`, must hold a letter or digit, and may not start with `-`. Each file is written by renaming a new one into place, so a symlink or a hard link at that name is replaced, not written through. It exits 2 when a file cannot be read or written, a folder leads out of the project through a symlink, an option or its value is wrong, or the package has no skill files, and 0 otherwise.
+
+`agent hook` is the hook: it reads the hook's JSON on stdin and, when the edit touched a sync config or a migration, lints the sync configs. It exits 2 with the findings on stderr when one is an error or a sync config cannot be read, and 0 otherwise, with warnings, notes or a clean result as `additionalContext` on stdout; a problem of its own (a bad payload, an option it does not take) is a note on stderr with exit 0. Codex support follows Codex's documented hook format and has not been tried with a running Codex yet. See [coding agents](agents.md).
 
 ### `audit`
 

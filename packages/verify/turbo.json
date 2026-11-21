@@ -11,7 +11,8 @@
         "$TURBO_ROOT$/examples/fieldbook/src/lib/powersync/schema.ts",
         "$TURBO_ROOT$/examples/fieldbook/src/lib/policy-types.ts",
         "$TURBO_ROOT$/examples/fieldbook/supabase/migrations/**",
-        "$TURBO_ROOT$/examples/fieldbook/docker-compose.yml"
+        "$TURBO_ROOT$/examples/fieldbook/docker-compose.yml",
+        "$TURBO_ROOT$/packages/samesight/src/testing/**"
       ]
     }
   }
