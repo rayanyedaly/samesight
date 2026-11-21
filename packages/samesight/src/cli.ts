@@ -51,11 +51,13 @@ Commands:
   agent init [file ...]
              install the samesight skill for coding agents and the hook that lints after
              each edit to a sync config or migration (.claude/, .agents/, .cursor/, .codex/);
-             only adds, never removes; --print shows what it would write
+             never removes a file or changes a setting of yours; --print shows what it
+             would write
   agent hook [file ...]
              the post-edit hook agent init installs: reads the hook's JSON on stdin and,
              when the edit touched a sync config or a migration, lints the sync configs;
-             exit 2 with the findings on stderr when one is an error
+             exit 2 with the findings on stderr when one is an error or a sync config
+             cannot be read
   audit [options]
              run samesight-verify audit: the project's own RLS against its sync config, on
              the local stack; needs @samesight/verify, and takes its flags (audit --help)
@@ -86,6 +88,8 @@ Docs: https://rayanyedaly.github.io/samesight/
 async function main(argv: string[]): Promise<number> {
   // Its flags are samesight-verify's, so they are not read here.
   if (argv[0] === "audit") return forwardAudit(argv.slice(1));
+  // The hook runs after every edit an agent makes: a problem of its own must not stop the agent.
+  if (argv[0] === "agent" && argv[1] === "hook") return agentHookLine(argv.slice(2));
   if (auditAfterFlags(argv)) {
     console.error("samesight: audit must come first, before any flag: samesight audit [audit options]; see samesight audit --help");
     return 2;
@@ -109,15 +113,19 @@ async function main(argv: string[]): Promise<number> {
     return command || values.help ? 0 : 2;
   }
   // Lint and exposure need no policy: they are for any PowerSync project.
-  if (command === "lint" && (values.agents !== undefined || values.print !== undefined)) {
-    console.error(`samesight: lint does not take --${values.agents !== undefined ? "agents" : "print"}`);
+  // Only agent init takes these: init or generate given --print would write files all the same.
+  const initOnly = (["agents", "print"] as const).find((o) => values[o] !== undefined);
+  if (initOnly && !(command === "agent" && positionals[1] === "init")) {
+    const message = `--${initOnly} is for samesight agent init only`;
+    if (command === "lint" && values.format === "json") printLintError(new Error(message));
+    console.error(`samesight: ${message}`);
     return 2;
   }
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
   if (command === "agent") return agent(positionals.slice(1), values);
   if (command === "exposure") {
     // Accepting an option it does not use would look like it worked.
-    const unused = (["allow", "policy", "db", "table", "agents", "print"] as const).find((o) => values[o] !== undefined);
+    const unused = (["allow", "policy", "db", "table"] as const).find((o) => values[o] !== undefined);
     if (unused) {
       console.error(`samesight: exposure does not take --${unused}; it takes [file ...], --migrations and --format`);
       return 2;
@@ -346,13 +354,31 @@ async function agent(args: string[], values: ReturnType<typeof flags>["values"])
     console.error(`samesight: agent takes init or hook${sub ? `, not "${sub}"` : ""}: ${AGENT_USAGE}`);
     return 2;
   }
-  // Accepting an option it does not use would look like it worked.
-  const unused = (["policy", "db", "table", "format", "agents", "print"] as const).find((o) => values[o] !== undefined);
-  if (unused) {
-    console.error(`samesight: agent hook does not take --${unused}; it takes [file ...], --migrations and --allow`);
-    return 2;
+  // Main runs `agent hook` before any flag is read; here a flag came first.
+  console.error("samesight: agent hook must come first, before any flag: samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]");
+  return 2;
+}
+
+/**
+ * `samesight agent hook`, its arguments read loosely: an option it does not take, or one with
+ * no value, is a note to the user and exit 0, never an error the agent is stopped by after
+ * every edit (a hook command written by a later samesight, say).
+ */
+async function agentHookLine(argv: string[]): Promise<number> {
+  const { positionals: given, values, tokens } = parseArgs({ args: argv, allowPositionals: true, strict: false, tokens: true, options: { migrations: { type: "string" }, allow: { type: "string", multiple: true } } });
+  const other = tokens.filter((t) => t.kind === "option" && t.name !== "migrations" && t.name !== "allow").map((t) => (t.kind === "option" ? t.rawName : ""));
+  const migrations = values.migrations;
+  const allow = values.allow ?? [];
+  if (other.length || typeof migrations === "boolean" || !Array.isArray(allow) || allow.some((a) => typeof a !== "string")) {
+    process.stderr.write(`samesight agent hook: ${other.length ? `it does not take ${other.join(", ")}` : "--migrations and --allow each take a value"}; nothing checked. It takes [file ...], --migrations <dir> and --allow <rule>[:<name>]\n`);
+    return 0;
   }
-  const result = agentHook(await readStdin(), { given, migrationsDir: values.migrations, allow: values.allow ?? [] }, { projectDir: process.env.CLAUDE_PROJECT_DIR, cwd: process.cwd(), win32: process.platform === "win32" });
+  const input = await readStdin();
+  if (input === undefined) {
+    process.stderr.write("samesight agent hook: the hook payload on stdin is over 5 MB; nothing checked\n");
+    return 0;
+  }
+  const result = agentHook(input, { given, migrationsDir: migrations, allow: allow as string[] }, { projectDir: process.env.CLAUDE_PROJECT_DIR, cwd: process.cwd(), win32: process.platform === "win32" });
   process.stdout.write(result.stdout);
   process.stderr.write(result.stderr);
   return result.code;
@@ -381,8 +407,8 @@ function agentInitCommand(given: string[], values: ReturnType<typeof flags>["val
   return result.code;
 }
 
-/** All of stdin, up to 5 MB and 5 seconds; empty from a terminal, where no hook payload comes. */
-async function readStdin(): Promise<string> {
+/** All of stdin, read for up to 5 seconds; empty from a terminal, where no hook payload comes; undefined when over 5 MB. */
+async function readStdin(): Promise<string | undefined> {
   if (process.stdin.isTTY) return "";
   const chunks: Buffer[] = [];
   let size = 0;
@@ -398,7 +424,7 @@ async function readStdin(): Promise<string> {
   await Promise.race([read, new Promise<void>((done) => (timer = setTimeout(done, 5_000)))]);
   clearTimeout(timer);
   process.stdin.pause();
-  return Buffer.concat(chunks).toString("utf8");
+  return size > 5_000_000 ? undefined : Buffer.concat(chunks).toString("utf8");
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {
