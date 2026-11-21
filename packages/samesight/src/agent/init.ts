@@ -6,8 +6,8 @@
  * says what it would do and writes nothing.
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { findSyncConfig, SYNC_CONFIG_FILES } from "../lint/lint.ts";
 import { type HookEntry, type Merge, mergeHook } from "./settings.ts";
 import { SKILL_DIR, SKILL_TARGETS, skillFiles } from "./skill.ts";
@@ -41,11 +41,11 @@ export interface InitResult {
  * What a value in the hook command may hold: ASCII letters and digits, spaces and `_+:./-`,
  * not starting with `-`. Bash, zsh, cmd.exe and PowerShell each read something else
  * specially, inside quotes or out ($(...), backticks, %VAR%, `,` and a leading `@` in
- * PowerShell, a leading `=` in zsh), a leading `-` would be read as an option, and the
- * command runs on every edit for everyone who commits it: anything else is refused rather
- * than quoted.
+ * PowerShell, a leading `=` in zsh), a leading `-` would be read as an option, a value with
+ * no letter or digit (`.`, a space) names no sync config, and the command runs on every edit
+ * for everyone who commits it: anything else is refused rather than quoted.
  */
-const SAFE_VALUE = /^(?!-)[A-Za-z0-9_+:./ -]+$/;
+const SAFE_VALUE = /^(?!-)(?=.*[A-Za-z0-9])[A-Za-z0-9_+:./ -]+$/;
 
 /** The values the hook command carries: lint's sync configs, migrations directory and --allow entries. */
 const hookValues = (o: Pick<InitOptions, "given" | "migrationsDir" | "allow">) => [...o.given, ...(o.migrationsDir ? [o.migrationsDir] : []), ...o.allow];
@@ -71,25 +71,6 @@ export function hookCommand(o: Pick<InitOptions, "root" | "given" | "migrationsD
 }
 
 /** Whether `path`, once symlinks are followed (its own included), stays in the project. */
-/** The real path, or the path when it has none. */
-const realpathOr = (p: string) => {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-};
-
-/** Whether a file exists with more than one name: a hard link. */
-function hardLinked(path: string): boolean {
-  try {
-    const stat = lstatSync(path);
-    return stat.isFile() && stat.nlink > 1;
-  } catch {
-    return false;
-  }
-}
-
 function staysInside(root: string, path: string): boolean {
   // lstat, not exists: a dangling symlink exists for a write, which would create its target.
   const there = (p: string) => {
@@ -117,24 +98,54 @@ export function agentInit(o: InitOptions): InitResult {
   const root = resolve(o.root);
   const unsafe = unsafeArgs(o);
   if (unsafe.length) {
-    return { code: 2, lines: [`not writing anything: the hook command would carry ${unsafe.map((a) => JSON.stringify(a)).join(", ")}; its values may hold only ASCII letters and digits, spaces and _+:./-, and may not start with - (use / in paths)`] };
+    return { code: 2, lines: [`not writing anything: the hook command would carry ${unsafe.map((a) => JSON.stringify(a)).join(", ")}; its values may hold only ASCII letters and digits, spaces and _+:./-, must hold a letter or digit, and may not start with - (use / in paths)`] };
   }
   const lines: string[] = [];
   let code: 0 | 2 = 0;
   let changed = false;
   const would = (done: string, todo: string) => (o.print ? todo : done);
-  /** Writes a file; false, said in `lines`, when the system refuses (a file where a folder must go, say). */
+  const shown = (path: string) => relative(root, path).split(sep).join("/");
+  /** Says the system refused to read or write a file, without the path on this machine. */
+  const refused = (what: string, path: string, e: unknown) => {
+    lines.push(`cannot ${what} ${shown(path)}: ${(e as Error).message.split(root).join(".")}`);
+    code = 2;
+  };
+  /**
+   * Writes a file by writing a new one beside it and renaming it into place: the name is
+   * replaced, so a symlink or a hard link there is never written through, and the file it
+   * shared contents with elsewhere keeps its own. False, said in `lines`, when the system
+   * refuses (a file where a folder must go, say).
+   */
   const write = (path: string, text: string | Buffer): boolean => {
-    changed = true;
-    if (o.print) return true;
+    if (o.print) {
+      changed = true;
+      return true;
+    }
+    const temp = join(dirname(path), `.${basename(path)}.samesight-${process.pid}`);
     try {
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, text);
+      // wx: a file (or a symlink) already at the temporary name is not written through either.
+      writeFileSync(temp, text, { flag: "wx" });
+      renameSync(temp, path);
+      changed = true;
       return true;
     } catch (e) {
-      lines.push(`cannot write ${relative(root, path).split(sep).join("/")}: ${(e as Error).message.split(realpathOr(root)).join(".")}`);
-      code = 2;
+      try {
+        rmSync(temp, { force: true });
+      } catch {
+        // Its folder could not be made: there is no temporary file to remove.
+      }
+      refused("write", path, e);
       return false;
+    }
+  };
+  /** A file's bytes, or undefined, said in `lines`, when the system refuses (a folder where a file goes, say). */
+  const read = (path: string): Buffer | undefined => {
+    try {
+      return readFileSync(path);
+    } catch (e) {
+      refused("read", path, e);
+      return undefined;
     }
   };
 
@@ -153,16 +164,17 @@ export function agentInit(o: InitOptions): InitResult {
       code = 2;
       continue;
     }
-    // Each file is checked too: a symlinked SKILL.md or references/ would otherwise be written through.
-    // A hard link shares its contents with a file elsewhere: writing it would change that file too.
-    const outside = files.filter((f) => !staysInside(root, join(at, f)) || hardLinked(join(at, f)));
+    // Each file is checked too: a symlinked references/ folder would otherwise be written into.
+    const outside = files.filter((f) => !staysInside(root, join(at, f)));
     if (outside.length) {
-      lines.push(`not writing ${target}: ${outside.join(", ")} lead${outside.length === 1 ? "s" : ""} out of the project (a symlink or a hard link)`);
+      lines.push(`not writing ${target}: ${outside.join(", ")} lead${outside.length === 1 ? "s" : ""} out of the project through a symlink`);
       code = 2;
       continue;
     }
     // The files missing or different, in the skill's order.
-    const touched = files.filter((f) => !existsSync(join(at, f)) || !readFileSync(join(at, f)).equals(readFileSync(join(dir, f))));
+    const before = code;
+    const touched = files.filter((f) => !existsSync(join(at, f)) || !(read(join(at, f)) ?? Buffer.alloc(0)).equals(readFileSync(join(dir, f))));
+    if (code !== before) continue;
     const fresh = touched.length === files.length && !existsSync(at);
     if (!touched.every((f) => write(join(at, f), readFileSync(join(dir, f))))) continue;
     if (!touched.length) lines.push(`${target}: up to date`);
@@ -182,7 +194,9 @@ export function agentInit(o: InitOptions): InitResult {
       code = 2;
       continue;
     }
-    const merge: Merge = mergeHook(existsSync(path) ? readFileSync(path, "utf8") : undefined, entry);
+    const text = existsSync(path) ? read(path) : undefined;
+    if (existsSync(path) && text === undefined) continue;
+    const merge: Merge = mergeHook(text?.toString("utf8"), entry);
     if (merge.status === "create" || merge.status === "update") {
       if (!write(path, merge.text as string)) continue;
       lines.push(`${file}: ${merge.status === "create" ? would("created, with the samesight hook", "would create, with the samesight hook") : would("added the samesight hook", "would add the samesight hook")}`);

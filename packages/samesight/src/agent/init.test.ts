@@ -102,25 +102,40 @@ describe("agentInit", () => {
     symlinkSync(join(outside, "profile"), join(root, ".claude/skills/samesight/SKILL.md"));
     symlinkSync(join(outside, "nothing-yet"), join(root, ".claude/skills/samesight/references"));
     const result = init(root, { agents: ["claude"] });
-    expect([result.code, result.lines[0]]).toEqual([2, "not writing .claude/skills/samesight: SKILL.md, references/rls-off.md lead out of the project (a symlink or a hard link)"]);
+    expect([result.code, result.lines[0]]).toEqual([2, "not writing .claude/skills/samesight: SKILL.md, references/rls-off.md lead out of the project through a symlink"]);
     expect(readFileSync(join(outside, "profile"), "utf8")).toBe("mine\n");
     expect(readdirSync(outside)).toEqual(["profile"]);
   });
 
-  it.skipIf(process.platform === "win32")("does not write through a hard link to a file elsewhere", () => {
-    const root = project({ "sync-config.yaml": CONFIG });
-    const outside = project({ profile: "mine\n" });
+  it.skipIf(process.platform === "win32")("replaces a hard link rather than writing through it, settings and skill alike", () => {
+    const root = project({ "sync-config.yaml": CONFIG, "vendor/x": "" });
+    const outside = project({ profile: "mine\n", "settings.json": '{"model": "x"}\n', shared: "theirs\n" });
     mkdirSync(join(root, ".claude/skills/samesight"), { recursive: true });
     linkSync(join(outside, "profile"), join(root, ".claude/skills/samesight/SKILL.md"));
-    expect(init(root, { agents: ["claude"] }).code).toBe(2);
-    expect(readFileSync(join(outside, "profile"), "utf8")).toBe("mine\n");
+    linkSync(join(outside, "settings.json"), join(root, ".claude/settings.json"));
+    // A symlink kept in the project, to a hard link of a file elsewhere.
+    linkSync(join(outside, "shared"), join(root, "vendor/rls-off.md"));
+    mkdirSync(join(root, ".claude/skills/samesight/references"));
+    symlinkSync(join(root, "vendor/rls-off.md"), join(root, ".claude/skills/samesight/references/rls-off.md"));
+    const result = init(root, { agents: ["claude"] });
+    expect(result.code).toBe(0);
+    expect([readFileSync(join(outside, "profile"), "utf8"), readFileSync(join(outside, "settings.json"), "utf8"), readFileSync(join(outside, "shared"), "utf8")]).toEqual(["mine\n", '{"model": "x"}\n', "theirs\n"]);
+    expect(json(root, ".claude/settings.json")).toEqual({ model: "x", hooks: { PostToolUse: [expect.objectContaining({ matcher: "Write|Edit|MultiEdit" })] } });
+    expect(readFileSync(join(root, ".claude/skills/samesight/SKILL.md"), "utf8")).toBe("---\nname: samesight\n---\nbody\n");
+    // No temporary file is left beside them.
+    expect(readdirSync(join(root, ".claude/skills/samesight")).sort()).toEqual(["SKILL.md", "references"]);
   });
 
-  it("says when it cannot write a file, rather than failing", () => {
+  it("says when it cannot read or write a file, rather than throwing, and does not say to commit what it did not write", () => {
     const root = project({ "sync-config.yaml": CONFIG, ".claude": "a file where a folder goes\n" });
     const result = init(root, { agents: ["claude"] });
     expect(result.code).toBe(2);
     expect(result.lines[0]).toMatch(/^cannot write \.claude\/skills\/samesight\/SKILL\.md: /);
+    expect(result.lines.join("\n")).not.toContain("Commit these files");
+    expect(result.lines.join("\n")).not.toContain(root);
+    const folder = project({ "sync-config.yaml": CONFIG, ".codex/hooks.json/x": "" });
+    const read = init(folder, { agents: ["codex"] });
+    expect([read.code, read.lines.find((l) => l.startsWith("cannot read"))]).toEqual([2, expect.stringMatching(/^cannot read \.codex\/hooks\.json: /)]);
   });
 
   it("refuses arguments the hook command could not carry safely in every shell, and writes nothing", () => {
@@ -140,11 +155,15 @@ describe("agentInit", () => {
       { allow: ["unscoped-query:a,b"] },
       { given: ["=foo.yaml"] },
       { given: ["café.yaml"] },
+      // No letter or digit: names no sync config.
+      { given: ["."] },
+      { given: [" "] },
+      { migrationsDir: "./" },
     ];
     for (const args of bad) {
       const result = init(root, args);
       expect([result.code, result.lines.length], JSON.stringify(args)).toEqual([2, 1]);
-      expect(result.lines[0], JSON.stringify(args)).toMatch(/^not writing anything: the hook command would carry .*; its values may hold only ASCII letters and digits, spaces and _\+:\.\/-, and may not start with - \(use \/ in paths\)$/);
+      expect(result.lines[0], JSON.stringify(args)).toMatch(/^not writing anything: the hook command would carry .*; its values may hold only ASCII letters and digits, spaces and _\+:\.\/-, must hold a letter or digit, and may not start with - \(use \/ in paths\)$/);
     }
     expect(init(root, { given: ["app/sync config.yaml"], migrationsDir: "db/migrations-2", allow: ["unscoped-query:public_posts", "rls-off:a.b"], print: true }).code).toBe(0);
     expect(readdirSync(root)).toEqual(["sync-config.yaml"]);
