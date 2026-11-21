@@ -18,10 +18,10 @@ import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
 import { introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
 import { buildIR, CompileError } from "./ir.ts";
-import { applyAllow, exitCode, formatLint, type LintFinding, sortFindings, type Unreadable } from "./lint/finding.ts";
+import { formatLint, sortFindings, type Unreadable } from "./lint/finding.ts";
 import { formatGithub } from "./lint/github.ts";
-import { findSyncConfig, lineFinder, lintSyncConfig, MIGRATIONS_DIR, RULE_NAMES, SYNC_CONFIG_FILES } from "./lint/lint.ts";
-import { type Migrations, readMigrations } from "./lint/migrations.ts";
+import { lineFinder, MIGRATIONS_DIR, RULE_NAMES } from "./lint/lint.ts";
+import { cannotRead, migrationsIn, runLint, syncConfigs, unknownRules } from "./lint/run.ts";
 import { formatSarif } from "./lint/sarif.ts";
 import { loadPolicy, POLICY_FILES, resolvePolicyPath, tsIsModule } from "./load.ts";
 import type { Policy } from "./policy.ts";
@@ -222,29 +222,18 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
     console.error(`samesight: --format must be text, json, sarif or github, not "${format}"`);
     return 2;
   }
-  // A misspelt rule would allow nothing and look like it worked.
-  const unknown = allow.map((a) => a.split(":")[0] as string).filter((r) => !RULE_NAMES.includes(r));
+  const unknown = unknownRules(allow);
   if (unknown.length) {
     console.error(`samesight: --allow names no rule ${unknown.join(", ")}; the rules are ${RULE_NAMES.join(", ")}`);
     return 2;
   }
-  const found = syncConfigs(given, "lint");
-  const migrations = migrationsIn(migrationsDir)?.migrations;
-  if (!migrations) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run, and personal-columns saw only the columns queries list (not those a SELECT * sends), no column comments, and every table as keyed by id; pass --migrations <dir> to check them`);
-  const findings: LintFinding[] = [];
-  const unreadable: Unreadable[] = [];
-  for (const file of found) {
-    try {
-      findings.push(...lintSyncConfig(readFileSync(file, "utf8"), file, undefined, migrations));
-    } catch (e) {
-      unreadable.push(cannotRead(file, e));
-    }
-  }
-  const { kept, allowed } = applyAllow(findings, allow);
-  const code = unreadable.length ? 2 : exitCode(kept);
+  const run = runLint({ given, migrationsDir, allow, cwd: process.cwd() });
+  if (!run.rlsChecked) console.error(`note: no ${MIGRATIONS_DIR} here, so the RLS rules (rls-off, rls-open) did not run, and personal-columns saw only the columns queries list (not those a SELECT * sends), no column comments, and every table as keyed by id; pass --migrations <dir> to check them`);
+  for (const m of run.messages) console.error(m);
+  const { files: found, kept, allowed, unreadable, code } = run;
   if (format === "json") {
     const count = (level: string) => kept.filter((f) => f.level === level).length;
-    const report = { files: found, rlsChecked: migrations !== undefined, findings: sortFindings(kept), allowed: sortFindings(allowed), unreadable, errors: count("error"), warnings: count("warning"), notes: count("info"), exitCode: code };
+    const report = { files: found, rlsChecked: run.rlsChecked, findings: sortFindings(kept), allowed: sortFindings(allowed), unreadable, errors: count("error"), warnings: count("warning"), notes: count("info"), exitCode: code };
     console.log(JSON.stringify(report, null, 2));
     return code;
   }
@@ -273,8 +262,8 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
     console.error(`samesight: --format must be text or json for exposure, not "${format}"`);
     return 2;
   }
-  const found = syncConfigs(given, "exposure");
-  const read = migrationsIn(migrationsDir);
+  const found = syncConfigs(given, "exposure", process.cwd());
+  const read = migrationsIn(migrationsDir, process.cwd());
   if (!read) console.error(`note: no ${MIGRATIONS_DIR} here, so the columns a SELECT * sends are not known, no column comment is read, and every table is taken to be keyed by id; pass --migrations <dir> to read them`);
   const schema = read && ((table: string) => read.migrations.tables.get(table));
   const mapped: MappedConfig[] = [];
@@ -284,7 +273,9 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
       const text = readFileSync(file, "utf8");
       mapped.push({ file, map: exposureMap(parseSyncConfig(text), schema), lineOf: lineFinder(text) });
     } catch (e) {
-      unreadable.push(cannotRead(file, e));
+      const bad = cannotRead(file, e);
+      console.error(bad.message);
+      unreadable.push(bad.unreadable);
     }
   }
   if (format === "json") {
@@ -294,45 +285,6 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
     if (unreadable.length) console.error(`${unreadable.length} of ${found.length} file(s) could not be read, so nothing in them is mapped.`);
   }
   return unreadable.length ? 2 : 0;
-}
-
-/** The sync configs named, else the first of the usual paths here; throws when there is none. */
-function syncConfigs(given: string[], command: string): string[] {
-  if (given.length) return given;
-  const found = findSyncConfig(process.cwd());
-  if (found === undefined) throw new Error(`no sync config found (tried ${SYNC_CONFIG_FILES.join(", ")}); name one: samesight ${command} <file>`);
-  return [found];
-}
-
-/**
- * The migrations in the directory --migrations names, else in supabase/migrations when it
- * exists; undefined when there is none. Throws, with what to fix, when it cannot be read.
- */
-function migrationsIn(given: string | undefined): { dir: string; migrations: Migrations } | undefined {
-  const dir = given ?? (existsSync(MIGRATIONS_DIR) ? MIGRATIONS_DIR : undefined);
-  if (!dir) return undefined;
-  try {
-    return { dir, migrations: readMigrations(dir) };
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    throw new Error(
-      code === "ENOENT"
-        ? `no migrations directory at ${dir}; check the path given to --migrations`
-        : code === "ENOTDIR"
-          ? `${dir} is not a directory; ${given ? "--migrations takes the directory that holds the .sql files" : "make it the directory of .sql migrations, or pass --migrations <dir>"}`
-          : `cannot read the migrations in ${dir}: ${(e as Error).message}; fix it, or pass --migrations with another directory`,
-    );
-  }
-}
-
-/** Says on stderr why a sync config cannot be read, and what to do; returns it for the report. */
-function cannotRead(file: string, e: unknown): Unreadable {
-  // A file the system could not read (not there, a directory) is a path to fix; anything else is its YAML.
-  const fix = (e as NodeJS.ErrnoException).syscall ? "check the path, or name another file" : "fix the YAML, or name another file";
-  const message = (e as Error).message.trimEnd();
-  // A YAML error ends with the line it points at: the fix goes below it.
-  console.error(`samesight: ${file}: cannot be read as a sync config: ${message}${message.includes("\n") ? "\n" : "; "}${fix}`);
-  return { file, error: (e as Error).message };
 }
 
 function generate(policy: Policy, schema: SchemaInfo, root: string): number {
