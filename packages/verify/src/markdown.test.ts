@@ -179,6 +179,8 @@ describe("escaping", () => {
     expect(code("x`y")).toBe("``x`y``");
     expect(code("`y")).toBe("`` `y ``");
     expect(fence("select '```'", "sql")).toEqual(["````sql", "select '```'", "````"]);
+    // Every line ending Markdown knows splits a fenced line, so none hides inside one.
+    expect(fence("a\r\nb\rc\nd")).toEqual(["```", "a", "b", "c", "d", "```"]);
   });
 
   it("keeps a name holding a carriage return on its list item and table row", () => {
@@ -192,6 +194,10 @@ describe("escaping", () => {
     const block = toMarkdown({ mode: "audit", exitCode: 1, sections: [{ title: "Write path", findings: [{ status: "fail", check: "write-path", detail: "rows planted:\n  inserted a t\r# x row" }] }] });
     expect(block).not.toContain("\r");
     expect(block).toContain("\n  ```\n  inserted a t # x row\n  ```");
+    // A row's own lines, said again in its block, are not repeated under the item for the name's sake.
+    const rowed = toMarkdown({ mode: "audit", exitCode: 1, sections: [{ title: "D", findings: [differential("fail", "x:", [{ ...leak, sentBy: [{ stream: "s\rt" }] }])] }] });
+    expect(rowed).not.toContain("```\n");
+    expect(rowed).toContain("| Sent by | stream `s t` |");
   });
 
   it("escapes what a row's values hold in its table", () => {

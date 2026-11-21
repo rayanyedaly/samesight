@@ -32,6 +32,11 @@ export function code(s: string): string {
   return `${ticks}${pad}${text}${pad}${ticks}`.replace(/\|/g, "\\|");
 }
 
+/** Text's lines. A lone carriage return (in a quoted name) would end a Markdown line: it stays on its line, as a space. */
+function lines(text: string): string[] {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, " ").split("\n");
+}
+
 /** A fenced block that no line of `text` can close early. */
 export function fence(text: string, lang = ""): string[] {
   const ticks = "`".repeat(Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length)) + 1);
@@ -85,10 +90,9 @@ export function toMarkdown(r: MarkdownReport): string {
     if (!s.findings.length) out.push("Nothing to report.");
     let listOpen = false;
     for (const f of s.findings) {
-      // A lone carriage return (in a quoted name) would end a Markdown line: it stays on its line, as a space.
-      const [head = "", ...rest] = f.detail.replace(/\r\n/g, "\n").replace(/\r/g, " ").split("\n");
+      const [head = "", ...rest] = lines(f.detail);
       // The row blocks below say what the detail's own lines for the rows say.
-      const shown = new Set((f.rows ?? []).flatMap((r) => formatRow(r)).map((l) => l.trim()));
+      const shown = new Set((f.rows ?? []).flatMap((r) => formatRow(r).flatMap(lines)).map((l) => l.trim()));
       const more = rest.filter((l) => l.trim() && !shown.has(l.trim()));
       if (!listOpen) {
         if (out.at(-1) !== "") out.push("");
