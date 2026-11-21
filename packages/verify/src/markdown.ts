@@ -35,7 +35,7 @@ export function code(s: string): string {
 /** A fenced block that no line of `text` can close early. */
 export function fence(text: string, lang = ""): string[] {
   const ticks = "`".repeat(Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length)) + 1);
-  return [`${ticks}${lang}`, ...text.split("\n"), ticks];
+  return [`${ticks}${lang}`, ...text.split(/\r\n?|\n/), ticks];
 }
 
 /** Lines without the indent they all share. */
@@ -85,7 +85,8 @@ export function toMarkdown(r: MarkdownReport): string {
     if (!s.findings.length) out.push("Nothing to report.");
     let listOpen = false;
     for (const f of s.findings) {
-      const [head = "", ...rest] = f.detail.split("\n");
+      // A lone carriage return (in a quoted name) would end a Markdown line: it stays on its line, as a space.
+      const [head = "", ...rest] = f.detail.replace(/\r\n/g, "\n").replace(/\r/g, " ").split("\n");
       // The row blocks below say what the detail's own lines for the rows say.
       const shown = new Set((f.rows ?? []).flatMap((r) => formatRow(r)).map((l) => l.trim()));
       const more = rest.filter((l) => l.trim() && !shown.has(l.trim()));

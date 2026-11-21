@@ -188,6 +188,10 @@ describe("escaping", () => {
     const odd = toMarkdown({ mode: "audit", exitCode: 0, sections: [{ title: "Exposure", findings: [{ status: "ok", check: "exposure", detail: "u0's device held email of t\r- x rows" }] }] });
     expect(odd).toContain("- ok exposure: u0's device held email of t - x rows");
     expect(odd).not.toContain("\r");
+    // A detail's further lines go in a fence under the item: a name there stays inside it too.
+    const block = toMarkdown({ mode: "audit", exitCode: 1, sections: [{ title: "Write path", findings: [{ status: "fail", check: "write-path", detail: "rows planted:\n  inserted a t\r# x row" }] }] });
+    expect(block).not.toContain("\r");
+    expect(block).toContain("\n  ```\n  inserted a t # x row\n  ```");
   });
 
   it("escapes what a row's values hold in its table", () => {
