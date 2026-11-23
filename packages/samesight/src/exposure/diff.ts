@@ -9,7 +9,8 @@
  * users now surely do, and narrower only in the mirror case. Any other change of audience (a
  * role check for a group, a row's owner for a group, one owner column for another, another
  * owner column added) is listed as changed, never ranked. Queries that cannot be read, and a
- * * the schema does not know, may send anything, so nothing is ranked against them.
+ * * the schema does not know, may send anything, so a table and its columns are not ranked
+ * against them; a query's own audience still is, against what that query sent before.
  */
 
 import { type Audience, widest } from "../lint/audience.ts";
@@ -54,6 +55,8 @@ export interface QueryChange {
 
 export interface ColumnAdded {
   name: string;
+  /** The table's columns its value comes from: a column renamed, or fed from another column, is another column. */
+  from: string[];
   /** The widest audience over the queries that now send it. */
   audience: Audience;
   personal?: PersonalMatch;
@@ -66,6 +69,7 @@ export interface ColumnAdded {
 
 export interface ColumnRemoved {
   name: string;
+  from: string[];
   /** The widest audience over the queries that sent it. */
   audience: Audience;
   personal?: PersonalMatch;
@@ -82,14 +86,17 @@ export interface TableDiff {
   /** The widest audience over the table's queries (on-demand ones too: a client that subscribes gets them). */
   audience: AudienceChange;
   columns: {
-    /** Sent now and not before. */
+    /**
+     * Sent now and not before. A column is its device name and the table's columns its value
+     * comes from, so '' AS email turned into email is one dropped and one added.
+     */
     added: ColumnAdded[];
     /** Sent before and not now. */
     removed: ColumnRemoved[];
     /** Sent before and now, to a different audience (the widest over the queries that send it). */
-    audience: { name: string; personal?: PersonalMatch; change: AudienceChange }[];
+    audience: { name: string; from: string[]; personal?: PersonalMatch; change: AudienceChange }[];
     /** Sent before and now, and marked or matched as personal differently (a comment marker added or removed, say). */
-    personal: { name: string; before?: PersonalMatch; after?: PersonalMatch }[];
+    personal: { name: string; from: string[]; before?: PersonalMatch; after?: PersonalMatch }[];
     /**
      * False on a side where some query's * reads a table the schema there does not know, or
      * knows only in part, or where a query that cannot be read may send the table. A column
@@ -323,11 +330,11 @@ function queryChange(b: Read, a: Read): QueryChange | undefined {
   const autoSubscribe = b.q.autoSubscribe === a.q.autoSubscribe ? undefined : { before: b.q.autoSubscribe, after: a.q.autoSubscribe };
   let columns: QueryChange["columns"];
   if (b.known && a.known) {
-    const names = (r: Read) => r.q.columns.items.map((c) => c.name);
-    const [was, is] = [names(b), names(a)];
-    const [had, has] = [new Set(was), new Set(is)];
-    const added = is.filter((n) => !had.has(n));
-    const removed = was.filter((n) => !has.has(n));
+    const ids = (r: Read) => r.q.columns.items.map((c) => [columnId(c.name, c.from), c.name] as const);
+    const [was, is] = [ids(b), ids(a)];
+    const [had, has] = [new Set(was.map(([id]) => id)), new Set(is.map(([id]) => id))];
+    const added = is.filter(([id]) => !had.has(id)).map(([, name]) => name);
+    const removed = was.filter(([id]) => !has.has(id)).map(([, name]) => name);
     if (added.length || removed.length) columns = { added, removed };
   }
   // A label alone that changed (a query inserted before it) sends nothing new.
@@ -349,40 +356,51 @@ function queryChange(b: Read, a: Read): QueryChange | undefined {
  * Parameter queries are named by position, so one inserted before another is one added.
  */
 function decidedChange(b: Read, a: Read): NonNullable<QueryChange["decidedBy"]> {
-  const raw = (r: Read, name: string) => r.q.decidedBy?.find((d) => d.name === name)?.sql as string;
+  const texts = (r: Read) => new Map((r.q.decidedBy ?? []).map((d) => [d.name, d.sql]));
+  const [rawB, rawA] = [texts(b), texts(a)];
   const was = new Set(b.decidedBy?.values());
   const is = new Set(a.decidedBy?.values());
   const out = new Map<string, { name: string; before?: string; after?: string }>();
-  for (const [name, sql] of b.decidedBy ?? []) if (!is.has(sql)) out.set(name, { name, before: raw(b, name) });
-  for (const [name, sql] of a.decidedBy ?? []) if (!was.has(sql)) out.set(name, { ...(out.get(name) ?? { name }), after: raw(a, name) });
+  for (const [name, sql] of b.decidedBy ?? []) if (!is.has(sql)) out.set(name, { name, before: rawB.get(name) as string });
+  for (const [name, sql] of a.decidedBy ?? []) if (!was.has(sql)) out.set(name, { ...(out.get(name) ?? { name }), after: rawA.get(name) as string });
   return [...out.values()];
 }
 
-/**
- * A side's columns: by device name, the audiences of the queries that list it (or a * the
- * schema knows); the first personal match for it; and the audiences of the queries whose *
- * the schema does not know, which may send any column.
- */
-function sentColumns(reads: Read[]): { listed: Map<string, Audience[]>; personal: Map<string, PersonalMatch>; star: Audience[] } {
-  const listed = new Map<string, Audience[]>();
-  const personal = new Map<string, PersonalMatch>();
+/** A column's identity: its device name and the table's columns its value comes from. */
+const columnId = (name: string, from: string[]) => JSON.stringify([name, [...from].sort()]);
+
+interface Column {
+  name: string;
+  from: string[];
+  /** The audiences of the queries that list it (or a * the schema knows). */
+  audiences: Audience[];
+  /** The first personal match for it. */
+  personal?: PersonalMatch;
+}
+
+/** A side's columns by identity, and the audiences of the queries whose * the schema does not know, which may send any column. */
+function sentColumns(reads: Read[]): { columns: Map<string, Column>; star: Audience[] } {
+  const columns = new Map<string, Column>();
   const star: Audience[] = [];
   for (const { q, known } of reads) {
     if (!known) star.push(q.audience);
     for (const c of q.columns.items) {
-      const list = listed.get(c.name);
-      if (list) list.push(q.audience);
-      else listed.set(c.name, [q.audience]);
-      if (c.personal && !personal.has(c.name)) personal.set(c.name, c.personal);
+      const id = columnId(c.name, c.from);
+      const column = columns.get(id);
+      if (column) {
+        column.audiences.push(q.audience);
+        if (c.personal && !column.personal) column.personal = c.personal;
+      } else columns.set(id, { name: c.name, from: c.from, audiences: [q.audience], ...(c.personal ? { personal: c.personal } : {}) });
     }
   }
-  return { listed, personal, star };
+  return { columns, star };
 }
 
 /**
- * Columns compared by device name. Where a side has a * the schema does not know, a column
- * may be sent there unseen, so the comparison takes the widest it may reach on that side and
- * the narrowest it surely reaches on the other, and says only what holds either way.
+ * Columns compared by identity. Where a side has a * the schema does not know, or a query that
+ * cannot be read may send the table, a column may be sent there unseen, so the comparison takes
+ * the widest it may reach on that side and the narrowest it surely reaches on the other, and
+ * says only what holds either way.
  */
 function columnsDiff(before: Read[], after: Read[], hidden: { before: boolean; after: boolean }): TableDiff["columns"] {
   const b = sentColumns(before);
@@ -390,43 +408,43 @@ function columnsDiff(before: Read[], after: Read[], hidden: { before: boolean; a
   // An unreadable query that may send the table may send any column, to anyone.
   if (hidden.before) b.star.push({ kind: "everyone" });
   if (hidden.after) a.star.push({ kind: "everyone" });
-  const most = (listed: Audience[] | undefined, star: Audience[]) => ([...(listed ?? []), ...star].length ? widest([...(listed ?? []), ...star]) : undefined);
-  const personalOf = (m: Map<string, PersonalMatch>, name: string) => (m.has(name) ? { personal: m.get(name) as PersonalMatch } : {});
+  const most = (list: Audience[]) => (list.length ? widest(list) : undefined);
+  const named = (c: Column) => ({ name: c.name, from: c.from });
+  const personalOf = (c: Column) => (c.personal ? { personal: c.personal } : {});
 
   const added: ColumnAdded[] = [];
   const audience: TableDiff["columns"]["audience"] = [];
   const personal: TableDiff["columns"]["personal"] = [];
-  for (const [name, list] of a.listed) {
-    const now = widest(list);
-    const was = b.listed.get(name);
+  for (const [id, column] of a.columns) {
+    const now = widest(column.audiences);
+    const was = b.columns.get(id);
     if (!was) {
-      const unseen = most(undefined, b.star);
-      if (!unseen) added.push({ name, audience: now, ...personalOf(a.personal, name) });
-      else if (compareAudience(unseen, now) === "wider") added.push({ name, audience: now, ...personalOf(a.personal, name), before: unseen });
+      const unseen = most(b.star);
+      if (!unseen) added.push({ ...named(column), audience: now, ...personalOf(column) });
+      else if (compareAudience(unseen, now) === "wider") added.push({ ...named(column), audience: now, ...personalOf(column), before: unseen });
       continue;
     }
-    const then = widest(was);
+    const then = widest(was.audiences);
     let change: AudienceChange | undefined;
     if (!b.star.length && !a.star.length) {
       if (!sameAudience(then, now)) change = { before: then, after: now, direction: compareAudience(then, now) };
     } else {
-      const thenAtMost = most(was, b.star) as Audience;
-      const nowAtMost = most(list, a.star) as Audience;
+      const thenAtMost = most([...was.audiences, ...b.star]) as Audience;
+      const nowAtMost = most([...column.audiences, ...a.star]) as Audience;
       if (compareAudience(thenAtMost, now) === "wider") change = { before: thenAtMost, after: now, direction: "wider" };
       else if (compareAudience(then, nowAtMost) === "narrower") change = { before: then, after: nowAtMost, direction: "narrower" };
     }
-    if (change) audience.push({ name, ...personalOf(a.personal, name), change });
-    const [p, q] = [b.personal.get(name), a.personal.get(name)];
-    if (!samePersonal(p, q)) personal.push({ name, ...(p ? { before: p } : {}), ...(q ? { after: q } : {}) });
+    if (change) audience.push({ ...named(column), ...personalOf(column), change });
+    if (!samePersonal(was.personal, column.personal)) personal.push({ ...named(column), ...(was.personal ? { before: was.personal } : {}), ...(column.personal ? { after: column.personal } : {}) });
   }
 
   const removed: ColumnRemoved[] = [];
-  for (const [name, list] of b.listed) {
-    if (a.listed.has(name)) continue;
-    const then = widest(list);
-    const unseen = most(undefined, a.star);
-    if (!unseen) removed.push({ name, audience: then, ...personalOf(b.personal, name) });
-    else if (compareAudience(then, unseen) === "narrower") removed.push({ name, audience: then, ...personalOf(b.personal, name), after: unseen });
+  for (const [id, column] of b.columns) {
+    if (a.columns.has(id)) continue;
+    const then = widest(column.audiences);
+    const unseen = most(a.star);
+    if (!unseen) removed.push({ ...named(column), audience: then, ...personalOf(column) });
+    else if (compareAudience(then, unseen) === "narrower") removed.push({ ...named(column), audience: then, ...personalOf(column), after: unseen });
   }
   return { added, removed, audience, personal, known: { before: !b.star.length, after: !a.star.length } };
 }

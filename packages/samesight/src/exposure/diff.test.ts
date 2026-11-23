@@ -174,8 +174,8 @@ describe("tables", () => {
         audience: { after: owner },
         columns: {
           added: [
-            { name: "id", audience: owner },
-            { name: "body", audience: owner },
+            { name: "id", from: ["id"], audience: owner },
+            { name: "body", from: ["body"], audience: owner },
           ],
           removed: [],
           audience: [],
@@ -239,7 +239,7 @@ describe("queries", () => {
 describe("columns", () => {
   it("a column added to a query's list is added, with who receives it", () => {
     const d = diff(streams({ s: ["SELECT id FROM lists WHERE owner_id = auth.user_id()"] }), streams({ s: [OWN_LISTS] }));
-    expect(d.tables[0]?.columns.added).toEqual([{ name: "name", audience: owner }]);
+    expect(d.tables[0]?.columns.added).toEqual([{ name: "name", from: ["name"], audience: owner }]);
     expect(d.tables[0]?.queries.changed[0]?.columns).toEqual({ added: ["name"], removed: [] });
     expect(d.widened).toBe(true);
   });
@@ -249,7 +249,7 @@ describe("columns", () => {
       streams({ s: ["SELECT id FROM members WHERE user_id = auth.user_id()"] }),
       streams({ s: ["SELECT id, email FROM members WHERE user_id = auth.user_id()"] }),
     );
-    expect(d.tables[0]?.columns.added).toEqual([{ name: "email", audience: { kind: "owner", column: "user_id" }, personal: { category: "contact", matched: "email", source: "name" } }]);
+    expect(d.tables[0]?.columns.added).toEqual([{ name: "email", from: ["email"], audience: { kind: "owner", column: "user_id" }, personal: { category: "contact", matched: "email", source: "name" } }]);
   });
 
   it("a column moved to a query with a wider audience reaches more users, though the table's audience stays", () => {
@@ -262,6 +262,7 @@ describe("columns", () => {
     expect(members?.columns.audience).toEqual([
       {
         name: "email",
+        from: ["email"],
         personal: { category: "contact", matched: "email", source: "name" },
         change: { before: { kind: "owner", column: "user_id" }, after: everyone, direction: "wider" },
       },
@@ -272,7 +273,7 @@ describe("columns", () => {
   it("a comment marker added in a migration is a personal change, not a widening", () => {
     const yaml = streams({ s: [OWN_NOTES] });
     const d = diffExposure(map(yaml, APP_SCHEMA), map(yaml, schemaOf(APP, "comment on column notes.body is 'samesight:personal=health';")));
-    expect(d.tables[0]?.columns.personal).toEqual([{ name: "body", after: { category: "health", matched: "samesight:personal=health", source: "comment" } }]);
+    expect(d.tables[0]?.columns.personal).toEqual([{ name: "body", from: ["body"], after: { category: "health", matched: "samesight:personal=health", source: "comment" } }]);
     expect(d.widened).toBe(false);
   });
 
@@ -325,6 +326,7 @@ bucket_definitions:
 `;
     const d = diffExposure(map(rules, TODO_SCHEMA), map(corpus("real/powersync-js-todolist.yaml"), TODO_SCHEMA));
     expect(d.kind).toEqual({ before: "bucket definitions", after: "streams" });
+    expect(d.tables.map((t) => t.table)).toEqual(["lists", "todos"]);
     expect(d.changed).toBe(true);
     expect(d.widened).toBe(false);
     // The same users get the same columns of each table, through other buckets and streams.
@@ -398,7 +400,7 @@ describe("a * the schema does not know", () => {
 
   it("a column it may have sent, now surely sent to more users, is added and widens", () => {
     const d = diff(streams({ s: [star, "SELECT id FROM notes"] }), streams({ s: [star, "SELECT id, memo FROM notes"] }), schema);
-    expect(d.tables[0]?.columns.added).toEqual([{ name: "memo", audience: everyone, before: owner }]);
+    expect(d.tables[0]?.columns.added).toEqual([{ name: "memo", from: ["memo"], audience: everyone, before: owner }]);
     expect(d.widened).toBe(true);
   });
 
@@ -584,7 +586,7 @@ describe("personal columns", () => {
 
   it("a marker removed is listed with only its before", () => {
     const d = diffExposure(map(yaml, schemaOf(APP, "comment on column notes.body is 'samesight:personal=health';")), map(yaml, APP_SCHEMA));
-    expect(d.tables[0]?.columns.personal).toEqual([{ name: "body", before: { category: "health", matched: "samesight:personal=health", source: "comment" } }]);
+    expect(d.tables[0]?.columns.personal).toEqual([{ name: "body", from: ["body"], before: { category: "health", matched: "samesight:personal=health", source: "comment" } }]);
   });
 });
 
@@ -728,14 +730,14 @@ describe("columns, more", () => {
     const yaml = streams({ s: ["SELECT * FROM notes WHERE owner_id = auth.user_id()"] });
     const d = diffExposure(map(yaml, APP_SCHEMA), map(yaml, schemaOf(APP, "alter table notes add column phone text;")));
     expect(d.tables[0]?.queries.changed.map((q) => q.columns)).toEqual([{ added: ["phone"], removed: [] }]);
-    expect(d.tables[0]?.columns.added).toEqual([{ name: "phone", audience: owner, personal: { category: "contact", matched: "phone", source: "name" } }]);
+    expect(d.tables[0]?.columns.added).toEqual([{ name: "phone", from: ["phone"], audience: owner, personal: { category: "contact", matched: "phone", source: "name" } }]);
     expect(d.widened).toBe(true);
   });
 
   it("a column dropped from a query's list is removed from it", () => {
     const d = diff(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id FROM lists WHERE owner_id = auth.user_id()"] }));
     expect(d.tables[0]?.queries.changed.map((q) => q.columns)).toEqual([{ added: [], removed: ["name"] }]);
-    expect(d.tables[0]?.columns.removed).toEqual([{ name: "name", audience: owner }]);
+    expect(d.tables[0]?.columns.removed).toEqual([{ name: "name", from: ["name"], audience: owner }]);
   });
 
   it("a personal match made another way is listed, though its category is the same", () => {
@@ -757,5 +759,92 @@ describe("the diff as a whole", () => {
       ["lists", "added"],
       ["notes", "removed"],
     ]);
+  });
+});
+
+describe("a column is its name and where its value comes from", () => {
+  it("a literal turned into the column it named sends real data: one dropped, one added", () => {
+    const d = diff(streams({ s: ["SELECT id, '' AS email FROM members"] }), streams({ s: ["SELECT id, email FROM members"] }));
+    const members = d.tables[0];
+    expect(members?.columns.removed).toEqual([{ name: "email", from: [], audience: everyone }]);
+    expect(members?.columns.added).toEqual([{ name: "email", from: ["email"], audience: everyone, personal: { category: "contact", matched: "email", source: "name" } }]);
+    expect(members?.queries.changed[0]?.columns).toEqual({ added: ["email"], removed: ["email"] });
+    expect(d.widened).toBe(true);
+  });
+
+  it("a device column fed from another table column is another column", () => {
+    const d = diff(streams({ s: ["SELECT id, role AS who FROM members"] }), streams({ s: ["SELECT id, email AS who FROM members"] }));
+    expect(d.tables[0]?.columns.added.map((c) => [c.name, c.from])).toEqual([["who", ["email"]]]);
+    expect(d.widened).toBe(true);
+  });
+});
+
+describe("CTEs, further", () => {
+  const two = (inner: string) =>
+    `config:\n  edition: 3\nstreams:\n  s:\n    auto_subscribe: true\n    with:\n      mine: ${inner}\n      my_orgs: SELECT org_id FROM members WHERE user_id IN mine\n    query: SELECT id, name FROM lists WHERE org_id IN my_orgs\n`;
+
+  it("an edit to a CTE that another CTE reads is a change of the query", () => {
+    const d = diff(two("SELECT id FROM people WHERE id = auth.user_id()"), two("SELECT user_id FROM members WHERE org_id = auth.parameter('org_id')"));
+    expect(d.tables[0]?.queries.changed[0]?.decidedBy?.map((x) => x.name)).toEqual(["with.mine"]);
+    expect(map(two("SELECT 1")).tables[0]?.queries[0]?.decidedBy.map((x) => x.name)).toEqual(["with.mine", "with.my_orgs"]);
+  });
+
+  it("names a CTE whatever the case it is written in, quoted or not", () => {
+    const at = (ref: string) =>
+      `config:\n  edition: 3\nstreams:\n  s:\n    auto_subscribe: true\n    with:\n      MyOrgs: SELECT org_id FROM members WHERE user_id = auth.user_id()\n    query: SELECT id, name FROM lists WHERE org_id IN ${ref}\n`;
+    for (const ref of ["MyOrgs", "myorgs", '"MyOrgs"']) {
+      expect(map(at(ref)).tables[0]?.queries[0]?.decidedBy.map((x) => x.name), ref).toEqual(["with.MyOrgs"]);
+    }
+  });
+
+  it("an edit to a CTE that keeps the query's audience, while a role check is added, is not ranked", () => {
+    const at = (cte: string, more: string) =>
+      `config:\n  edition: 3\nstreams:\n  s:\n    auto_subscribe: true\n    with:\n      mine: ${cte}\n    query: SELECT id, name FROM lists WHERE org_id IN mine\n${more}`;
+    const admin = "  admin:\n    auto_subscribe: true\n    query: SELECT id, name FROM lists WHERE auth.parameter('app_metadata') ->> 'role' = 'admin'\n";
+    const [x, y] = ["SELECT org_id FROM members WHERE user_id = auth.user_id()", "SELECT org_id FROM members WHERE user_id = auth.user_id() AND active"];
+    const before = map(at(x, ""), APP_SCHEMA);
+    const after = map(at(y, admin), APP_SCHEMA);
+    expect(after.tables[0]?.queries[0]?.audience).toEqual(before.tables[0]?.queries[0]?.audience);
+    expect(diffExposure(before, after).tables[0]?.audience.direction).toBe("changed");
+  });
+});
+
+describe("more on what is ranked", () => {
+  const roleQ = "SELECT id, name FROM lists WHERE auth.parameter('app_metadata') ->> 'role' = 'admin'";
+  const groupQ = "SELECT id, name FROM lists WHERE org_id = auth.parameter('org_id')";
+
+  it("an edit to a query that keeps its audience, while a role check is added, is not ranked", () => {
+    const d = diff(streams({ s: [OWN_LISTS] }), streams({ s: [`${OWN_LISTS} AND name IS NOT NULL`], admin: [roleQ] }));
+    expect(d.tables[0]?.queries.changed[0]?.audience).toBeUndefined();
+    expect(d.tables[0]?.audience.direction).toBe("changed");
+  });
+
+  it("dropping a role check while adding a group query is not narrower", () => {
+    const d = diff(streams({ s: [OWN_LISTS], admin: [roleQ] }), streams({ s: [OWN_LISTS], org: [groupQ] }));
+    expect(d.tables[0]?.audience.direction).toBe("changed");
+  });
+
+  it("one query that became two is not paired with either", () => {
+    const d = diff(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id FROM lists", groupQ] }));
+    expect(d.tables[0]?.queries.changed).toEqual([]);
+    expect(d.tables[0]?.queries.added).toHaveLength(2);
+  });
+
+  it("a newly unreadable query alone widens, though no table entry says more", () => {
+    const d = diff(streams({ s: [OWN_LISTS] }), streams({ s: [OWN_LISTS], t: ["SELECT id FROM notes WHERE owner_id = auth.user_id() UNION SELECT id FROM notes"] }));
+    expect(d.tables).toEqual([]);
+    expect(d.unread.added).toHaveLength(1);
+    expect(d.widened).toBe(true);
+  });
+
+  it("an unreadable query gone alone is a change", () => {
+    const d = diff(streams({ s: [OWN_LISTS], t: ["SELECT id FROM notes WHERE owner_id = auth.user_id() UNION SELECT id FROM notes"] }), streams({ s: [OWN_LISTS] }));
+    expect(d).toEqual({ ...NOTHING, changed: true, unread: { added: [], removed: [expect.objectContaining({ stream: "t", table: "notes" })] } });
+  });
+
+  it("a column no longer listed, which a * the schema does not know may still send only to its owner, is removed and says so", () => {
+    const schema = schemaOf("create table lists (id uuid primary key);");
+    const d = diff(streams({ s: ["SELECT id, memo FROM notes"] }), streams({ s: ["SELECT * FROM notes WHERE owner_id = auth.user_id()"] }), schema);
+    expect(d.tables[0]?.columns.removed.find((c) => c.name === "memo")).toEqual({ name: "memo", from: ["memo"], audience: everyone, after: owner });
   });
 });
