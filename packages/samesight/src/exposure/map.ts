@@ -9,6 +9,7 @@
 import { type Audience, bucketAudiences, streamAudience, widest } from "../lint/audience.ts";
 import { sentColumns } from "../sync/columns.ts";
 import type { SyncConfig } from "../sync/config.ts";
+import { tokenize } from "../sync/sql.ts";
 import { commentMarker, type PersonalMatch, personalColumn } from "./personal.ts";
 
 /** A table as the schema knows it: the migrations' TableDef fits, and so can a live database's. */
@@ -52,9 +53,10 @@ export interface ExposedQuery {
   /** For a bucket, the audience through each parameter query; for a stream, its one audience. */
   paths: { via?: string; audience: Audience }[];
   /**
-   * The SQL that decides who a group is, as `via` names it: the stream's CTEs (with.my_orgs)
-   * or the bucket's parameter queries (parameters[0]). An edit there can change who receives
-   * the rows while the query itself stays the same.
+   * The SQL besides the query that decides who receives its rows, named as `via` names it: the
+   * stream's CTEs the query names (with.my_orgs), or every parameter query of the bucket
+   * (parameters[0]). An edit there can change who receives the rows while the query itself
+   * stays the same.
    */
   decidedBy: { name: string; sql: string }[];
   columns: {
@@ -75,8 +77,11 @@ export interface ExposureMap {
   kind: SyncConfig["kind"];
   /** Sorted by table name; each table's queries in config order. */
   tables: ExposedTable[];
-  /** Queries whose table or audience cannot be read, with why: unreadable-query names the same ones. */
-  unread: { stream: string; query: string; sql: string; reason: string }[];
+  /**
+   * Queries whose table or audience cannot be read, with why: unreadable-query names the same
+   * ones. `table` when the table it sends could be read and only its audience could not.
+   */
+  unread: { stream: string; query: string; sql: string; table?: string; reason: string }[];
 }
 
 /**
@@ -102,7 +107,7 @@ export function exposureMap(config: SyncConfig, schema?: Schema): ExposureMap {
       }
       const paths = buckets ? buckets.get(q.label) : streamPaths(q.sql, s.ctes, keys);
       if (!paths?.length) {
-        unread.push({ ...at, reason: "who receives its rows cannot be read" });
+        unread.push({ ...at, table: sent.table, reason: "who receives its rows cannot be read" });
         continue;
       }
       const exposed: ExposedQuery = {
@@ -111,14 +116,31 @@ export function exposureMap(config: SyncConfig, schema?: Schema): ExposureMap {
         deviceTable: sent.deviceTable,
         audience: widest(paths.map((p) => p.audience)),
         paths,
-        decidedBy: [...s.ctes].map(([name, sql]) => ({ name: config.kind === "streams" ? `with.${name}` : name, sql })),
+        decidedBy: decidedBy(config.kind, s.ctes, q.sql),
         columns: columnsOf(sent, config.kind, schema?.(sent.table), sent.table),
       };
-      byTable.set(sent.table, [...(byTable.get(sent.table) ?? []), exposed]);
+      const list = byTable.get(sent.table);
+      if (list) list.push(exposed);
+      else byTable.set(sent.table, [exposed]);
     }
   }
   const tables = [...byTable].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([table, queries]) => ({ table, queries }));
   return { kind: config.kind, tables, unread };
+}
+
+/**
+ * What decides who a query's rows reach besides the query itself: every parameter query of a
+ * bucket, or the stream CTEs the query names (all of them when its SQL cannot be read).
+ */
+function decidedBy(kind: SyncConfig["kind"], ctes: Map<string, string>, sql: string): ExposedQuery["decidedBy"] {
+  if (kind !== "streams") return [...ctes].map(([name, text]) => ({ name, sql: text }));
+  let words: Set<string> | undefined;
+  try {
+    words = new Set(tokenize(sql).flatMap((t) => (t.kind === "word" ? [t.text] : t.kind === "quoted" ? [t.text] : [])));
+  } catch {
+    words = undefined;
+  }
+  return [...ctes].filter(([name]) => !words || words.has(name) || words.has(name.toLowerCase())).map(([name, text]) => ({ name: `with.${name}`, sql: text }));
 }
 
 function streamPaths(sql: string, ctes: Map<string, string>, keys: (table: string) => string[] | undefined): ExposedQuery["paths"] | undefined {
