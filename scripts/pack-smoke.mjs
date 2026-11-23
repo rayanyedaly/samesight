@@ -351,6 +351,15 @@ step("every package ships its license", () => {
 step("node imports samesight", () =>
   expectIn(run("node", ["--input-type=module", "-e", 'import { definePolicy } from "samesight"; console.log(typeof definePolicy);'], { cwd: lib }), "function", "import"),
 );
+step("node imports samesight/compiler and diffs two exposure maps", () => {
+  const code = [
+    'import { diffExposure, exposureMap, parseSyncConfig } from "samesight/compiler";',
+    'const map = (where) => exposureMap(parseSyncConfig(`config:\\n  edition: 3\\nstreams:\\n  s:\\n    auto_subscribe: true\\n    query: SELECT id, name FROM lists${where}\\n`));',
+    'const d = diffExposure(map(" WHERE owner_id = auth.user_id()"), map(""));',
+    'console.log(`widened ${d.widened} ${d.tables[0].audience.direction}`);',
+  ].join("\n");
+  expectIn(run("node", ["--input-type=module", "-e", code], { cwd: cli }), "widened true wider", "compiler import");
+});
 cpSync(join(FIELDBOOK, "samesight.policy.ts"), join(lib, "samesight.policy.ts"));
 cpSync(join(FIELDBOOK, "supabase/types.ts"), join(lib, "supabase/types.ts"));
 writeFileSync(
