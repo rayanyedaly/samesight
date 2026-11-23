@@ -51,6 +51,12 @@ export interface ExposedQuery {
   audience: Audience;
   /** For a bucket, the audience through each parameter query; for a stream, its one audience. */
   paths: { via?: string; audience: Audience }[];
+  /**
+   * The SQL that decides who a group is, as `via` names it: the stream's CTEs (with.my_orgs)
+   * or the bucket's parameter queries (parameters[0]). An edit there can change who receives
+   * the rows while the query itself stays the same.
+   */
+  decidedBy: { name: string; sql: string }[];
   columns: {
     /** "list": the query names every column; "schema": * read from the migrations; "unknown": * with no schema to read. */
     source: "list" | "schema" | "unknown";
@@ -105,6 +111,7 @@ export function exposureMap(config: SyncConfig, schema?: Schema): ExposureMap {
         deviceTable: sent.deviceTable,
         audience: widest(paths.map((p) => p.audience)),
         paths,
+        decidedBy: [...s.ctes].map(([name, sql]) => ({ name: config.kind === "streams" ? `with.${name}` : name, sql })),
         columns: columnsOf(sent, config.kind, schema?.(sent.table), sent.table),
       };
       byTable.set(sent.table, [...(byTable.get(sent.table) ?? []), exposed]);
