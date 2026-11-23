@@ -7,8 +7,9 @@
  *
  * It calls a change wider only where everyone who received something still does and more
  * users now surely do, and narrower only in the mirror case. Any other change of audience (a
- * role check for a group, a row's owner for a group, one owner column for another) is listed
- * as changed, never ranked.
+ * role check for a group, a row's owner for a group, one owner column for another, another
+ * owner column added) is listed as changed, never ranked. Queries that cannot be read, and a
+ * * the schema does not know, may send anything, so nothing is ranked against them.
  */
 
 import { type Audience, widest } from "../lint/audience.ts";
@@ -91,8 +92,8 @@ export interface TableDiff {
     personal: { name: string; before?: PersonalMatch; after?: PersonalMatch }[];
     /**
      * False on a side where some query's * reads a table the schema there does not know, or
-     * knows only in part. A column such a * may send is then compared only where the result
-     * holds whatever it sends.
+     * knows only in part, or where a query that cannot be read may send the table. A column
+     * they may send is then compared only where the result holds whatever they send.
      */
     known: { before: boolean; after: boolean };
   };
@@ -106,9 +107,10 @@ export interface ExposureDiff {
   changed: boolean;
   /**
    * Whether something below surely reaches more users, or can no longer be shown not to: a
-   * table or column newly sent, a table, column or query whose audience is wider, a query that
-   * cannot be read and was not unreadable before (a new one included), or a * whose columns
-   * could be read before and cannot now. Never true without such an entry.
+   * table newly sent (where nothing unreadable may have sent it before), a column newly sent,
+   * a table, column or query whose audience is wider, a query that cannot be read and was not
+   * unreadable before (a new one included), or a table whose columns could all be read before
+   * and cannot now. Never true without such an entry.
    */
   widened: boolean;
   /** When one side is sync streams and the other sync rules. */
@@ -124,12 +126,11 @@ export function diffExposure(before: MapLike, after: MapLike): ExposureDiff {
   const unreadKey = (u: Unread) => key(u.stream, u.sql);
   const keys = { before: new Set(before.unread.map(unreadKey)), after: new Set(after.unread.map(unreadKey)) };
   const unreadDiff = { added: after.unread.filter((u) => !keys.before.has(unreadKey(u))), removed: before.unread.filter((u) => !keys.after.has(unreadKey(u))) };
-  // Streams where a query could not be read on one side and not the other: what it sent there is not known.
-  const unread = { before: new Set(unreadDiff.removed.map((u) => u.stream)), after: new Set(unreadDiff.added.map((u) => u.stream)) };
+  const hidden = { before: hiddenBy(before.unread), after: hiddenBy(after.unread) };
   const old = new Map(before.tables.map((t) => [t.table, t.queries]));
   const now = new Map(after.tables.map((t) => [t.table, t.queries]));
   const names = [...new Set([...old.keys(), ...now.keys()])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const tables = names.map((name) => tableDiff(name, (old.get(name) ?? []).map(read), (now.get(name) ?? []).map(read), unread)).filter((t): t is TableDiff => t !== undefined);
+  const tables = names.map((name) => tableDiff(name, (old.get(name) ?? []).map(read), (now.get(name) ?? []).map(read), { before: hidden.before(name), after: hidden.after(name) })).filter((t): t is TableDiff => t !== undefined);
 
   const kind = before.kind === after.kind ? undefined : { before: before.kind, after: after.kind };
   const widened = unreadDiff.added.length > 0 || tables.some(widens);
@@ -137,10 +138,19 @@ export function diffExposure(before: MapLike, after: MapLike): ExposureDiff {
   return { changed, widened, ...(kind ? { kind } : {}), tables, unread: unreadDiff };
 }
 
+/**
+ * Whether a side's unreadable queries may send a table: those whose table could be read send
+ * only theirs, and one whose table could not be read may send any.
+ */
+function hiddenBy(unread: Unread[]): (table: string) => boolean {
+  const tables = new Set(unread.map((u) => u.table));
+  return (table) => tables.has(undefined) || tables.has(table);
+}
+
 /** Whether a table's entry holds something that surely reaches more users, or can no longer be shown not to. */
 function widens(t: TableDiff): boolean {
   return (
-    t.status === "added" ||
+    (t.status === "added" && t.columns.known.before) ||
     t.audience.direction === "wider" ||
     t.columns.added.length > 0 ||
     t.columns.audience.some((c) => c.change.direction === "wider") ||
@@ -194,18 +204,19 @@ interface Read {
   q: ExposedQuery;
   key: string;
   sql: string;
-  decidedBy: Map<string, string>;
+  /** Undefined for a map printed before queries carried it. */
+  decidedBy: Map<string, string> | undefined;
   /** Whether the columns it sends are all known. */
   known: boolean;
 }
 
 function read(q: ExposedQuery): Read {
-  // Maps printed by an older samesight have no decidedBy.
-  const decidedBy = new Map((q.decidedBy ?? []).map((d) => [d.name, normal(d.sql)]));
+  const decidedBy = q.decidedBy && new Map(q.decidedBy.map((d) => [d.name, normal(d.sql)]));
   return { q, key: key(q.stream, q.sql), sql: normal(q.sql), decidedBy, known: q.columns.source !== "unknown" && q.columns.complete };
 }
 
-function tableDiff(table: string, before: Read[], after: Read[], unread: { before: Set<string>; after: Set<string> }): TableDiff | undefined {
+/** `hidden`: whether an unreadable query on that side may send the table. */
+function tableDiff(table: string, before: Read[], after: Read[], hidden: { before: boolean; after: boolean }): TableDiff | undefined {
   const pairs = matchQueries(before, after);
   const paired = new Set(pairs.flat());
   const addedReads = after.filter((r) => !paired.has(r));
@@ -220,11 +231,11 @@ function tableDiff(table: string, before: Read[], after: Read[], unread: { befor
   const audience = tableAudience(before, after, {
     // Each query found on both sides sends what it did, to the same users.
     same: changes.every((c) => c === undefined || (!c.sql && !c.decidedBy && !c.audience)),
-    added: addedReads.filter((r) => !unread.before.has(r.q.stream)),
-    removed: removedReads.filter((r) => !unread.after.has(r.q.stream)),
-    shifted: addedReads.length + removedReads.length,
+    added: addedReads,
+    removed: removedReads,
+    hidden,
   });
-  const columns = columnsDiff(before, after);
+  const columns = columnsDiff(before, after, hidden);
   const status = !before.length ? "added" : !after.length ? "removed" : "changed";
   const empty =
     status === "changed" &&
@@ -241,33 +252,38 @@ function tableDiff(table: string, before: Read[], after: Read[], unread: { befor
 }
 
 /**
- * The table's widest audience on each side. Its rows reach the union of its queries'
- * audiences, so beyond what the two widest say: a table that keeps every query it had,
- * unchanged, and adds queries (none in a stream where a query could not be read before and
- * can now, which may have sent the same), one of them to an
- * audience none of the others had, reaches everyone it did and more (wider); the mirror is
- * narrower.
+ * The table's widest audience on each side. A side where an unreadable query may send the
+ * table may hide any audience, so nothing is ranked wider when that is the side before, or
+ * narrower when it is the side after.
+ *
+ * Its rows reach the union of its queries' audiences, so beyond what the two widest say: a
+ * table that keeps every query it had, unchanged, and only adds queries, one of them to a role
+ * check or a fixed filter none of the others had (which reach users whatever rows they own),
+ * reaches everyone it did and more: wider. The mirror is narrower. An added owner or group is
+ * not ranked: its users may be those who had the rows already.
  */
-function tableAudience(before: Read[], after: Read[], m: { same: boolean; added: Read[]; removed: Read[]; shifted: number }): AudienceChange {
+function tableAudience(before: Read[], after: Read[], m: { same: boolean; added: Read[]; removed: Read[]; hidden: { before: boolean; after: boolean } }): AudienceChange {
   const b = before.length ? widest(before.map((r) => r.q.audience)) : undefined;
   const a = after.length ? widest(after.map((r) => r.q.audience)) : undefined;
   if (!b || !a) return { ...(b ? { before: b } : {}), ...(a ? { after: a } : {}) };
   if (sameAudience(b, a)) return { before: b, after: a };
   let direction = compareAudience(b, a);
   if (direction === "changed" && m.same) {
-    const fresh = (r: Read, others: Read[]) => !others.some((o) => sameAudience(o.q.audience, r.q.audience));
-    if (m.shifted === m.added.length && m.added.length && m.added.some((r) => fresh(r, before))) direction = "wider";
-    else if (m.shifted === m.removed.length && m.removed.length && m.removed.some((r) => fresh(r, after))) direction = "narrower";
+    const fresh = (r: Read, others: Read[]) => (r.q.audience.kind === "role" || r.q.audience.kind === "fixed") && !others.some((o) => sameAudience(o.q.audience, r.q.audience));
+    const unsure = (x: Audience) => x.kind === "client" || (x.kind === "everyone" && x.mixed === true);
+    if (!m.removed.length && m.added.some((r) => fresh(r, before)) && !unsure(b)) direction = "wider";
+    else if (!m.added.length && m.removed.some((r) => fresh(r, after)) && !unsure(a)) direction = "narrower";
   }
+  if ((direction === "wider" && m.hidden.before) || (direction === "narrower" && m.hidden.after)) direction = "changed";
   return { before: b, after: a, direction };
 }
 
 /**
  * The queries found on both sides, in the after map's order: first those of the same stream
- * with the same SQL (a query that only moved, so its label changed); then, per stream, the
- * one query left on each side (edited in place), or, when as many are left on both sides,
- * those with the same label. Labels are positions, so after a query was added or dropped
- * they name other queries, and are not used.
+ * with the same SQL (a query that only moved, so its label changed); then, per stream, the one
+ * query left on each side (edited in place). Labels are positions, which a query added,
+ * dropped or moved changes, so two or more left in a stream are not paired: they are listed
+ * as dropped and added.
  */
 function matchQueries(before: Read[], after: Read[]): [Read, Read][] {
   const pairs = new Map<Read, Read>();
@@ -282,18 +298,18 @@ function matchQueries(before: Read[], after: Read[]): [Read, Read][] {
     if (b) pairs.set(a, b);
   }
   const taken = new Set(pairs.values());
-  const streams = new Set(after.map((r) => r.q.stream));
-  for (const stream of streams) {
-    const left = before.filter((r) => r.q.stream === stream && !taken.has(r));
-    const right = after.filter((r) => r.q.stream === stream && !pairs.has(r));
-    if (left.length === 1 && right.length === 1) pairs.set(right[0] as Read, left[0] as Read);
-    else if (left.length === right.length) {
-      const byLabel = new Map(left.map((r) => [r.q.query, r]));
-      for (const a of right) {
-        const b = byLabel.get(a.q.query);
-        if (b) pairs.set(a, b);
-      }
-    }
+  const left = new Map<string, Read[]>();
+  const right = new Map<string, Read[]>();
+  const add = (m: Map<string, Read[]>, r: Read) => {
+    const list = m.get(r.q.stream);
+    if (list) list.push(r);
+    else m.set(r.q.stream, [r]);
+  };
+  for (const b of before) if (!taken.has(b)) add(left, b);
+  for (const a of after) if (!pairs.has(a)) add(right, a);
+  for (const [stream, rs] of right) {
+    const ls = left.get(stream);
+    if (rs.length === 1 && ls?.length === 1) pairs.set(rs[0] as Read, ls[0] as Read);
   }
   return after.filter((a) => pairs.has(a)).map((a) => [pairs.get(a) as Read, a]);
 }
@@ -302,13 +318,7 @@ const ref = ({ q }: Read): QueryRef => ({ stream: q.stream, query: q.query, sql:
 
 function queryChange(b: Read, a: Read): QueryChange | undefined {
   const sql = b.sql === a.sql ? undefined : { before: b.q.sql, after: a.q.sql };
-  const decided = [...new Set([...b.decidedBy.keys(), ...a.decidedBy.keys()])]
-    .filter((name) => b.decidedBy.get(name) !== a.decidedBy.get(name))
-    .map((name) => {
-      const raw = (r: Read) => r.q.decidedBy?.find((d) => d.name === name)?.sql;
-      const [was, is] = [raw(b), raw(a)];
-      return { name, ...(was !== undefined ? { before: was } : {}), ...(is !== undefined ? { after: is } : {}) };
-    });
+  const decided = b.decidedBy && a.decidedBy ? decidedChange(b, a) : [];
   const audience = sameAudience(b.q.audience, a.q.audience) ? undefined : { before: b.q.audience, after: a.q.audience, direction: compareAudience(b.q.audience, a.q.audience) };
   const autoSubscribe = b.q.autoSubscribe === a.q.autoSubscribe ? undefined : { before: b.q.autoSubscribe, after: a.q.autoSubscribe };
   let columns: QueryChange["columns"];
@@ -331,6 +341,21 @@ function queryChange(b: Read, a: Read): QueryChange | undefined {
     ...(autoSubscribe ? { autoSubscribe } : {}),
     ...(columns ? { columns } : {}),
   };
+}
+
+/**
+ * The SQL deciding who a query's rows reach, compared by what it says: SQL on one side only is
+ * dropped or added (by its name there), and one name holding other SQL on each side is edited.
+ * Parameter queries are named by position, so one inserted before another is one added.
+ */
+function decidedChange(b: Read, a: Read): NonNullable<QueryChange["decidedBy"]> {
+  const raw = (r: Read, name: string) => r.q.decidedBy?.find((d) => d.name === name)?.sql as string;
+  const was = new Set(b.decidedBy?.values());
+  const is = new Set(a.decidedBy?.values());
+  const out = new Map<string, { name: string; before?: string; after?: string }>();
+  for (const [name, sql] of b.decidedBy ?? []) if (!is.has(sql)) out.set(name, { name, before: raw(b, name) });
+  for (const [name, sql] of a.decidedBy ?? []) if (!was.has(sql)) out.set(name, { ...(out.get(name) ?? { name }), after: raw(a, name) });
+  return [...out.values()];
 }
 
 /**
@@ -359,9 +384,12 @@ function sentColumns(reads: Read[]): { listed: Map<string, Audience[]>; personal
  * may be sent there unseen, so the comparison takes the widest it may reach on that side and
  * the narrowest it surely reaches on the other, and says only what holds either way.
  */
-function columnsDiff(before: Read[], after: Read[]): TableDiff["columns"] {
+function columnsDiff(before: Read[], after: Read[], hidden: { before: boolean; after: boolean }): TableDiff["columns"] {
   const b = sentColumns(before);
   const a = sentColumns(after);
+  // An unreadable query that may send the table may send any column, to anyone.
+  if (hidden.before) b.star.push({ kind: "everyone" });
+  if (hidden.after) a.star.push({ kind: "everyone" });
   const most = (listed: Audience[] | undefined, star: Audience[]) => ([...(listed ?? []), ...star].length ? widest([...(listed ?? []), ...star]) : undefined);
   const personalOf = (m: Map<string, PersonalMatch>, name: string) => (m.has(name) ? { personal: m.get(name) as PersonalMatch } : {});
 
