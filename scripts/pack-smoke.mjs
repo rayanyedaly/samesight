@@ -360,6 +360,20 @@ step("node imports samesight/compiler and diffs two exposure maps", () => {
   ].join("\n");
   expectIn(run("node", ["--input-type=module", "-e", code], { cwd: cli }), "widened true wider", "compiler import");
 });
+step("samesight exposure --against reads a git commit and exits 1 when a change reaches more users", () => {
+  // A repository inside the installed project, so npx finds samesight in the folder above it.
+  const repo = join(cli, "against");
+  mkdirSync(repo, { recursive: true });
+  const git = (...a) => run("git", ["-c", "user.name=smoke", "-c", "user.email=smoke@example.com", "-c", "commit.gpgsign=false", ...a], { cwd: repo });
+  const config = (where) => `config:\n  edition: 3\nstreams:\n  s:\n    auto_subscribe: true\n    query: SELECT id, name FROM lists${where}\n`;
+  git("init", "-q");
+  writeFileSync(join(repo, "sync-config.yaml"), config(" WHERE owner_id = auth.user_id()"));
+  git("add", "-A");
+  git("commit", "-q", "-m", "one");
+  expectIn(run("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD"], { cwd: repo }), "No change in who receives which tables and columns since HEAD.", "unchanged");
+  writeFileSync(join(repo, "sync-config.yaml"), config(""));
+  expectIn(runFailing("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD"], { cwd: repo }), "lists: reaches more users", "widened");
+});
 cpSync(join(FIELDBOOK, "samesight.policy.ts"), join(lib, "samesight.policy.ts"));
 cpSync(join(FIELDBOOK, "supabase/types.ts"), join(lib, "supabase/types.ts"));
 writeFileSync(

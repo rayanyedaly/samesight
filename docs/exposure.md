@@ -18,7 +18,7 @@ npx samesight exposure --format json
 
 With no file named, it looks for the sync config where lint does: `sync-config.yaml` or `sync-rules.yaml`, in the current directory and then under `powersync/`. It reads the migrations in `supabase/migrations`, or in the directory `--migrations` names. Without them, it says so on stderr: a `SELECT *` lists no columns, since only the migrations say what the table holds, no column comment is read, and every table is taken to be keyed by `id`.
 
-It exits 0 whatever the map shows: it informs, it never fails a run. It exits 2 when a file cannot be read, no sync config is found or an option is wrong.
+It exits 0 whatever the map shows: it informs, it never fails a run. It exits 2 when a file cannot be read, no sync config is found or an option is wrong. To see what a change does to the map, compare it with a commit: see [Comparing with a commit](#comparing-with-a-commit).
 
 ## An example
 
@@ -153,6 +153,69 @@ comment on column members.email is 'The team''s shared inbox. samesight:not-pers
 ```
 
 The categories are `identifier`, `contact`, `location`, `birth`, `health`, `financial`, `secret`, `free-text` and `personal`; `samesight:personal` alone means `personal`, and so does a category it does not know. The map reads markers from the migrations, so they count only when it reads them; audit reads them from the database's column comments.
+
+## Comparing with a commit
+
+```bash
+npx samesight exposure --against main
+npx samesight exposure --against origin/main --format json
+```
+
+`--against <ref>` maps the sync config and the migrations twice: as the commit `ref` holds them (a branch, a tag, a commit id), and as they are on disk now, uncommitted edits included. Then it prints what the change does to who receives which tables and columns:
+
+- tables newly sent, and tables no longer sent;
+- who receives each table, before and after;
+- columns added or dropped, columns whose audience moved, and columns whose personal match changed;
+- queries edited, added or dropped, with their SQL before and after, and edits to the CTEs or parameter queries that decide who receives a query's rows.
+
+It calls a change wider only where everyone who received something still does and more users surely do: every user for every row, from anything short of it but a client's pick or every user for some rows (either may already be every row); or a table that keeps each query it had, unchanged, and only adds queries, one of them to a role check or a fixed filter it did not have. Narrower is the mirror. Any other change of audience (a row's owner for a group, a role check for a group, another owner column added) is listed as reaching other users, and not ranked. Queries that cannot be read, and a `*` over a table the migrations do not define, may send anything, so a table and its columns are not ranked against them. An edit to a CTE or a parameter query is shown but not ranked: the group it decides may have grown or shrunk.
+
+It exits 1 when something reaches more users than in the commit: a table or column newly sent, a wider table, column or query, a query that cannot be read and is new, or a table whose columns could all be read before and cannot now. It exits 0 otherwise, which says only that nothing is known to reach more users, never that a change is safe. It exits 2 when it cannot run: not in a git repository, a ref the repository does not have (in a shallow clone, fetch it first), or a sync config it cannot read on either side.
+
+A sync config the commit does not have counts as newly sent, and migrations the commit does not have leave the columns a `*` sent there unknown; both say so on stderr. Paths are read from the directory it runs in, in the commit as on disk, so a renamed sync config counts as a new one.
+
+The example above, after a change that drops the notes' owner filter:
+
+<!-- exposure-against:org-members -->
+`sync-config.yaml`, changed:
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  org_members:
+    auto_subscribe: true
+    with:
+      my_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+    query: SELECT * FROM org_members WHERE org_id IN my_orgs
+  my_notes:
+    auto_subscribe: true
+    query: SELECT id, title, body FROM notes
+```
+
+```console
+$ npx samesight exposure sync-config.yaml --migrations migrations --against HEAD
+== sync-config.yaml, against HEAD ==
+
+notes: reaches more users
+  was to            only the row's owner (owner_id)
+  now to            every user
+  columns wider     id, title, body [free text, marked in its comment]
+  query edited      my_notes, query  (sync-config.yaml:12)
+                    was  SELECT id, title, body FROM notes WHERE owner_id = auth.user_id()
+                    now  SELECT id, title, body FROM notes
+                    was to only the row's owner (owner_id); now to every user
+
+1 table reaches more users, or more columns, than in HEAD: notes.
+
+Columns are matched by name or a samesight comment marker, never by their data.
+$ echo $?
+1
+```
+<!-- /exposure-against -->
+
+`--format json` prints one object: `version` (1), `against` (the `ref` as given and its `commit` id), `files`, `migrations`, `widened`, `changed`, `diffs` (one per file: its `file`, `widened`, `changed`, `kind` when sync rules became streams or the reverse, `tables` and `unread`) and `unreadable`. Each table has its `status` (`added`, `removed` or `changed`), `audience` (`before`, `after` and `direction`: `wider`, `narrower` or `changed`), `columns` (`added`, `removed`, `audience`, `personal` and whether the columns are `known` on each side) and `queries` (`added`, `removed` and `changed`); queries the file now holds have the `line` they start on. It is what `diffExposure` in `samesight/compiler` returns.
 
 ## Limits
 

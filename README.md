@@ -39,7 +39,7 @@ RLS is per row, so it never limits columns: a query sends every column it select
 npx samesight exposure sync-config.yaml --migrations supabase/migrations
 ```
 
-The [`personal-columns`](docs/rules/personal-columns.md) lint rule flags the same columns in CI. See [the exposure map](docs/exposure.md).
+To see what a change does to it, compare with a commit: `npx samesight exposure --against main` names each table and column that now reaches more users, and exits 1 when one does. The [`personal-columns`](docs/rules/personal-columns.md) lint rule flags the same columns in CI. See [the exposure map](docs/exposure.md).
 
 When a coding agent writes the sync config or the migrations, lint can run after each of its edits and hand it what it found: `npx samesight agent init` installs the hook (for Claude Code, and Codex and Cursor as the page says) and a skill that teaches each rule's fix. See [coding agents](docs/agents.md).
 
