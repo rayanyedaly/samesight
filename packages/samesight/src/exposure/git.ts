@@ -93,8 +93,10 @@ export function migrationsAt(commit: Commit, dir: string): Migrations | undefine
   const type = typeAt(commit, dir);
   if (type === undefined) return undefined;
   if (type !== "tree") throw new GitError(`${dir} is a file in ${commit.ref}, not a directory of migrations`);
-  // mode SP type SP id TAB name, NUL-terminated: names may hold anything but NUL.
-  const entries = git(["ls-tree", "-z", `${commit.sha}:${spec(commit, dir)}`], commit.cwd)
+  // mode SP type SP id TAB name, NUL-terminated: names may hold anything but NUL. Run from a
+  // subdirectory, ls-tree would keep only the entries under that directory's path: --full-tree
+  // lists the whole tree it is given.
+  const entries = git(["ls-tree", "--full-tree", "-z", `${commit.sha}:${spec(commit, dir)}`], commit.cwd)
     .split("\0")
     .filter(Boolean)
     .map((line) => {

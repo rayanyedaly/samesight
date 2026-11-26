@@ -91,6 +91,9 @@ function tableText(c: DiffedConfig, t: TableDiff): string {
     }
     for (const [change, names] of byChange) out.push(line(label, change === tableChange ? names.join(", ") : `${names.join(", ")}: ${change}`));
   }
+  if (t.status === "changed" && t.columns.known.before !== t.columns.known.after) {
+    out.push(line("columns", t.columns.known.after ? "all known now; some were not before (a * the schema did not define, or a query that could not be read)" : "not all known now (a * the schema does not define, or a query that cannot be read)"));
+  }
   for (const p of t.columns.personal) {
     const tag = (m: typeof p.before) => (m ? `${m.category}${m.source === "comment" ? ", marked in its comment" : ", by its name"}` : "not personal");
     out.push(line("personal", `${p.name}: was ${tag(p.before)}, now ${tag(p.after)}`));

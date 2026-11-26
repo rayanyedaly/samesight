@@ -129,6 +129,13 @@ describe("migrationsAt", () => {
     expect(fromGit?.tables.has("nested")).toBe(false);
   });
 
+  it("reads them from a subdirectory as from the top", () => {
+    const { dir, sha } = repo(Object.fromEntries(Object.entries(MIGRATIONS).map(([path, text]) => [`app/${path}`, text])));
+    const app = join(dir, "app");
+    expect(migrationsAt(resolveCommit(sha, app), "supabase/migrations")).toEqual(readMigrations(join(app, "supabase/migrations"), "supabase/migrations"));
+    expect(migrationsAt(resolveCommit(sha, app), "supabase/migrations")?.tables.has("lists")).toBe(true);
+  });
+
   it("reads the commit, not the files on disk", () => {
     const { dir, sha } = repo(MIGRATIONS);
     write(dir, { "supabase/migrations/3_phone.sql": "alter table lists add column phone text;" });
