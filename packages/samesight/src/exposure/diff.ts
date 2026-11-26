@@ -95,6 +95,11 @@ export interface TableDiff {
     removed: ColumnRemoved[];
     /** Sent before and now, to a different audience (the widest over the queries that send it). */
     audience: { name: string; from: string[]; personal?: PersonalMatch; change: AudienceChange }[];
+    /**
+     * A column dropped and one added that read the same table columns (name AS title): the same
+     * data under another name, with `change` when it reaches other users too.
+     */
+    renamed: { name: string; was: string; from: string[]; personal?: PersonalMatch; change?: AudienceChange }[];
     /** Sent before and now, and marked or matched as personal differently (a comment marker added or removed, say). */
     personal: { name: string; from: string[]; before?: PersonalMatch; after?: PersonalMatch }[];
     /**
@@ -171,6 +176,7 @@ export function surelyWidens(t: TableDiff): boolean {
     t.audience.direction === "wider" ||
     t.columns.added.length > 0 ||
     t.columns.audience.some((c) => c.change.direction === "wider") ||
+    t.columns.renamed.some((c) => c.change?.direction === "wider") ||
     t.queries.changed.some((q) => q.audience?.direction === "wider")
   );
 }
@@ -262,6 +268,7 @@ function tableDiff(table: string, before: Read[], after: Read[], hidden: { befor
     !columns.added.length &&
     !columns.removed.length &&
     !columns.audience.length &&
+    !columns.renamed.length &&
     !columns.personal.length &&
     columns.known.before === columns.known.after;
   return empty ? undefined : { table, status, audience, columns, queries };
@@ -455,7 +462,20 @@ function columnsDiff(before: Read[], after: Read[], hidden: { before: boolean; a
     if (!unseen) removed.push({ ...named(column), audience: then, ...personalOf(column) });
     else if (compareAudience(then, unseen) === "narrower") removed.push({ ...named(column), audience: then, ...personalOf(column), after: unseen });
   }
-  return { added, removed, audience, personal, known: { before: !b.star.length, after: !a.star.length } };
+  // The same table columns dropped under one name and added under another: renamed. Only
+  // where both sides are surely known: a literal reads none, and a * may have sent either.
+  const renamed: TableDiff["columns"]["renamed"] = [];
+  const sources = (from: string[]) => JSON.stringify([...from].sort());
+  for (const col of [...added]) {
+    if (!col.from.length || col.before) continue;
+    const was = removed.find((r) => !r.after && r.from.length && sources(r.from) === sources(col.from));
+    if (!was) continue;
+    added.splice(added.indexOf(col), 1);
+    removed.splice(removed.indexOf(was), 1);
+    const change = sameAudience(was.audience, col.audience) ? undefined : { before: was.audience, after: col.audience, direction: compareAudience(was.audience, col.audience) };
+    renamed.push({ name: col.name, was: was.name, from: col.from, ...(col.personal ? { personal: col.personal } : {}), ...(change ? { change } : {}) });
+  }
+  return { added, removed, audience, renamed, personal, known: { before: !b.star.length, after: !a.star.length } };
 }
 
 const samePersonal = (x: PersonalMatch | undefined, y: PersonalMatch | undefined) =>

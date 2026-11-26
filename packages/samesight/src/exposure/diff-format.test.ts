@@ -226,6 +226,52 @@ describe("formatExposureDiff, each kind of entry", () => {
   });
 });
 
+describe("formatExposureDiff, text from the files", () => {
+  it("keeps a stream or column name holding control characters on its line", () => {
+    const yaml = (q: string) => `config:\n  edition: 3\nstreams:\n  "s\\r::error::x":\n    auto_subscribe: true\n    query: ${q}\n`;
+    const out = text([diffed(yaml(OWN_LISTS), yaml('SELECT id, name AS "a\\u0085::warning::b" FROM lists'))]);
+    expect(out.split("\n").every((l) => !/^\s*::/.test(l))).toBe(true);
+    expect(out).toContain("s ::error::x");
+  });
+
+  it("quotes a file or ref that is not a plain name", () => {
+    const c = diffed(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name FROM lists"] }), SCHEMA, "my\nfile.yaml");
+    const out = text([c], "a‮ref");
+    expect(out).toContain('== "my\\nfile.yaml", against "a\\u202eref" ==');
+    expect(out).toContain('than in "a\\u202eref": lists.');
+  });
+
+  it("says what surely reaches more users, then what may", () => {
+    const NO_NOTES = schemaOf("create table lists (id uuid primary key, name text, owner_id uuid references auth.users);");
+    const before = streams({ s: [OWN_LISTS], n: ["SELECT * FROM notes WHERE owner_id = auth.user_id()"], m: ["SELECT * FROM members WHERE user_id = auth.user_id()"] });
+    const after = streams({ s: ["SELECT id, name FROM lists"], n: ["SELECT * FROM notes WHERE owner_id = auth.user_id()"], m: ["SELECT * FROM members WHERE user_id = auth.user_id()"], t: ["SELECT * FROM lists UNION SELECT * FROM lists"] });
+    const out = text([diffed(before, after, SCHEMA, "sync-config.yaml", NO_NOTES)]);
+    expect(out).toContain(
+      "1 table reaches more users, or more columns, than in main: lists. 2 tables may send more, since not all their columns are known now: members, notes. 1 query that cannot be read is new since main, and may send anything.",
+    );
+  });
+
+  it("counts unreadable queries in the plural", () => {
+    const u = (t: string) => `SELECT * FROM ${t} UNION SELECT * FROM ${t}`;
+    const out = text([diffed(streams({ s: [OWN_LISTS] }), streams({ s: [OWN_LISTS], t: [u("a"), u("b")] }))]);
+    expect(out).toContain("2 queries that cannot be read are new since main, and may send anything.");
+  });
+
+  it("a column renamed is said so, with its audience when that moved", () => {
+    const same = text([diffed(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name AS title FROM lists WHERE owner_id = auth.user_id()"] }))]);
+    expect(same).toContain("  columns renamed   title (from name) (was name)");
+    expect(same).toContain("Nothing reaches more users than in main");
+    const wider = text([diffed(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name AS title FROM lists"] }))]);
+    expect(wider).toContain("  columns renamed   title (from name) (was name); was to only the row's owner (owner_id), now to every user");
+  });
+
+  it("a table that reaches fewer users but sends a new column says both", () => {
+    const out = text([diffed(streams({ s: ["SELECT id FROM lists"] }), streams({ s: ["SELECT id, name FROM lists WHERE owner_id = auth.user_id()"] }))]);
+    expect(out).toContain("lists: reaches fewer users, but sends more");
+    expect(out).toContain("1 table reaches more users, or more columns, than in main: lists.");
+  });
+});
+
 describe("exposureDiffJson", () => {
   it("carries the ref, the commit, the diff of each file with lines, and widened", () => {
     const c = diffed(streams({ s: [OWN_LISTS] }), streams({ s: [OWN_LISTS], all: ["SELECT id FROM notes"], t: ["SELECT * FROM lists UNION SELECT * FROM lists"] }));

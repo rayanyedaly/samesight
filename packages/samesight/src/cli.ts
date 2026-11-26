@@ -18,6 +18,7 @@ import { type DiffedConfig, exposureDiffJson, formatExposureDiff } from "./expos
 import { exposureJson, formatExposure, type MappedConfig } from "./exposure/format.ts";
 import { type Commit, fileAt, GitError, migrationsAt, resolveCommit } from "./exposure/git.ts";
 import { type ExposureMap, exposureMap, type Schema } from "./exposure/map.ts";
+import { named, safe } from "./exposure/text.ts";
 import { forwardAudit } from "./forward.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
@@ -377,10 +378,13 @@ function exposureAgainst(
   try {
     commit = resolveCommit(ref, cwd);
     const was = migrationsAt(commit, dir);
+    if (was === "submodule") console.error(`note: ${named(dir)} is a submodule in ${named(ref)}, whose files another repository holds, so the columns a SELECT * sent there are not known`);
     // No migrations here and none named: the note above already says so for both sides.
-    if (!was && (migrations.read || migrations.given)) console.error(`note: no ${dir} in ${ref}, so the columns a SELECT * sent there are not known`);
-    before = was && ((table: string) => was.tables.get(table));
-    if (was) commitMigrations = dir;
+    else if (!was && (migrations.read || migrations.given)) console.error(`note: no ${named(dir)} in ${named(ref)}, so the columns a SELECT * sent there are not known`);
+    else if (was) {
+      before = (table: string) => was.tables.get(table);
+      commitMigrations = dir;
+    }
   } catch (e) {
     if (!(e instanceof GitError)) throw e;
     console.error(`samesight: ${e.message}`);
@@ -411,13 +415,15 @@ function exposureAgainst(
     let old: string | undefined;
     try {
       old = fileAt(commit, file);
-      if (old === undefined) console.error(`note: ${file} is not in ${ref}, so all it sends counts as newly sent`);
+      if (old === undefined) console.error(`note: ${named(file)} is not in ${named(ref)}, so all it sends counts as newly sent`);
       was = old === undefined ? { kind: after.kind, tables: [], unread: [] } : exposureMap(parseSyncConfig(old), before);
     } catch (e) {
-      const named = `${file} as ${ref} holds it`;
-      const bad = e instanceof GitError ? { unreadable: { file: named, error: e.message }, message: `samesight: ${named}: ${e.message}` } : cannotRead(named, e);
-      console.error(bad.message);
-      unreadable.push(bad.unreadable);
+      // The commit's file is not the one on disk the user can open: its error is said on one
+      // line, quoted, rather than with lines of the file under it.
+      const at = `${file} as ${ref} holds it`;
+      const error = e instanceof GitError ? e.message : `cannot be read as a sync config: ${(e as Error).message.split("\n")[0] ?? ""}`;
+      console.error(`samesight: ${named(file)} as ${named(ref)} holds it: ${safe(error)}`);
+      unreadable.push({ file: at, error });
       continue;
     }
     diffed.push({ file, diff: diffExposure(was, after), after, lineOf: lineFinder(text), inCommit: old !== undefined });

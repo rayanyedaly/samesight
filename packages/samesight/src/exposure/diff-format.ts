@@ -9,6 +9,7 @@ import { type Audience, audienceText } from "../lint/audience.ts";
 import { type ExposureDiff, type QueryChange, surelyWidens, type TableDiff, type Unread, widens } from "./diff.ts";
 import { columnText, MATCHED_BY } from "./format.ts";
 import type { ExposureMap } from "./map.ts";
+import { named, safe } from "./text.ts";
 
 /** One sync config compared with the commit. */
 export interface DiffedConfig {
@@ -29,15 +30,6 @@ export interface DiffedConfig {
  */
 const line = (label: string, text: string) => `  ${label.padEnd(16)}  ${safe(text)}`;
 
-/** Control characters and line separators as spaces: text from the files on one line. */
-const safe = (text: string) => text.replace(/[\p{Cc}\u2028\u2029]+/gu, " ");
-
-/**
- * A name from the files where it starts a line, or names the file or ref: as it is when it is a
- * plain name, else quoted with its control characters escaped, so it cannot pose as a line of
- * the tool's own (or a CI runner's command, which starts a line with ::).
- */
-const named = (name: string) => (/^[\p{L}\p{N}_$][\p{L}\p{N}_$.\/@~^-]*$/u.test(name) ? name : JSON.stringify(name));
 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -65,15 +57,17 @@ const kindName = (k: ExposureMap["kind"]) => (k === "streams" ? "sync streams" :
 function title(t: TableDiff): string {
   if (t.status === "added") return t.columns.known.before ? "newly sent" : "sent now (a query that could not be read may have sent it before)";
   if (t.status === "removed") return "no longer sent";
+  // The table's audience first; what else it sends more of, where the audience does not say it.
+  const more = surelyWidens(t) ? "sends more" : widens(t) ? "may send more" : "";
   switch (t.audience.direction) {
     case "wider":
       return "reaches more users";
     case "narrower":
-      return "reaches fewer users";
+      return more ? `reaches fewer users, but ${more}` : "reaches fewer users";
     case "changed":
-      return "reaches other users";
+      return more ? `reaches other users, and ${more}` : "reaches other users";
     default:
-      return surelyWidens(t) ? "sends more" : widens(t) ? "may send more" : "changed";
+      return more || "changed";
   }
 }
 
@@ -108,6 +102,10 @@ function tableText(c: DiffedConfig, t: TableDiff): string {
   }
   if (t.status === "changed" && t.columns.known.before !== t.columns.known.after) {
     out.push(line("columns", t.columns.known.after ? "all known now; some were not before (a * the schema did not define, or a query that could not be read)" : "not all known now (a * the schema does not define, or a query that cannot be read)"));
+  }
+  for (const r of t.columns.renamed) {
+    const change = r.change?.before && r.change.after ? `; was to ${audienceText(r.change.before)}, now to ${audienceText(r.change.after)}` : "";
+    out.push(line("columns renamed", `${columnText(r)} (was ${r.was})${change}`));
   }
   for (const p of t.columns.personal) {
     const tag = (m: typeof p.before) => (m ? `${m.category}${m.source === "comment" ? ", marked in its comment" : ", by its name"}` : "not personal");

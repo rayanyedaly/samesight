@@ -299,6 +299,8 @@ describe("samesight exposure --against", () => {
     const out = await run(["exposure", "--against", "main"], dir);
     expect(out.code).toBe(1);
     expect(out.stderr).toContain("note: sync-config.yaml is not in main, so all it sends counts as newly sent");
+    const doc = JSON.parse((await run(["exposure", "--against", "main", "--format", "json"], dir)).stdout);
+    expect(doc).toMatchObject({ commitMigrations: "supabase/migrations", diffs: [{ inCommit: false }] });
     expect(out.stdout).toContain("lists: newly sent");
   });
 
@@ -307,15 +309,17 @@ describe("samesight exposure --against", () => {
     put(dir, { "supabase/migrations/1.sql": MIGRATION });
     const out = await run(["exposure", "--against", "main"], dir);
     expect(out.stderr).toContain("note: no supabase/migrations in main, so the columns a SELECT * sent there are not known");
+    const doc = JSON.parse((await run(["exposure", "--against", "main", "--format", "json"], dir)).stdout);
+    expect(doc).toMatchObject({ migrations: "supabase/migrations", commitMigrations: null, diffs: [{ inCommit: true }] });
   });
 
   it("exits 2 for a ref the repository does not have, and never reads one as an option", { timeout: 30_000 }, async () => {
     const dir = repo(PROJECT);
     const missing = await run(["exposure", "--against", "release-9"], dir);
     expect([missing.code, missing.stdout]).toEqual([2, ""]);
-    expect(missing.stderr).toBe("samesight: no commit release-9 in this repository; in a shallow clone, fetch it first (git fetch origin release-9)\n");
+    expect(missing.stderr).toBe("samesight: no commit release-9 in this repository; in a shallow clone, fetch it first (git fetch origin release-9:release-9)\n");
     const option = await run(["exposure", `--against=--output=${join(dir, "written")}`], dir);
-    expect([option.code, option.stderr]).toEqual([2, `samesight: --against takes a branch, a tag or a commit id, which cannot start with "-": --output=${join(dir, "written")}\n`]);
+    expect([option.code, option.stderr]).toEqual([2, `samesight: --against takes a branch, a tag or a commit id, which cannot start with "-": ${JSON.stringify(`--output=${join(dir, "written")}`)}\n`]);
     expect(existsSync(join(dir, "written"))).toBe(false);
   });
 
@@ -324,7 +328,8 @@ describe("samesight exposure --against", () => {
     put(dir, { "sync-config.yaml": config(OWN) });
     const out = await run(["exposure", "--against", "main"], dir);
     expect(out.code).toBe(2);
-    expect(out.stderr).toContain("samesight: sync-config.yaml as main holds it: cannot be read as a sync config:");
+    // The error on one line: the commit's own lines are not printed under it.
+    expect(out.stderr).toMatch(/^samesight: sync-config.yaml as main holds it: cannot be read as a sync config: [^\n]+\n1 of 1 file\(s\) could not be read/);
   });
 
   it("is refused by every command but exposure, with lint's JSON document under --format json", { timeout: 30_000 }, async () => {

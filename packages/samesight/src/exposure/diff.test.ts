@@ -179,6 +179,7 @@ describe("tables", () => {
           ],
           removed: [],
           audience: [],
+          renamed: [],
           personal: [],
           known: { before: true, after: true },
         },
@@ -846,5 +847,27 @@ describe("more on what is ranked", () => {
     const schema = schemaOf("create table lists (id uuid primary key);");
     const d = diff(streams({ s: ["SELECT id, memo FROM notes"] }), streams({ s: ["SELECT * FROM notes WHERE owner_id = auth.user_id()"] }), schema);
     expect(d.tables[0]?.columns.removed.find((c) => c.name === "memo")).toEqual({ name: "memo", from: ["memo"], audience: everyone, after: owner });
+  });
+});
+
+describe("a column renamed", () => {
+  it("is the same data under another name: renamed, not added, and no wider", () => {
+    const d = diff(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name AS title FROM lists WHERE owner_id = auth.user_id()"] }));
+    expect(d.tables[0]?.columns.renamed).toEqual([{ name: "title", was: "name", from: ["name"] }]);
+    expect(d.tables[0]?.columns.added).toEqual([]);
+    expect(d.tables[0]?.columns.removed).toEqual([]);
+    expect(d.widened).toBe(false);
+  });
+
+  it("that now reaches more users widens", () => {
+    const d = diff(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name AS title FROM lists"] }));
+    expect(d.tables[0]?.columns.renamed).toEqual([{ name: "title", was: "name", from: ["name"], change: { before: owner, after: everyone, direction: "wider" } }]);
+    expect(d.widened).toBe(true);
+  });
+
+  it("is not a literal turned into a column", () => {
+    const d = diff(streams({ s: ["SELECT id, '' AS name FROM lists"] }), streams({ s: ["SELECT id, name FROM lists"] }));
+    expect(d.tables[0]?.columns.renamed).toEqual([]);
+    expect(d.tables[0]?.columns.added.map((c) => c.name)).toEqual(["name"]);
   });
 });
