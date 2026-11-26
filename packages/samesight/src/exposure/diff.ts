@@ -155,7 +155,7 @@ function hiddenBy(unread: Unread[]): (table: string) => boolean {
 }
 
 /** Whether a table's entry holds something that surely reaches more users, or can no longer be shown not to. */
-function widens(t: TableDiff): boolean {
+export function widens(t: TableDiff): boolean {
   return (
     (t.status === "added" && t.columns.known.before) ||
     t.audience.direction === "wider" ||
