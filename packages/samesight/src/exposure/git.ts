@@ -2,9 +2,10 @@
  * A sync config and its migrations as a git commit holds them, for `samesight exposure
  * --against <ref>`. Git runs with an argument list, never through a shell; a ref may not
  * start with "-" and is resolved to a full commit id before anything else reads it, so no
- * ref can be taken for an option. Paths are read as the files on disk would be: symlinks in
- * the commit are followed while they stay in the repository, and a path is placed in the
- * repository by where it really is, whatever links led to it.
+ * ref can be taken for an option. A path is placed in the repository as named when that is
+ * inside it, else by where its directories really are on disk; in the commit, its links are
+ * followed while they stay in the repository. (The files on disk are read through any link.)
+ * In a partial clone, git may fetch an object the commit needs from the clone's remote.
  */
 
 import { execFileSync } from "node:child_process";
@@ -73,8 +74,10 @@ export function resolveCommit(ref: string, cwd: string): Commit {
   try {
     top = realpathSync.native(text(["rev-parse", "--show-toplevel"], cwd).trim());
   } catch (e) {
-    if (failed(e)) throw new GitError("not in a git repository; --against compares with a commit of the repository the command runs in");
-    throw e;
+    if (!failed(e)) throw e;
+    // Git refuses a repository another user owns (in a container, say) until it is marked safe.
+    if (/dubious ownership/i.test((e as Error).message)) throw new GitError("git refuses this repository, which another user owns; mark it safe (git config --global --add safe.directory <its path>) and run again");
+    throw new GitError("not in a git repository; --against compares with a commit of the repository the command runs in");
   }
   try {
     const sha = text(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim();
@@ -86,15 +89,14 @@ export function resolveCommit(ref: string, cwd: string): Commit {
 }
 
 /**
- * How to get a branch or tag a shallow clone lacks, so that the same --against finds it: into
- * origin/<name> for a ref given as origin/<name>, else into a local ref of its own name. None
- * for HEAD~1, HEAD:file and the like, which name nothing to fetch.
+ * How to get a branch or tag a shallow clone lacks: fetch it, then compare with FETCH_HEAD,
+ * which works whatever kind of ref it is. None for a commit id (a remote may not serve one),
+ * HEAD~1, HEAD:file and the like, which name nothing to fetch.
  */
 function fetchHint(ref: string): string {
-  if (!/^[\w./-]+$/.test(ref) || ref === "HEAD" || ref.includes("..") || ref.endsWith("/") || ref.endsWith(".lock")) return "";
-  const remote = /^origin\/(.+)$/.exec(ref)?.[1];
-  const fetch = remote ? `git fetch origin ${remote}:refs/remotes/origin/${remote}` : `git fetch origin ${ref}:${ref}`;
-  return `; in a shallow clone, fetch it first (${fetch})`;
+  if (!/^[\w./-]+$/.test(ref) || ref === "HEAD" || ref.includes("..") || ref.endsWith("/") || ref.endsWith(".lock") || ref.startsWith("refs/") || /^[0-9a-f]{7,64}$/.test(ref)) return "";
+  const name = /^origin\/(.+)$/.exec(ref)?.[1] ?? ref;
+  return `; in a shallow clone, fetch it first (git fetch origin ${name}) and compare with FETCH_HEAD`;
 }
 
 /**
@@ -192,8 +194,15 @@ function objectAt(commit: Commit, path: string): { oid: string; type: string } |
     // path, with the object gone (a damaged clone, or one whose fetch of it failed), must not
     // read as an empty one. A submodule's commit is another repository's: not ours to read.
     const entry = at ? text(["ls-tree", "-z", commit.sha, "--", at], commit.top) : "";
-    if (entry === "") return undefined;
-    if (entry.startsWith("160000 ")) return { oid: entry.split(" ")[2] ?? "", type: "commit" };
+    if (entry.startsWith("160000 ")) return { oid: "", type: "commit" };
+    if (entry === "") {
+      // A path inside a submodule: the commit holds the submodule, not the path.
+      const parts = at.split("/");
+      for (let n = parts.length - 1; n > 0; n--) {
+        if (text(["ls-tree", "-z", commit.sha, "--", parts.slice(0, n).join("/")], commit.top).startsWith("160000 ")) return { oid: "", type: "commit" };
+      }
+      return undefined;
+    }
     throw new GitError(`${named(commit.ref)} holds ${named(path)}, but git does not have its contents here (a damaged or partial clone?); fetch the commit again`);
   }
   if ("outside" in found) throw new GitError(`${named(path)} in ${named(commit.ref)} is a symlink out of the repository (${named(found.outside)}), which is not read`);
@@ -205,7 +214,7 @@ function objectAt(commit: Commit, path: string): { oid: string; type: string } |
 export function fileAt(commit: Commit, path: string): string | undefined {
   const found = objectAt(commit, path);
   if (!found) return undefined;
-  if (found.type === "commit") throw new GitError(`${named(path)} is a submodule in ${named(commit.ref)}, not a sync config`);
+  if (found.type === "commit") throw new GitError(`${named(path)} is a submodule, or in one, in ${named(commit.ref)}: another repository holds it`);
   if (found.type !== "blob") throw new GitError(`${named(path)} is a directory in ${named(commit.ref)}, not a sync config`);
   return blobs(commit, [found.oid])[0];
 }
@@ -214,7 +223,7 @@ export function fileAt(commit: Commit, path: string): string | undefined {
  * The migrations in `dir` as the commit holds them: every `.sql` file directly in it, in name
  * order, as `readMigrations` reads them from disk (a symlinked file read through its link);
  * findings name the files under `dir`. Undefined when the commit has no such directory, and
- * "submodule" when the commit holds it as one, whose files another repository holds.
+ * "submodule" when the commit holds it as one, or in one, whose files another repository holds.
  */
 export function migrationsAt(commit: Commit, dir: string): Migrations | "submodule" | undefined {
   const found = objectAt(commit, dir);

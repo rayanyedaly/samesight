@@ -36,7 +36,7 @@ function tempDir(): string {
 
 /** Git as the tests run it: no GIT_* from the environment, no hooks, no signing, whatever the machine's setup. */
 const ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
-const SETTINGS = ["-c", "commit.gpgsign=false", "-c", "tag.gpgSign=false", "-c", "core.hooksPath=.no-hooks", "-c", "user.email=test@example.com", "-c", "user.name=test"];
+const SETTINGS = ["-c", "gc.auto=0", "-c", "commit.gpgsign=false", "-c", "tag.gpgSign=false", "-c", "core.hooksPath=.no-hooks", "-c", "user.email=test@example.com", "-c", "user.name=test"];
 const git = (cwd: string, ...args: string[]) => execFileSync("git", [...SETTINGS, ...args], { cwd, encoding: "utf8", env: ENV }).trim();
 const posix = process.platform !== "win32";
 
@@ -75,10 +75,12 @@ describe("resolveCommit", () => {
 
   it("says a ref the repository does not have is missing, and how to fetch it", () => {
     const { dir } = repo({ "a.yaml": "a" });
-    expect(() => resolveCommit("main-that-is-not", dir)).toThrow(new GitError("no commit main-that-is-not in this repository; in a shallow clone, fetch it first (git fetch origin main-that-is-not:main-that-is-not)"));
-    expect(() => resolveCommit("origin/release", dir)).toThrow(new GitError("no commit origin/release in this repository; in a shallow clone, fetch it first (git fetch origin release:refs/remotes/origin/release)"));
-    // Only a name git can fetch gets the hint.
-    for (const ref of ["HEAD~5", "v1..v2"]) expect(() => resolveCommit(ref, dir), ref).toThrow(new GitError(`no commit ${ref} in this repository`));
+    expect(() => resolveCommit("main-that-is-not", dir)).toThrow(new GitError("no commit main-that-is-not in this repository; in a shallow clone, fetch it first (git fetch origin main-that-is-not) and compare with FETCH_HEAD"));
+    expect(() => resolveCommit("origin/release", dir)).toThrow(new GitError("no commit origin/release in this repository; in a shallow clone, fetch it first (git fetch origin release) and compare with FETCH_HEAD"));
+    // Only a name git can fetch gets the hint: not a range, a commit id, a full ref name.
+    for (const ref of ["HEAD~5", "v1..v2", "abcdef1", "a".repeat(40), "refs/heads/x", "x/", "x.lock"]) {
+      expect(() => resolveCommit(ref, dir), ref).toThrow(new GitError(`no commit ${ref} in this repository`));
+    }
     expect(() => resolveCommit("HEAD:a.yaml", dir)).toThrow(new GitError('no commit "HEAD:a.yaml" in this repository'));
   });
 
@@ -200,6 +202,25 @@ describe("fileAt", () => {
     git(dir, "add", "-A");
     git(dir, "commit", "-q", "-m", "hostile");
     expect(() => fileAt(resolveCommit("HEAD", dir), "sync-config.yaml")).toThrow('sync-config.yaml in HEAD is a symlink out of the repository ("../x\\r::error::forged"), which is not read');
+  });
+
+  it.runIf(posix)("reads a link target holding a line break by its size, so the answers after it stay right", () => {
+    const { dir } = repo({ "a.yaml": "a" });
+    symlinkSync("../x\nb", join(dir, "sync-config.yaml"));
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "hostile");
+    expect(() => fileAt(resolveCommit("HEAD", dir), "sync-config.yaml")).toThrow('sync-config.yaml in HEAD is a symlink out of the repository ("../x\\nb"), which is not read');
+  });
+
+  it("refuses a sync config the commit holds as a submodule, or in one", () => {
+    const { dir: inner } = repo({ "sync.yaml": "x", "migrations/1.sql": "create table a (id uuid primary key);" });
+    const { dir } = repo({ "a.yaml": "a" });
+    git(dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "vendor/db");
+    git(dir, "commit", "-q", "-m", "submodule");
+    const commit = resolveCommit("HEAD", dir);
+    expect(() => fileAt(commit, "vendor/db")).toThrow("vendor/db is a submodule, or in one, in HEAD: another repository holds it");
+    expect(() => fileAt(commit, "vendor/db/sync.yaml")).toThrow("vendor/db/sync.yaml is a submodule, or in one, in HEAD");
+    expect(migrationsAt(commit, "vendor/db/migrations")).toBe("submodule");
   });
 
   it("reads names with spaces and quotes as they are", () => {
