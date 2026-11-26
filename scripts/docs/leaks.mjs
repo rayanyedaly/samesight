@@ -199,21 +199,24 @@ function exposureAgainstBlock(name) {
   const changed = join(dir, "sync-config.changed.yaml");
   if (!existsSync(changed)) fail(`${EXPOSURE_DOC} has an exposure-against block for ${name}, but ${EXPOSURE_EXAMPLES}/${name} has no sync-config.changed.yaml`);
   const repo = mkdtempSync(join(tmpdir(), "samesight-docs-"));
+  // Git as the repository it makes needs it: nothing from GIT_* (a hook's GIT_DIR, say) aims it elsewhere.
+  const gitEnv = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("GIT_")));
+  let problem;
   try {
     cpSync(join(dir, "sync-config.yaml"), join(repo, "sync-config.yaml"));
     cpSync(join(dir, "migrations"), join(repo, "migrations"), { recursive: true });
     const git = (...a) => {
-      const r = spawnSync("git", ["-c", "user.name=docs", "-c", "user.email=docs@example.com", "-c", "commit.gpgsign=false", ...a], { cwd: repo, encoding: "utf8" });
-      if (r.status !== 0) fail(`git ${a.join(" ")} for ${EXPOSURE_EXAMPLES}/${name} exited ${r.status}: ${r.stderr || r.error}`);
+      const r = spawnSync("git", ["-c", "user.name=docs", "-c", "user.email=docs@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=.no-hooks", ...a], { cwd: repo, env: gitEnv, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${a.join(" ")} for ${EXPOSURE_EXAMPLES}/${name} exited ${r.status}: ${r.stderr || r.error}`);
     };
     git("init", "-q");
     git("add", "-A");
     git("commit", "-q", "-m", "example");
     cpSync(changed, join(repo, "sync-config.yaml"));
     const exposureArgs = ["exposure", "sync-config.yaml", "--migrations", "migrations", "--against", "HEAD"];
-    const r = spawnSync(process.execPath, [CLI, ...exposureArgs], { cwd: repo, env, encoding: "utf8" });
+    const r = spawnSync(process.execPath, [CLI, ...exposureArgs], { cwd: repo, env: gitEnv, encoding: "utf8" });
     // 0 or 1 is what it found; 2 means it could not run.
-    if (r.status !== 0 && r.status !== 1) fail(`samesight ${exposureArgs.join(" ")} on ${EXPOSURE_EXAMPLES}/${name} exited ${r.status}: ${r.stderr || r.error}`);
+    if (r.status !== 0 && r.status !== 1) throw new Error(`samesight ${exposureArgs.join(" ")} on ${EXPOSURE_EXAMPLES}/${name} exited ${r.status}: ${r.stderr || r.error}`);
     return [
       "`sync-config.yaml`, changed:",
       "",
@@ -228,9 +231,13 @@ function exposureAgainstBlock(name) {
       String(r.status),
       "```",
     ];
+  } catch (e) {
+    problem = e;
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+  // fail() exits at once: only once the repository is gone.
+  fail(problem.message);
 }
 
 function lines(text) {

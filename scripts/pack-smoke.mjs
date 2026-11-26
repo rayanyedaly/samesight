@@ -360,19 +360,30 @@ step("node imports samesight/compiler and diffs two exposure maps", () => {
   ].join("\n");
   expectIn(run("node", ["--input-type=module", "-e", code], { cwd: cli }), "widened true wider", "compiler import");
 });
-step("samesight exposure --against reads a git commit and exits 1 when a change reaches more users", () => {
+step("samesight exposure --against reads an earlier git commit and exits 1 when a change reaches more users", () => {
   // A repository inside the installed project, so npx finds samesight in the folder above it.
   const repo = join(cli, "against");
-  mkdirSync(repo, { recursive: true });
-  const git = (...a) => run("git", ["-c", "user.name=smoke", "-c", "user.email=smoke@example.com", "-c", "commit.gpgsign=false", ...a], { cwd: repo });
-  const config = (where) => `config:\n  edition: 3\nstreams:\n  s:\n    auto_subscribe: true\n    query: SELECT id, name FROM lists${where}\n`;
+  mkdirSync(join(repo, "powersync"), { recursive: true });
+  mkdirSync(join(repo, "supabase", "migrations"), { recursive: true });
+  // Git for the repository made here: nothing from GIT_* aims it elsewhere, no hooks, no signing.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
+  const git = (...a) => run("git", ["-c", "user.name=smoke", "-c", "user.email=smoke@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=.no-hooks", ...a], { cwd: repo, env });
+  const config = (query) => `config:\n  edition: 3\nstreams:\n  s:\n    auto_subscribe: true\n    query: ${query}\n`;
+  const write = (query) => writeFileSync(join(repo, "powersync", "sync-config.yaml"), config(query));
   git("init", "-q");
-  writeFileSync(join(repo, "sync-config.yaml"), config(" WHERE owner_id = auth.user_id()"));
+  writeFileSync(join(repo, "supabase", "migrations", "1.sql"), "create table lists (id uuid primary key, name text, owner_id uuid references auth.users);\n");
+  write("SELECT * FROM lists WHERE owner_id = auth.user_id()");
   git("add", "-A");
   git("commit", "-q", "-m", "one");
-  expectIn(run("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD"], { cwd: repo }), "No change in who receives which tables and columns since HEAD.", "unchanged");
-  writeFileSync(join(repo, "sync-config.yaml"), config(""));
-  expectIn(runFailing("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD"], { cwd: repo }), "lists: reaches more users", "widened");
+  // The commit compared with is not the one checked out: a phone column added since, then every user.
+  writeFileSync(join(repo, "supabase", "migrations", "2.sql"), "alter table lists add column phone text;\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "two");
+  expectIn(run("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD"], { cwd: repo, env }), "No change in who receives which tables and columns since HEAD.", "unchanged");
+  const phone = runFailing("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD~1"], { cwd: repo, env });
+  expectIn(phone, "columns added     phone [contact]: to only the row's owner (owner_id)", "a migration since HEAD~1");
+  write("SELECT * FROM lists");
+  expectIn(runFailing("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD~1"], { cwd: repo, env }), "lists: reaches more users", "widened");
 });
 cpSync(join(FIELDBOOK, "samesight.policy.ts"), join(lib, "samesight.policy.ts"));
 cpSync(join(FIELDBOOK, "supabase/types.ts"), join(lib, "supabase/types.ts"));

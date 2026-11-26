@@ -167,7 +167,7 @@ samesight exposure [file ...] [--migrations <dir>] [--against <ref>] [--format t
 
 `--against <ref>` compares with the sync configs and migrations as that git commit holds them (a branch, a tag, a commit id), and prints what the change does to who receives which tables and columns, calling a change wider only where more users surely receive something.
 
-Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. With `--against`: `1` when something reaches more users than in the commit, `0` when nothing is known to, and `2` also when it is not in a git repository or the repository does not have the ref. See [the exposure map](exposure.md) for an example, how to read it, how columns are matched, and [comparing with a commit](exposure.md#comparing-with-a-commit).
+Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. With `--against`: `1` when something reaches more users than in the commit, or may (a new query it cannot read, a table whose columns it can no longer all read), `0` when nothing is known to, and `2` also when it is not in a git repository or the repository does not have the ref. See [the exposure map](exposure.md) for an example, how to read it, how columns are matched, and [comparing with a commit](exposure.md#comparing-with-a-commit).
 
 ### `agent`
 
