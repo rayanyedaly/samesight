@@ -52,7 +52,8 @@ export function resolveCommit(ref: string, cwd: string): Commit {
   } catch (e) {
     if (!failed(e)) throw e;
   }
-  throw new GitError(`no commit ${ref} in this repository; in a shallow clone, fetch it first (git fetch origin ${ref})`);
+  // Only a name git could fetch gets the hint: a ref like -x names nothing to fetch.
+  throw new GitError(`no commit ${ref} in this repository${ref.startsWith("-") ? "" : `; in a shallow clone, fetch it first (git fetch origin ${ref})`}`);
 }
 
 /** A path as git reads it against a commit: relative to where the command runs, with forward slashes. */

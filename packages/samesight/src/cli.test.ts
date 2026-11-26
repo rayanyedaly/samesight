@@ -1,5 +1,5 @@
-import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -222,8 +222,113 @@ describe("samesight exposure", () => {
       ["--db", "postgres://localhost"],
     ]) {
       const unused = await cli(["exposure", flag as string, value as string], project());
-      expect([unused.code, unused.stderr]).toEqual([2, `samesight: exposure does not take ${flag}; it takes [file ...], --migrations and --format\n`]);
+      expect([unused.code, unused.stderr]).toEqual([2, `samesight: exposure does not take ${flag}; it takes [file ...], --migrations, --against and --format\n`]);
     }
+  });
+});
+
+describe("samesight exposure --against", () => {
+  const OWN = "SELECT id, name FROM lists WHERE owner_id = auth.user_id()";
+  const config = (query: string) => ["config:", "  edition: 3", "streams:", "  s:", "    auto_subscribe: true", `    query: ${query}`, ""].join("\n");
+  const MIGRATION = "create table lists (id uuid primary key, name text, owner_id uuid references auth.users, email text);\n";
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+  /** A repository with `files` committed on main, and its directory. */
+  function repo(files: Record<string, string>): string {
+    const dir = tempDir();
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "user.email", "test@example.com");
+    git(dir, "config", "user.name", "test");
+    git(dir, "config", "commit.gpgsign", "false");
+    put(dir, files);
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "one");
+    return dir;
+  }
+  function put(dir: string, files: Record<string, string>) {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+  }
+  const PROJECT = { "sync-config.yaml": config(OWN), "supabase/migrations/1.sql": MIGRATION };
+
+  it("exits 0 when nothing changed, and 1 when a table reaches more users, naming it", { timeout: 30_000 }, async () => {
+    const dir = repo(PROJECT);
+    const same = await cli(["exposure", "--against", "main"], dir);
+    expect([same.code, same.stderr]).toEqual([0, ""]);
+    expect(same.stdout).toContain("No change in who receives which tables and columns since main.");
+    put(dir, { "sync-config.yaml": config("SELECT id, name, email FROM lists") });
+    const wider = await cli(["exposure", "--against", "main"], dir);
+    expect(wider.code).toBe(1);
+    expect(wider.stdout).toContain("lists: reaches more users");
+    expect(wider.stdout).toContain("  columns added     email [contact]: to every user");
+    expect(wider.stdout).toContain("1 table reaches more users, or more columns, than in main: lists.");
+  });
+
+  it("exits 0 for a change that reaches no more users", { timeout: 30_000 }, async () => {
+    const dir = repo({ ...PROJECT, "sync-config.yaml": config("SELECT id, name FROM lists") });
+    put(dir, { "sync-config.yaml": config(OWN) });
+    const narrower = await cli(["exposure", "--against", "main"], dir);
+    expect(narrower.code).toBe(0);
+    expect(narrower.stdout).toContain("lists: reaches fewer users");
+  });
+
+  it("prints one JSON document with the ref, its commit and widened", { timeout: 30_000 }, async () => {
+    const dir = repo(PROJECT);
+    put(dir, { "sync-config.yaml": config("SELECT id, name FROM lists") });
+    const out = await cli(["exposure", "--against", "main", "--format", "json"], dir);
+    expect(out.code).toBe(1);
+    const doc = JSON.parse(out.stdout);
+    expect(doc).toMatchObject({ version: 1, against: { ref: "main", commit: git(dir, "rev-parse", "main") }, files: ["sync-config.yaml"], migrations: "supabase/migrations", widened: true });
+    expect(doc.diffs[0].tables[0]).toMatchObject({ table: "lists", audience: { direction: "wider" } });
+  });
+
+  it("compares the migrations as the commit holds them", { timeout: 30_000 }, async () => {
+    const dir = repo({ ...PROJECT, "sync-config.yaml": config("SELECT * FROM lists WHERE owner_id = auth.user_id()") });
+    put(dir, { "supabase/migrations/2.sql": "alter table lists add column phone text;\n" });
+    const out = await cli(["exposure", "--against", "main"], dir);
+    expect(out.code).toBe(1);
+    expect(out.stdout).toContain("  columns added     phone [contact]: to only the row's owner (owner_id)");
+  });
+
+  it("counts a sync config the commit does not have as newly sent, and says so", { timeout: 30_000 }, async () => {
+    const dir = repo({ "supabase/migrations/1.sql": MIGRATION, "README.md": "x" });
+    put(dir, { "sync-config.yaml": config(OWN) });
+    const out = await cli(["exposure", "--against", "main"], dir);
+    expect(out.code).toBe(1);
+    expect(out.stderr).toContain("note: sync-config.yaml is not in main, so all it sends counts as newly sent");
+    expect(out.stdout).toContain("lists: newly sent");
+  });
+
+  it("says when the commit has no migrations", { timeout: 30_000 }, async () => {
+    const dir = repo({ "sync-config.yaml": config(OWN) });
+    put(dir, { "supabase/migrations/1.sql": MIGRATION });
+    const out = await cli(["exposure", "--against", "main"], dir);
+    expect(out.stderr).toContain("note: no supabase/migrations in main, so the columns a SELECT * sent there are not known");
+  });
+
+  it("exits 2 for a ref the repository does not have, and never reads one as an option", { timeout: 30_000 }, async () => {
+    const dir = repo(PROJECT);
+    const missing = await cli(["exposure", "--against", "release-9"], dir);
+    expect([missing.code, missing.stdout]).toEqual([2, ""]);
+    expect(missing.stderr).toBe("samesight: no commit release-9 in this repository; in a shallow clone, fetch it first (git fetch origin release-9)\n");
+    const option = await cli(["exposure", `--against=--output=${join(dir, "written")}`], dir);
+    expect([option.code, option.stderr]).toEqual([2, `samesight: no commit --output=${join(dir, "written")} in this repository\n`]);
+    expect(existsSync(join(dir, "written"))).toBe(false);
+  });
+
+  it("exits 2 for a sync config the commit holds but cannot be read, naming it so", { timeout: 30_000 }, async () => {
+    const dir = repo({ ...PROJECT, "sync-config.yaml": "streams: [unclosed" });
+    put(dir, { "sync-config.yaml": config(OWN) });
+    const out = await cli(["exposure", "--against", "main"], dir);
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain("samesight: sync-config.yaml as main holds it: cannot be read as a sync config:");
+  });
+
+  it("is refused by every command but exposure", { timeout: 30_000 }, async () => {
+    const out = await cli(["lint", "--against", "main"]);
+    expect([out.code, out.stderr]).toEqual([2, "samesight: --against is for samesight exposure only\n"]);
   });
 });
 

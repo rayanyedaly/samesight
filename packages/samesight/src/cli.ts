@@ -9,12 +9,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { doctor, type Finding } from "./doctor.ts";
-import { explainPolicy } from "./explain.ts";
-import { exposureJson, formatExposure, type MappedConfig } from "./exposure/format.ts";
 import { agentHook } from "./agent/hook.ts";
 import { AGENTS, type Agent, agentInit } from "./agent/init.ts";
-import { exposureMap } from "./exposure/map.ts";
+import { doctor, type Finding } from "./doctor.ts";
+import { explainPolicy } from "./explain.ts";
+import { diffExposure } from "./exposure/diff.ts";
+import { type DiffedConfig, exposureDiffJson, formatExposureDiff } from "./exposure/diff-format.ts";
+import { exposureJson, formatExposure, type MappedConfig } from "./exposure/format.ts";
+import { type Commit, fileAt, GitError, migrationsAt, resolveCommit } from "./exposure/git.ts";
+import { type ExposureMap, exposureMap, type Schema } from "./exposure/map.ts";
 import { forwardAudit } from "./forward.ts";
 import { outputPaths, plan } from "./generate.ts";
 import { draftPolicy, findMembership, roleValues } from "./init.ts";
@@ -47,7 +50,8 @@ Commands:
              (default: sync-config.yaml or sync-rules.yaml, here or under powersync/)
   exposure [file ...]
              print who receives which columns of which tables, marking the ones whose
-             name or comment looks personal; reads the files only (default: as lint)
+             name or comment looks personal; reads the files only (default: as lint);
+             with --against <ref>, what the change since that git commit does to it
   agent init [file ...]
              install the samesight skill for coding agents and the hook that lints after
              each edit to a sync config or migration (.claude/, .agents/, .cursor/, .codex/);
@@ -70,6 +74,9 @@ Options:
   --migrations <dir>
                     lint, exposure and agent init/hook: the SQL migrations to read tables,
                     keys, column comments and (lint) RLS from (default: supabase/migrations)
+  --against <ref>   exposure: compare with the sync configs and migrations as that git commit
+                    (a branch, a tag, a commit id) holds them; exit 1 when something reaches
+                    more users than there
   --allow <rule>[:<name>]
                     lint and agent init/hook: accept a rule's findings, all of them or those
                     about one stream, bucket, table or policy; repeatable
@@ -121,16 +128,22 @@ async function main(argv: string[]): Promise<number> {
     console.error(`samesight: ${message}`);
     return 2;
   }
+  if (values.against !== undefined && command !== "exposure") {
+    const message = "--against is for samesight exposure only";
+    if (command === "lint" && values.format === "json") printLintError(new Error(message));
+    console.error(`samesight: ${message}`);
+    return 2;
+  }
   if (command === "lint") return lint(positionals.slice(1), values.migrations, values.allow ?? [], values.format ?? "text");
   if (command === "agent") return agent(positionals.slice(1), values);
   if (command === "exposure") {
     // Accepting an option it does not use would look like it worked.
     const unused = (["allow", "policy", "db", "table"] as const).find((o) => values[o] !== undefined);
     if (unused) {
-      console.error(`samesight: exposure does not take --${unused}; it takes [file ...], --migrations and --format`);
+      console.error(`samesight: exposure does not take --${unused}; it takes [file ...], --migrations, --against and --format`);
       return 2;
     }
-    return exposure(positionals.slice(1), values.migrations, values.format ?? "text");
+    return exposure(positionals.slice(1), values.migrations, values.format ?? "text", values.against);
   }
   const policyPath = resolvePolicyPath(values.policy);
   const root = dirname(policyPath);
@@ -220,6 +233,7 @@ const OPTIONS = {
   db: { type: "string" },
   table: { type: "string" },
   migrations: { type: "string" },
+  against: { type: "string" },
   allow: { type: "string", multiple: true },
   format: { type: "string" },
   agents: { type: "string" },
@@ -309,9 +323,10 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
 
 /**
  * Exit 0 whatever the map shows, since it informs and never fails; 2 when a file cannot be
- * read. Text or JSON on stdout, notes on stderr.
+ * read. Text or JSON on stdout, notes on stderr. With `against`, what changed since that
+ * commit: exit 1 when something reaches more users.
  */
-function exposure(given: string[], migrationsDir: string | undefined, format: string): number {
+function exposure(given: string[], migrationsDir: string | undefined, format: string, against?: string): number {
   if (format !== "text" && format !== "json") {
     console.error(`samesight: --format must be text or json for exposure, not "${format}"`);
     return 2;
@@ -320,6 +335,7 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
   const read = migrationsIn(migrationsDir, process.cwd());
   if (!read) console.error(`note: no ${MIGRATIONS_DIR} here, so the columns a SELECT * sends are not known, no column comment is read, and every table is taken to be keyed by id; pass --migrations <dir> to read them`);
   const schema = read && ((table: string) => read.migrations.tables.get(table));
+  if (against !== undefined) return exposureAgainst(found, { given: migrationsDir, read }, schema, format, against);
   const mapped: MappedConfig[] = [];
   const unreadable: Unreadable[] = [];
   for (const file of found) {
@@ -339,6 +355,78 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
     if (unreadable.length) console.error(`${unreadable.length} of ${found.length} file(s) could not be read, so nothing in them is mapped.`);
   }
   return unreadable.length ? 2 : 0;
+}
+
+/**
+ * `samesight exposure --against <ref>`: each sync config as `ref` holds it against the file on
+ * disk, with the migrations under each. Exit 1 when something reaches more users than in
+ * `ref`, 2 when a file or the commit cannot be read, else 0.
+ */
+function exposureAgainst(
+  found: string[],
+  migrations: { given: string | undefined; read: ReturnType<typeof migrationsIn> },
+  schema: Schema | undefined,
+  format: string,
+  ref: string,
+): number {
+  const cwd = process.cwd();
+  let commit: Commit;
+  let before: Schema | undefined;
+  const dir = migrations.given ?? MIGRATIONS_DIR;
+  try {
+    commit = resolveCommit(ref, cwd);
+    const was = migrationsAt(commit, dir);
+    // No migrations here and none named: the note above already says so for both sides.
+    if (!was && (migrations.read || migrations.given)) console.error(`note: no ${dir} in ${ref}, so the columns a SELECT * sent there are not known`);
+    before = was && ((table: string) => was.tables.get(table));
+  } catch (e) {
+    if (!(e instanceof GitError)) throw e;
+    console.error(`samesight: ${e.message}`);
+    return 2;
+  }
+  const diffed: DiffedConfig[] = [];
+  const unreadable: Unreadable[] = [];
+  for (const file of found) {
+    let text: string;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch (e) {
+      const bad = cannotRead(file, e);
+      console.error(bad.message);
+      unreadable.push(bad.unreadable);
+      continue;
+    }
+    let after: ExposureMap;
+    try {
+      after = exposureMap(parseSyncConfig(text), schema);
+    } catch (e) {
+      const bad = cannotRead(file, e);
+      console.error(bad.message);
+      unreadable.push(bad.unreadable);
+      continue;
+    }
+    let was: ExposureMap;
+    try {
+      const old = fileAt(commit, file);
+      if (old === undefined) console.error(`note: ${file} is not in ${ref}, so all it sends counts as newly sent`);
+      was = old === undefined ? { kind: after.kind, tables: [], unread: [] } : exposureMap(parseSyncConfig(old), before);
+    } catch (e) {
+      const named = `${file} as ${ref} holds it`;
+      const bad = e instanceof GitError ? { unreadable: { file: named, error: e.message }, message: `samesight: ${named}: ${e.message}` } : cannotRead(named, e);
+      console.error(bad.message);
+      unreadable.push(bad.unreadable);
+      continue;
+    }
+    diffed.push({ file, diff: diffExposure(was, after), after, lineOf: lineFinder(text) });
+  }
+  if (format === "json") {
+    console.log(JSON.stringify(exposureDiffJson(diffed, { ref, commit: commit.sha, files: found, migrations: migrations.read?.dir ?? null, unreadable }), null, 2));
+  } else {
+    if (diffed.length) console.log(formatExposureDiff(diffed, ref));
+    if (unreadable.length) console.error(`${unreadable.length} of ${found.length} file(s) could not be read on one side or both, so nothing in them is compared.`);
+  }
+  if (unreadable.length) return 2;
+  return diffed.some((d) => d.diff.widened) ? 1 : 0;
 }
 
 const AGENT_USAGE = "samesight agent init [file ...] [--migrations <dir>] [--allow <rule>[:<name>]] [--agents claude,codex,cursor] [--print], or samesight agent hook [file ...] [--migrations <dir>] [--allow <rule>[:<name>]]";
