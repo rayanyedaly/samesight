@@ -380,10 +380,19 @@ step("samesight exposure --against reads an earlier git commit and exits 1 when 
   git("add", "-A");
   git("commit", "-q", "-m", "two");
   expectIn(run("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD"], { cwd: repo, env }), "No change in who receives which tables and columns since HEAD.", "unchanged");
-  const phone = runFailing("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD~1"], { cwd: repo, env });
-  expectIn(phone, "columns added     phone [contact]: to only the row's owner (owner_id)", "a migration since HEAD~1");
+  // Exit 1, not 2: it compared, and found something that reaches more users.
+  const widened = () => {
+    try {
+      run("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD~1"], { cwd: repo, env });
+    } catch (e) {
+      if (e.status === 1) return `${e.stdout}`;
+      throw e;
+    }
+    throw new Error("exposure --against HEAD~1 exited 0; expected 1");
+  };
+  expectIn(widened(), "columns added     phone [contact]: to only the row's owner (owner_id)", "a migration since HEAD~1");
   write("SELECT * FROM lists");
-  expectIn(runFailing("npx", ["--no-install", "samesight", "exposure", "--against", "HEAD~1"], { cwd: repo, env }), "lists: reaches more users", "widened");
+  expectIn(widened(), "lists: reaches more users", "widened");
 });
 cpSync(join(FIELDBOOK, "samesight.policy.ts"), join(lib, "samesight.policy.ts"));
 cpSync(join(FIELDBOOK, "supabase/types.ts"), join(lib, "supabase/types.ts"));
