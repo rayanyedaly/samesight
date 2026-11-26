@@ -80,6 +80,19 @@ export interface ColumnRemoved {
   after?: Audience;
 }
 
+/**
+ * A column dropped and one added that read the same table columns (name AS title): the same
+ * data under another name, with `change` when it reaches other users too.
+ */
+export interface ColumnRenamed {
+  name: string;
+  /** Its name before. */
+  was: string;
+  from: string[];
+  personal?: PersonalMatch;
+  change?: AudienceChange;
+}
+
 export interface TableDiff {
   table: string;
   status: "added" | "removed" | "changed";
@@ -95,11 +108,8 @@ export interface TableDiff {
     removed: ColumnRemoved[];
     /** Sent before and now, to a different audience (the widest over the queries that send it). */
     audience: { name: string; from: string[]; personal?: PersonalMatch; change: AudienceChange }[];
-    /**
-     * A column dropped and one added that read the same table columns (name AS title): the same
-     * data under another name, with `change` when it reaches other users too.
-     */
-    renamed: { name: string; was: string; from: string[]; personal?: PersonalMatch; change?: AudienceChange }[];
+    /** Columns dropped under one name and added under another: not in `added` or `removed`. */
+    renamed: ColumnRenamed[];
     /** Sent before and now, and marked or matched as personal differently (a comment marker added or removed, say). */
     personal: { name: string; from: string[]; before?: PersonalMatch; after?: PersonalMatch }[];
     /**
@@ -161,7 +171,8 @@ function hiddenBy(unread: Unread[]): (table: string) => boolean {
 
 /** Whether a table's entry holds something that surely reaches more users, or can no longer be shown not to. */
 export function widens(t: TableDiff): boolean {
-  return surelyWidens(t) || (t.columns.known.before && !t.columns.known.after);
+  // Columns no longer all known, or a table an unreadable query may have sent already.
+  return surelyWidens(t) || (t.columns.known.before && !t.columns.known.after) || (t.status === "added" && !t.columns.known.before);
 }
 
 /**
@@ -468,7 +479,10 @@ function columnsDiff(before: Read[], after: Read[], hidden: { before: boolean; a
   const sources = (from: string[]) => JSON.stringify([...from].sort());
   for (const col of [...added]) {
     if (!col.from.length || col.before) continue;
-    const was = removed.find((r) => !r.after && r.from.length && sources(r.from) === sources(col.from));
+    // Of the columns dropped that read the same, one that reached the same users, else one
+    // this column does not reach more users than: never a pairing that makes it look wider.
+    const same = removed.filter((r) => !r.after && r.from.length && sources(r.from) === sources(col.from));
+    const was = same.find((r) => sameAudience(r.audience, col.audience)) ?? same.find((r) => compareAudience(r.audience, col.audience) !== "wider") ?? same[0];
     if (!was) continue;
     added.splice(added.indexOf(col), 1);
     removed.splice(removed.indexOf(was), 1);

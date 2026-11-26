@@ -236,7 +236,7 @@ describe("formatExposureDiff, text from the files", () => {
 
   it("quotes a file or ref that is not a plain name", () => {
     const c = diffed(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name FROM lists"] }), SCHEMA, "my\nfile.yaml");
-    const out = text([c], "a‮ref");
+    const out = text([c], "a\u202eref");
     expect(out).toContain('== "my\\nfile.yaml", against "a\\u202eref" ==');
     expect(out).toContain('than in "a\\u202eref": lists.');
   });
@@ -263,6 +263,11 @@ describe("formatExposureDiff, text from the files", () => {
     expect(same).toContain("Nothing reaches more users than in main");
     const wider = text([diffed(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name AS title FROM lists"] }))]);
     expect(wider).toContain("  columns renamed   title (from name) (was name); was to only the row's owner (owner_id), now to every user");
+  });
+
+  it("a table that reaches other users and sends a new column says both", () => {
+    const out = text([diffed(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name, is_public FROM lists WHERE org_id = auth.parameter('org_id')"] }))]);
+    expect(out).toContain("lists: reaches other users, and sends more");
   });
 
   it("a table that reaches fewer users but sends a new column says both", () => {

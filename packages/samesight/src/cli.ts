@@ -387,28 +387,27 @@ function exposureAgainst(
     }
   } catch (e) {
     if (!(e instanceof GitError)) throw e;
-    console.error(`samesight: ${e.message}`);
+    console.error(`samesight: ${safe(e.message)}`);
     return 2;
   }
+  // Errors about either side are said on one line: in CI the files on disk are the pull
+  // request's, and a line of a file printed under an error could pose as a runner's command.
+  const oneLine = (file: string, e: unknown) => {
+    const fix = (e as NodeJS.ErrnoException).syscall ? "; check the path, or name another file" : "";
+    const error = `cannot be read as a sync config: ${(e as Error).message.split("\n")[0] ?? ""}${fix}`;
+    console.error(`samesight: ${named(file)}: ${safe(error)}`);
+    return { file, error };
+  };
   const diffed: DiffedConfig[] = [];
   const unreadable: Unreadable[] = [];
   for (const file of found) {
     let text: string;
-    try {
-      text = readFileSync(file, "utf8");
-    } catch (e) {
-      const bad = cannotRead(file, e);
-      console.error(bad.message);
-      unreadable.push(bad.unreadable);
-      continue;
-    }
     let after: ExposureMap;
     try {
+      text = readFileSync(file, "utf8");
       after = exposureMap(parseSyncConfig(text), schema);
     } catch (e) {
-      const bad = cannotRead(file, e);
-      console.error(bad.message);
-      unreadable.push(bad.unreadable);
+      unreadable.push(oneLine(file, e));
       continue;
     }
     let was: ExposureMap;

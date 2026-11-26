@@ -233,7 +233,7 @@ describe("samesight exposure --against", () => {
   const MIGRATION = "create table lists (id uuid primary key, name text, owner_id uuid references auth.users, email text);\n";
   /** Git, and the CLI, as the tests run them: no GIT_* from the environment, no hooks, no signing. */
   const ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
-  const SETTINGS = ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=.no-hooks", "-c", "user.email=test@example.com", "-c", "user.name=test"];
+  const SETTINGS = ["-c", "gc.auto=0", "-c", "commit.gpgsign=false", "-c", "tag.gpgSign=false", "-c", "core.hooksPath=.no-hooks", "-c", "user.email=test@example.com", "-c", "user.name=test"];
   const git = (cwd: string, ...args: string[]) => execFileSync("git", [...SETTINGS, ...args], { cwd, encoding: "utf8", env: ENV }).trim();
   const run = (args: string[], cwd: string) => cli(args, cwd, ENV);
 
@@ -317,7 +317,7 @@ describe("samesight exposure --against", () => {
     const dir = repo(PROJECT);
     const missing = await run(["exposure", "--against", "release-9"], dir);
     expect([missing.code, missing.stdout]).toEqual([2, ""]);
-    expect(missing.stderr).toBe("samesight: no commit release-9 in this repository; in a shallow clone, fetch it first (git fetch origin release-9:release-9)\n");
+    expect(missing.stderr).toBe("samesight: no commit release-9 in this repository; in a shallow clone, fetch it first (git fetch origin release-9) and compare with FETCH_HEAD\n");
     const option = await run(["exposure", `--against=--output=${join(dir, "written")}`], dir);
     expect([option.code, option.stderr]).toEqual([2, `samesight: --against takes a branch, a tag or a commit id, which cannot start with "-": ${JSON.stringify(`--output=${join(dir, "written")}`)}\n`]);
     expect(existsSync(join(dir, "written"))).toBe(false);
@@ -405,6 +405,28 @@ describe("samesight exposure --against", () => {
     const out = await run(["exposure", "--against", "main"], dir);
     expect(out.stdout).toContain('"::error::forged\\n\\nNo change.": newly sent');
     expect(out.stdout.split("\n").some((l) => l.startsWith("::"))).toBe(false);
+  });
+
+  it("says when the commit holds the migrations as a submodule, and compares without them", { timeout: 30_000 }, async () => {
+    const inner = repo({ "1.sql": MIGRATION });
+    const dir = repo({ "sync-config.yaml": config(OWN) });
+    git(dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "supabase/migrations");
+    git(dir, "commit", "-q", "-m", "submodule");
+    const out = await run(["exposure", "--against", "main"], dir);
+    expect(out.stderr).toContain("note: supabase/migrations is a submodule in main, whose files another repository holds, so the columns a SELECT * sent there are not known");
+    expect(out.code).toBe(0);
+  });
+
+  it("keeps a YAML error about the files on disk on one line, and prints no YAML warning", { timeout: 30_000 }, async () => {
+    const dir = repo(PROJECT);
+    put(dir, { "sync-config.yaml": "::warning title=forged::msg: !x v\nstreams: [unclosed\n" });
+    const out = await run(["exposure", "--against", "main"], dir);
+    expect(out.code).toBe(2);
+    const lines = out.stderr.split("\n").filter(Boolean);
+    expect(lines.every((l) => !/^\s*::/.test(l))).toBe(true);
+    expect(lines[0]).toMatch(/^samesight: sync-config.yaml: cannot be read as a sync config: /);
+    const missing = await run(["exposure", "nowhere.yaml", "--against", "main"], dir);
+    expect(missing.stderr).toMatch(/^samesight: nowhere.yaml: cannot be read as a sync config: ENOENT[^\n]*; check the path, or name another file\n/);
   });
 
   it("exits 2 outside a git repository", { timeout: 30_000 }, async () => {
