@@ -156,13 +156,22 @@ function hiddenBy(unread: Unread[]): (table: string) => boolean {
 
 /** Whether a table's entry holds something that surely reaches more users, or can no longer be shown not to. */
 export function widens(t: TableDiff): boolean {
+  return surelyWidens(t) || (t.columns.known.before && !t.columns.known.after);
+}
+
+/**
+ * Whether a table's entry holds something that surely reaches more users: the table or a
+ * column newly sent (where nothing unreadable may have sent it), or a table, column or query
+ * whose audience is wider. Columns no longer all known are not counted here: what they send
+ * cannot be shown, not that it is more.
+ */
+export function surelyWidens(t: TableDiff): boolean {
   return (
     (t.status === "added" && t.columns.known.before) ||
     t.audience.direction === "wider" ||
     t.columns.added.length > 0 ||
     t.columns.audience.some((c) => c.change.direction === "wider") ||
-    t.queries.changed.some((q) => q.audience?.direction === "wider") ||
-    (t.columns.known.before && !t.columns.known.after)
+    t.queries.changed.some((q) => q.audience?.direction === "wider")
   );
 }
 

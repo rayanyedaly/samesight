@@ -37,7 +37,7 @@ function streams(body: Record<string, string[]>, onDemand: string[] = [], extra 
 function diffed(before: string, after: string, schema: Schema = SCHEMA, file = "sync-config.yaml", schemaAfter = schema): DiffedConfig {
   const was = exposureMap(parseSyncConfig(before), schema);
   const now = exposureMap(parseSyncConfig(after), schemaAfter);
-  return { file, diff: diffExposure(was, now), after: now, lineOf: lineFinder(after) };
+  return { file, diff: diffExposure(was, now), after: now, lineOf: lineFinder(after), inCommit: true };
 }
 
 const text = (configs: DiffedConfig[], ref = "main") => formatExposureDiff(configs, ref);
@@ -163,10 +163,73 @@ describe("formatExposureDiff", () => {
   });
 });
 
+describe("formatExposureDiff, each kind of entry", () => {
+  const NO_NOTES = schemaOf("create table lists (id uuid primary key, name text, owner_id uuid references auth.users);");
+
+  it("a table changed in no way that reaches more users is 'changed', with the query's own line", () => {
+    const out = text([diffed(streams({ s: [OWN_LISTS] }), streams({ s: [`${OWN_LISTS} AND name IS NOT NULL`] }))]);
+    expect(out).toContain("lists: changed\n");
+    expect(out).not.toContain("sends more");
+  });
+
+  it("a column moved between audiences it cannot rank says so", () => {
+    const out = text([
+      diffed(
+        streams({ own: ["SELECT id, email FROM members WHERE user_id = auth.user_id()"], all: ["SELECT id FROM members"] }),
+        streams({ own: ["SELECT id FROM members WHERE user_id = auth.user_id()"], org: ["SELECT id, email FROM members WHERE org_id = auth.parameter('org_id')"], all: ["SELECT id FROM members"] }),
+      ),
+    ]);
+    expect(out).toContain("  columns moved     email [contact]: was to only the row's owner (user_id), now to members of the row's group, through claim org_id");
+  });
+
+  it("a query found again under another label says what it was, and what it no longer sends", () => {
+    const out = text([diffed(streams({ s: [OWN_NOTES, "SELECT id, name FROM lists"] }), streams({ s: ["SELECT id FROM lists"] }))]);
+    expect(out).toContain("  query edited      s, queries[0] (was queries[1])  (sync-config.yaml:7)");
+    expect(out).toContain("                    no longer sends: name");
+  });
+
+  it("a CTE added and one dropped", () => {
+    const yaml = (where: string, ctes: string) => streams({ s: [`SELECT id, name FROM lists WHERE ${where}`] }, [], ctes);
+    const with1 = "    with:\n      mine: SELECT org_id FROM members WHERE user_id = auth.user_id()\n";
+    const added = text([diffed(yaml("owner_id = auth.user_id()", ""), yaml("org_id IN mine", with1))]);
+    expect(added).toContain("with.mine added  SELECT org_id FROM members WHERE user_id = auth.user_id()");
+    const dropped = text([diffed(yaml("org_id IN mine", with1), yaml("owner_id = auth.user_id()", ""))]);
+    expect(dropped).toContain("with.mine dropped  SELECT org_id FROM members WHERE user_id = auth.user_id()");
+  });
+
+  it("a column a * the schema did not know may have sent, now surely sent to more users, says so", () => {
+    const star = "SELECT * FROM notes WHERE owner_id = auth.user_id()";
+    const out = text([diffed(streams({ s: [star, "SELECT id FROM notes"] }), streams({ s: [star, "SELECT id, memo FROM notes"] }), NO_NOTES)]);
+    expect(out).toContain("  columns added     memo: to every user");
+    expect(out).toContain("(memo may have been sent before by a * whose columns were not known)");
+  });
+
+  it("columns no longer all known: 'may send more', and the summary says may", () => {
+    const yaml = streams({ s: ["SELECT * FROM notes WHERE owner_id = auth.user_id()"] });
+    const out = text([diffed(yaml, yaml, SCHEMA, "sync-config.yaml", NO_NOTES)]);
+    expect(out).toContain("notes: may send more");
+    expect(out).toContain("  columns           not all known now (a * the schema does not define, or a query that cannot be read)");
+    expect(out).toContain("No table is known to reach more users than in main, but: 1 table may send more, since not all its columns are known now: notes.");
+    const back = text([diffed(yaml, yaml, NO_NOTES, "sync-config.yaml", SCHEMA)]);
+    expect(back).toContain("  columns           all known now; some were not before");
+    expect(back).toContain("notes: changed");
+  });
+
+  it("a table an unreadable query may have sent before is not called newly sent", () => {
+    const out = text([diffed(streams({ s: ["SELECT * FROM lists JOIN notes ON notes.id = lists.id WHERE lists.owner_id = auth.user_id()"] }), streams({ s: ["SELECT * FROM lists JOIN notes ON notes.id = lists.id WHERE lists.owner_id = auth.user_id()"], t: [OWN_NOTES] }))]);
+    expect(out).toContain("notes: sent now (a query that could not be read may have sent it before)");
+  });
+
+  it("counts tables in the plural", () => {
+    const out = text([diffed(streams({ a: [OWN_LISTS], b: [OWN_NOTES] }), streams({ a: ["SELECT id, name FROM lists"], b: ["SELECT id, body FROM notes"] }))]);
+    expect(out).toContain("2 tables reach more users, or more columns, than in main: lists, notes.");
+  });
+});
+
 describe("exposureDiffJson", () => {
   it("carries the ref, the commit, the diff of each file with lines, and widened", () => {
     const c = diffed(streams({ s: [OWN_LISTS] }), streams({ s: [OWN_LISTS], all: ["SELECT id FROM notes"], t: ["SELECT * FROM lists UNION SELECT * FROM lists"] }));
-    const doc = JSON.parse(JSON.stringify(exposureDiffJson([c], { ref: "main", commit: "a".repeat(40), files: ["sync-config.yaml"], migrations: "supabase/migrations", unreadable: [] })));
+    const doc = JSON.parse(JSON.stringify(exposureDiffJson([c], { ref: "main", commit: "a".repeat(40), files: ["sync-config.yaml"], migrations: "supabase/migrations", commitMigrations: "supabase/migrations", unreadable: [] })));
     expect(doc).toMatchObject({ version: 1, against: { ref: "main", commit: "a".repeat(40) }, files: ["sync-config.yaml"], migrations: "supabase/migrations", widened: true, changed: true, unreadable: [] });
     expect(doc.diffs[0].file).toBe("sync-config.yaml");
     const notes = doc.diffs[0].tables.find((t: { table: string }) => t.table === "notes");
@@ -177,7 +240,7 @@ describe("exposureDiffJson", () => {
 
   it("is not widened when nothing is", () => {
     const yaml = streams({ s: [OWN_LISTS] });
-    const doc = exposureDiffJson([diffed(yaml, yaml)], { ref: "main", commit: "b".repeat(40), files: ["x"], migrations: null, unreadable: [] });
+    const doc = exposureDiffJson([diffed(yaml, yaml)], { ref: "main", commit: "b".repeat(40), files: ["x"], migrations: null, commitMigrations: null, unreadable: [] });
     expect(doc.widened).toBe(false);
     expect(doc.changed).toBe(false);
   });

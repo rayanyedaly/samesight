@@ -6,7 +6,7 @@
  */
 
 import { type Audience, audienceText } from "../lint/audience.ts";
-import { type ExposureDiff, type QueryChange, type TableDiff, type Unread, widens } from "./diff.ts";
+import { type ExposureDiff, type QueryChange, surelyWidens, type TableDiff, type Unread, widens } from "./diff.ts";
 import { columnText, MATCHED_BY } from "./format.ts";
 import type { ExposureMap } from "./map.ts";
 
@@ -19,10 +19,25 @@ export interface DiffedConfig {
   after: ExposureMap;
   /** Where a query starts in the file as it is now; undefined when it cannot be placed. */
   lineOf: (sql: string) => { line: number } | undefined;
+  /** Whether the commit holds the file: when not, all it sends counts as newly sent. */
+  inCommit: boolean;
 }
 
-/** A labelled line of a block, its text lined up with the others'. */
-const line = (label: string, text: string) => `  ${label.padEnd(16)}  ${text}`;
+/**
+ * A labelled line of a block, its text lined up with the others'. Text from the files is put
+ * on the line whole, so no name or SQL can start a line of its own.
+ */
+const line = (label: string, text: string) => `  ${label.padEnd(16)}  ${safe(text)}`;
+
+/** Control characters and line separators as spaces: text from the files on one line. */
+const safe = (text: string) => text.replace(/[\p{Cc}\u2028\u2029]+/gu, " ");
+
+/**
+ * A name from the files where it starts a line, or names the file or ref: as it is when it is a
+ * plain name, else quoted with its control characters escaped, so it cannot pose as a line of
+ * the tool's own (or a CI runner's command, which starts a line with ::).
+ */
+const named = (name: string) => (/^[\p{L}\p{N}_$][\p{L}\p{N}_$.\/@~^-]*$/u.test(name) ? name : JSON.stringify(name));
 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -34,12 +49,12 @@ export function formatExposureDiff(configs: DiffedConfig[], ref: string): string
 
 function configText(c: DiffedConfig, ref: string): string[] {
   const { diff, file } = c;
-  const head = `== ${file}, against ${ref} ==`;
+  const head = `== ${named(file)}, against ${named(ref)} ==`;
   if (!diff.changed) return [head, "No change."];
   const kind = diff.kind ? [`Was ${kindName(diff.kind.before)}, now ${kindName(diff.kind.after)}.`] : [];
   const unread = [
-    ...diff.unread.added.map((u) => `could not read: ${queryName(c, u)}: ${u.reason}`),
-    ...diff.unread.removed.map((u) => `read now, could not before: ${u.stream}, ${u.query}`),
+    ...diff.unread.added.map((u) => safe(`could not read: ${queryName(c, u)}: ${u.reason}`)),
+    ...diff.unread.removed.map((u) => safe(`read now, could not before: ${u.stream}, ${u.query}`)),
   ];
   return [head, ...kind, ...diff.tables.map((t) => tableText(c, t)), ...(unread.length ? [unread.join("\n")] : [])];
 }
@@ -48,7 +63,7 @@ const kindName = (k: ExposureMap["kind"]) => (k === "streams" ? "sync streams" :
 
 /** What happened to the table, in its title. */
 function title(t: TableDiff): string {
-  if (t.status === "added") return "newly sent";
+  if (t.status === "added") return t.columns.known.before ? "newly sent" : "sent now (a query that could not be read may have sent it before)";
   if (t.status === "removed") return "no longer sent";
   switch (t.audience.direction) {
     case "wider":
@@ -58,12 +73,12 @@ function title(t: TableDiff): string {
     case "changed":
       return "reaches other users";
     default:
-      return widens(t) ? "sends more" : "changed";
+      return surelyWidens(t) ? "sends more" : widens(t) ? "may send more" : "changed";
   }
 }
 
 function tableText(c: DiffedConfig, t: TableDiff): string {
-  const out = [`${t.table}: ${title(t)}`];
+  const out = [`${named(t.table)}: ${title(t)}`];
   const { before, after } = t.audience;
   if (t.status === "added" && after) out.push(line("to", audienceText(after)));
   else if (t.status === "removed" && before) out.push(line("was to", audienceText(before)));
@@ -148,26 +163,33 @@ const oneLine = (sql: string) => sql.replace(/[\p{Cc}\u2028\u2029\s]+/gu, " ").t
 
 /** What reaches more users than in the commit, over every config; never that the rest is safe. */
 function summary(configs: DiffedConfig[], ref: string): string {
-  const wider = configs.flatMap((c) => c.diff.tables.filter(widens).map((t) => (configs.length > 1 ? `${t.table} (${c.file})` : t.table)));
+  const name = (c: DiffedConfig, t: TableDiff) => (configs.length > 1 ? `${named(t.table)} (${named(c.file)})` : named(t.table));
+  const sure = configs.flatMap((c) => c.diff.tables.filter(surelyWidens).map((t) => name(c, t)));
+  const maybe = configs.flatMap((c) => c.diff.tables.filter((t) => widens(t) && !surelyWidens(t)).map((t) => name(c, t)));
   const unread = configs.reduce((n, c) => n + c.diff.unread.added.length, 0);
-  const lost = unread ? `${count(unread, "query", "queries")} that cannot be read ${unread === 1 ? "is" : "are"} new since ${ref}, and may send anything.` : "";
-  if (wider.length) return `${count(wider.length, "table")} ${wider.length === 1 ? "reaches" : "reach"} more users, or more columns, than in ${ref}: ${wider.join(", ")}.${lost ? ` ${lost}` : ""}`;
-  if (unread) return `No table is known to reach more users than in ${ref}, but ${lost.charAt(0).toLowerCase()}${lost.slice(1)}`;
+  const against = named(ref);
+  const unsure = [
+    ...(maybe.length ? [`${count(maybe.length, "table")} may send more, since not all ${maybe.length === 1 ? "its" : "their"} columns are known now: ${maybe.join(", ")}.`] : []),
+    ...(unread ? [`${count(unread, "query", "queries")} that cannot be read ${unread === 1 ? "is" : "are"} new since ${against}, and may send anything.`] : []),
+  ];
+  if (sure.length) return [`${count(sure.length, "table")} ${sure.length === 1 ? "reaches" : "reach"} more users, or more columns, than in ${against}: ${sure.join(", ")}.`, ...unsure].join(" ");
+  if (unsure.length) return [`No table is known to reach more users than in ${against}, but:`, ...unsure].join(" ");
   const changed = configs.reduce((n, c) => n + c.diff.tables.length, 0);
-  if (changed || configs.some((c) => c.diff.changed)) return `Nothing reaches more users than in ${ref}, as far as the files show; ${count(changed, "table")} changed otherwise.`;
-  return `No change in who receives which tables and columns since ${ref}.`;
+  if (changed || configs.some((c) => c.diff.changed)) return `Nothing reaches more users than in ${against}, as far as the files show; ${count(changed, "table")} changed otherwise.`;
+  return `No change in who receives which tables and columns since ${against}.`;
 }
 
 /** The JSON report: each config's diff, the queries the files now place given their line. */
 export function exposureDiffJson(
   configs: DiffedConfig[],
-  run: { ref: string; commit: string; files: string[]; migrations: string | null; unreadable: { file: string; error: string }[] },
+  run: { ref: string; commit: string; files: string[]; migrations: string | null; commitMigrations: string | null; unreadable: { file: string; error: string }[] },
 ) {
   return {
     version: 1,
     against: { ref: run.ref, commit: run.commit },
     files: run.files,
     migrations: run.migrations,
+    commitMigrations: run.commitMigrations,
     widened: configs.some((c) => c.diff.widened),
     changed: configs.some((c) => c.diff.changed),
     diffs: configs.map((c) => {
@@ -177,6 +199,7 @@ export function exposureDiffJson(
       };
       return {
         file: c.file,
+        inCommit: c.inCommit,
         ...c.diff,
         tables: c.diff.tables.map((t) => ({ ...t, queries: { ...t.queries, added: t.queries.added.map((q) => ({ ...q, ...at(q.sql) })) } })),
         unread: { added: c.diff.unread.added.map((u: Unread) => ({ ...u, ...at(u.sql) })), removed: c.diff.unread.removed },

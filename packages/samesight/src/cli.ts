@@ -76,7 +76,7 @@ Options:
                     keys, column comments and (lint) RLS from (default: supabase/migrations)
   --against <ref>   exposure: compare with the sync configs and migrations as that git commit
                     (a branch, a tag, a commit id) holds them; exit 1 when something reaches
-                    more users than there
+                    more users than there, or may (a query or columns no longer read)
   --allow <rule>[:<name>]
                     lint and agent init/hook: accept a rule's findings, all of them or those
                     about one stream, bucket, table or policy; repeatable
@@ -324,7 +324,7 @@ function lint(given: string[], migrationsDir: string | undefined, allow: string[
 /**
  * Exit 0 whatever the map shows, since it informs and never fails; 2 when a file cannot be
  * read. Text or JSON on stdout, notes on stderr. With `against`, what changed since that
- * commit: exit 1 when something reaches more users.
+ * commit: exit 1 when something reaches more users, or may.
  */
 function exposure(given: string[], migrationsDir: string | undefined, format: string, against?: string): number {
   if (format !== "text" && format !== "json") {
@@ -360,7 +360,7 @@ function exposure(given: string[], migrationsDir: string | undefined, format: st
 /**
  * `samesight exposure --against <ref>`: each sync config as `ref` holds it against the file on
  * disk, with the migrations under each. Exit 1 when something reaches more users than in
- * `ref`, 2 when a file or the commit cannot be read, else 0.
+ * `ref`, or may (`widened`), 2 when a file or the commit cannot be read, else 0.
  */
 function exposureAgainst(
   found: string[],
@@ -372,6 +372,7 @@ function exposureAgainst(
   const cwd = process.cwd();
   let commit: Commit;
   let before: Schema | undefined;
+  let commitMigrations: string | null = null;
   const dir = migrations.given ?? MIGRATIONS_DIR;
   try {
     commit = resolveCommit(ref, cwd);
@@ -379,6 +380,7 @@ function exposureAgainst(
     // No migrations here and none named: the note above already says so for both sides.
     if (!was && (migrations.read || migrations.given)) console.error(`note: no ${dir} in ${ref}, so the columns a SELECT * sent there are not known`);
     before = was && ((table: string) => was.tables.get(table));
+    if (was) commitMigrations = dir;
   } catch (e) {
     if (!(e instanceof GitError)) throw e;
     console.error(`samesight: ${e.message}`);
@@ -406,8 +408,9 @@ function exposureAgainst(
       continue;
     }
     let was: ExposureMap;
+    let old: string | undefined;
     try {
-      const old = fileAt(commit, file);
+      old = fileAt(commit, file);
       if (old === undefined) console.error(`note: ${file} is not in ${ref}, so all it sends counts as newly sent`);
       was = old === undefined ? { kind: after.kind, tables: [], unread: [] } : exposureMap(parseSyncConfig(old), before);
     } catch (e) {
@@ -417,10 +420,10 @@ function exposureAgainst(
       unreadable.push(bad.unreadable);
       continue;
     }
-    diffed.push({ file, diff: diffExposure(was, after), after, lineOf: lineFinder(text) });
+    diffed.push({ file, diff: diffExposure(was, after), after, lineOf: lineFinder(text), inCommit: old !== undefined });
   }
   if (format === "json") {
-    console.log(JSON.stringify(exposureDiffJson(diffed, { ref, commit: commit.sha, files: found, migrations: migrations.read?.dir ?? null, unreadable }), null, 2));
+    console.log(JSON.stringify(exposureDiffJson(diffed, { ref, commit: commit.sha, files: found, migrations: migrations.read?.dir ?? null, commitMigrations, unreadable }), null, 2));
   } else {
     if (diffed.length) console.log(formatExposureDiff(diffed, ref));
     if (unreadable.length) console.error(`${unreadable.length} of ${found.length} file(s) could not be read on one side or both, so nothing in them is compared.`);
