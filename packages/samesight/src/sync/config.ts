@@ -38,7 +38,9 @@ function clientParameters(name: string, sql: string[]): Finding[] {
 }
 
 export function parseSyncConfig(yaml: string): SyncConfig {
-  const doc = parse(yaml) as unknown;
+  // Warnings off: the yaml package prints them with lines of the file under them, which a
+  // file from a pull request could make pose as a CI runner's command.
+  const doc = parse(yaml, { logLevel: "error" }) as unknown;
   if (!isObject(doc)) throw new Error("the sync config is not a YAML mapping");
   if (doc.streams !== undefined && doc.bucket_definitions !== undefined) {
     throw new Error("the sync config has both streams and bucket_definitions; audit mode reads one or the other");

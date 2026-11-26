@@ -5,6 +5,9 @@
  */
 
 export {
+  AUTH_STATE_KEYS,
+  authStateKey,
+  BODY_JOIN,
   type ClaimClass,
   type ClaimDialect,
   type ClaimOptions,
@@ -12,14 +15,11 @@ export {
   type ClaimReads,
   type ClaimValue,
   type Compared,
-  AUTH_STATE_KEYS,
-  authStateKey,
-  BODY_JOIN,
   callsIn,
   canonicalNumber,
   claimReads,
-  codeOnly,
   classify,
+  codeOnly,
   type Unreadable,
   wrapperRead,
 } from "./claims.ts";
@@ -27,24 +27,12 @@ export { emitClientSchema, emitManifest, emitPolicyTypes, emitServiceConfig } fr
 export { ident, literal } from "./emit/expr.ts";
 export { emitMigration, PUBLICATION, REPLICATION_ROLE } from "./emit/migration.ts";
 export { emitSyncConfig } from "./emit/sync.ts";
-export { DEFAULT_OUTPUT, outputPaths, type Plan, plan } from "./generate.ts";
-export { assertLocal, DEFAULT_DB_URL, introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
-export { buildIR, CompileError, type IR, type IRTable, type Rule, snake } from "./ir.ts";
-export { loadPolicy, POLICY_FILES, resolvePolicyPath } from "./load.ts";
 export { explainPolicy } from "./explain.ts";
-export { readSupabaseConfig, type SupabaseConfig } from "./supabase-config.ts";
-export type { ColumnInfo, ForeignKey, SchemaInfo, TableInfo } from "./schema.ts";
-export { parseSyncConfig, type SyncConfig } from "./sync/config.ts";
-export { type ParsedQuery, parseQuery, render, sqlText, type Token, type TokenizeOptions, tokenize } from "./sync/sql.ts";
-export { parseStreams, type Stream } from "./sync/streams.ts";
-export { type AuditScope, auditScope, outputTable, tablesNamed } from "./sync/scope.ts";
-export { type ExposedColumn, type ExposedQuery, type ExposedTable, type ExposureMap, exposureMap, type Schema, type SchemaTable } from "./exposure/map.ts";
-export { commentMarker, type PersonalCategory, type PersonalMatch, personalColumn } from "./exposure/personal.ts";
-export type { Audience } from "./lint/audience.ts";
 export {
   type AudienceChange,
   type ColumnAdded,
   type ColumnRemoved,
+  type ColumnRenamed,
   compareAudience,
   type Direction,
   diffExposure,
@@ -53,6 +41,21 @@ export {
   type QueryChange,
   type QueryRef,
   sameAudience,
+  surelyWidens,
   type TableDiff,
   type Unread,
+  widens,
 } from "./exposure/diff.ts";
+export { type ExposedColumn, type ExposedQuery, type ExposedTable, type ExposureMap, exposureMap, type Schema, type SchemaTable } from "./exposure/map.ts";
+export { commentMarker, type PersonalCategory, type PersonalMatch, personalColumn } from "./exposure/personal.ts";
+export { DEFAULT_OUTPUT, outputPaths, type Plan, plan } from "./generate.ts";
+export { assertLocal, DEFAULT_DB_URL, introspect, projectDbUrl, withLocalClient } from "./introspect.ts";
+export { buildIR, CompileError, type IR, type IRTable, type Rule, snake } from "./ir.ts";
+export type { Audience } from "./lint/audience.ts";
+export { loadPolicy, POLICY_FILES, resolvePolicyPath } from "./load.ts";
+export type { ColumnInfo, ForeignKey, SchemaInfo, TableInfo } from "./schema.ts";
+export { readSupabaseConfig, type SupabaseConfig } from "./supabase-config.ts";
+export { parseSyncConfig, type SyncConfig } from "./sync/config.ts";
+export { type AuditScope, auditScope, outputTable, tablesNamed } from "./sync/scope.ts";
+export { type ParsedQuery, parseQuery, render, sqlText, type Token, type TokenizeOptions, tokenize } from "./sync/sql.ts";
+export { parseStreams, type Stream } from "./sync/streams.ts";

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Audience } from "../lint/audience.ts";
 import { applyMigrations } from "../lint/migrations.ts";
 import { parseSyncConfig } from "../sync/config.ts";
-import { compareAudience, diffExposure, type ExposureDiff, sameAudience, type TableDiff } from "./diff.ts";
+import { compareAudience, diffExposure, type ExposureDiff, sameAudience, surelyWidens, type TableDiff } from "./diff.ts";
 import { exposureJson } from "./format.ts";
 import { type ExposureMap, exposureMap, type Schema } from "./map.ts";
 
@@ -179,6 +179,7 @@ describe("tables", () => {
           ],
           removed: [],
           audience: [],
+          renamed: [],
           personal: [],
           known: { before: true, after: true },
         },
@@ -621,7 +622,9 @@ describe("queries that cannot be read may send anything", () => {
     expect(before.unread.map((u) => u.table)).toEqual([undefined]);
     const d = diffExposure(before, map(streams({ s: [join], t: [OWN_NOTES] }), APP_SCHEMA));
     expect(d.tables.map((t) => [t.table, t.status, t.columns.known])).toEqual([["notes", "added", { before: false, after: false }]]);
-    expect(d.widened).toBe(false);
+    // It may send more than the unreadable query did: counted, but not as sure.
+    expect(d.widened).toBe(true);
+    expect(d.tables.some(surelyWidens)).toBe(false);
   });
 });
 
@@ -846,5 +849,58 @@ describe("more on what is ranked", () => {
     const schema = schemaOf("create table lists (id uuid primary key);");
     const d = diff(streams({ s: ["SELECT id, memo FROM notes"] }), streams({ s: ["SELECT * FROM notes WHERE owner_id = auth.user_id()"] }), schema);
     expect(d.tables[0]?.columns.removed.find((c) => c.name === "memo")).toEqual({ name: "memo", from: ["memo"], audience: everyone, after: owner });
+  });
+});
+
+describe("a column renamed", () => {
+  it("is the same data under another name: renamed, not added, and no wider", () => {
+    const d = diff(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name AS title FROM lists WHERE owner_id = auth.user_id()"] }));
+    expect(d.tables[0]?.columns.renamed).toEqual([{ name: "title", was: "name", from: ["name"] }]);
+    expect(d.tables[0]?.columns.added).toEqual([]);
+    expect(d.tables[0]?.columns.removed).toEqual([]);
+    expect(d.widened).toBe(false);
+  });
+
+  it("that now reaches more users widens", () => {
+    const d = diff(streams({ s: [OWN_LISTS] }), streams({ s: ["SELECT id, name AS title FROM lists"] }));
+    expect(d.tables[0]?.columns.renamed).toEqual([{ name: "title", was: "name", from: ["name"], change: { before: owner, after: everyone, direction: "wider" } }]);
+    expect(d.widened).toBe(true);
+  });
+
+  it("pairs with a dropped column that reached the same users before one that did not", () => {
+    const d = diff(
+      streams({ a: ["SELECT id, name AS n1 FROM lists WHERE owner_id = auth.user_id()"], b: ["SELECT id, name AS n2 FROM lists"] }),
+      streams({ a: ["SELECT id FROM lists WHERE owner_id = auth.user_id()"], b: ["SELECT id, name AS title FROM lists"] }),
+    );
+    expect(d.tables[0]?.columns.renamed).toEqual([{ name: "title", was: "n2", from: ["name"] }]);
+    expect(d.tables[0]?.columns.removed.map((c) => c.name)).toEqual(["n1"]);
+    expect(d.widened).toBe(false);
+  });
+
+  it("widens on its own when only the renamed column reaches more users", () => {
+    const d = diff(
+      streams({ own: ["SELECT id, email FROM members WHERE user_id = auth.user_id()"], all: ["SELECT id FROM members"] }),
+      streams({ own: ["SELECT id FROM members WHERE user_id = auth.user_id()"], all: ["SELECT id, email AS title FROM members"] }),
+    );
+    const members = d.tables[0];
+    expect(members?.audience.direction).toBeUndefined();
+    expect(members?.columns.audience).toEqual([]);
+    expect(members?.columns.renamed).toEqual([
+      { name: "title", was: "email", from: ["email"], personal: { category: "contact", matched: "email", source: "name" }, change: { before: { kind: "owner", column: "user_id" }, after: everyone, direction: "wider" } },
+    ]);
+    expect(members && surelyWidens(members)).toBe(true);
+  });
+
+  it("is not a column a * the schema did not know may have sent", () => {
+    const schema = schemaOf("create table lists (id uuid primary key);");
+    const star = "SELECT * FROM notes WHERE owner_id = auth.user_id()";
+    const d = diff(streams({ s: [star, "SELECT id, body AS b FROM notes"] }), streams({ s: [star, "SELECT id, body AS c FROM notes"] }), schema);
+    expect(d.tables[0]?.columns.renamed).toEqual([]);
+  });
+
+  it("is not a literal turned into a column", () => {
+    const d = diff(streams({ s: ["SELECT id, '' AS name FROM lists"] }), streams({ s: ["SELECT id, name FROM lists"] }));
+    expect(d.tables[0]?.columns.renamed).toEqual([]);
+    expect(d.tables[0]?.columns.added.map((c) => c.name)).toEqual(["name"]);
   });
 });

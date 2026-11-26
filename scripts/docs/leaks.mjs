@@ -43,6 +43,11 @@
  *   <!-- /exposure -->                as the built CLI prints it, run from the example's directory
  *
  * Every example there must have both blocks, once each, and exposure must map it (exit 0).
+ * An example with a sync-config.changed.yaml also has
+ *
+ *   <!-- exposure-against:<name> -->  that file, then `samesight exposure sync-config.yaml
+ *   <!-- /exposure-against -->        --migrations migrations --against HEAD` in a repository
+ *                                     holding the example, committed, with the change applied
  *
  *   node scripts/docs/leaks.mjs           rewrite the blocks
  *   node scripts/docs/leaks.mjs --check   exit 1 if any block differs from a fresh run
@@ -51,7 +56,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -184,6 +190,56 @@ function exposureBlock(name) {
   return ["```console", `$ npx samesight ${exposureArgs.join(" ")}`, ...lines(r.stdout), "```"];
 }
 
+/**
+ * `samesight exposure --against HEAD` on an exposure example: in a new repository holding the
+ * example, committed, with sync-config.changed.yaml put in place of sync-config.yaml.
+ */
+function exposureAgainstBlock(name) {
+  const { dir } = exposureExample(name);
+  const changed = join(dir, "sync-config.changed.yaml");
+  if (!existsSync(changed)) fail(`${EXPOSURE_DOC} has an exposure-against block for ${name}, but ${EXPOSURE_EXAMPLES}/${name} has no sync-config.changed.yaml`);
+  const repo = mkdtempSync(join(tmpdir(), "samesight-docs-"));
+  // Git as the repository it makes needs it: nothing from GIT_* (a hook's GIT_DIR, say) aims it elsewhere.
+  const gitEnv = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("GIT_")));
+  let problem;
+  try {
+    cpSync(join(dir, "sync-config.yaml"), join(repo, "sync-config.yaml"));
+    cpSync(join(dir, "migrations"), join(repo, "migrations"), { recursive: true });
+    const git = (...a) => {
+      const r = spawnSync("git", ["-c", "user.name=docs", "-c", "user.email=docs@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=.no-hooks", ...a], { cwd: repo, env: gitEnv, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${a.join(" ")} for ${EXPOSURE_EXAMPLES}/${name} exited ${r.status}: ${r.stderr || r.error}`);
+    };
+    git("init", "-q");
+    git("add", "-A");
+    git("commit", "-q", "-m", "example");
+    cpSync(changed, join(repo, "sync-config.yaml"));
+    const exposureArgs = ["exposure", "sync-config.yaml", "--migrations", "migrations", "--against", "HEAD"];
+    const r = spawnSync(process.execPath, [CLI, ...exposureArgs], { cwd: repo, env: gitEnv, encoding: "utf8" });
+    // 0 or 1 is what it found; 2 means it could not run.
+    if (r.status !== 0 && r.status !== 1) throw new Error(`samesight ${exposureArgs.join(" ")} on ${EXPOSURE_EXAMPLES}/${name} exited ${r.status}: ${r.stderr || r.error}`);
+    return [
+      "`sync-config.yaml`, changed:",
+      "",
+      "```yaml",
+      ...lines(readFileSync(changed, "utf8")),
+      "```",
+      "",
+      "```console",
+      `$ npx samesight ${exposureArgs.join(" ")}`,
+      ...lines(r.stdout),
+      `$ echo $?`,
+      String(r.status),
+      "```",
+    ];
+  } catch (e) {
+    problem = e;
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+  // fail() exits at once: only once the repository is gone.
+  fail(problem.message);
+}
+
 function lines(text) {
   return text.replace(/\r\n/g, "\n").replace(/\n+$/, "").split("\n");
 }
@@ -251,17 +307,18 @@ const exposureNames = readdirSync(join(ROOT, EXPOSURE_EXAMPLES))
 const exposureBefore = readFileSync(join(ROOT, EXPOSURE_DOC), "utf8");
 const exposureSeen = new Set();
 const exposureStale = [];
-const exposureAfter = exposureBefore.replace(/^<!-- (exposure-example|exposure):([a-z0-9-]+) -->\n[\s\S]*?^<!-- \/\1 -->$/gm, (block, kind, name) => {
+const exposureAfter = exposureBefore.replace(/^<!-- (exposure-example|exposure-against|exposure):([a-z0-9-]+) -->\n[\s\S]*?^<!-- \/\1 -->$/gm, (block, kind, name) => {
   if (!exposureNames.includes(name)) fail(`${EXPOSURE_DOC} has a ${kind} block for ${name}, but there is no ${EXPOSURE_EXAMPLES}/${name}`);
   if (exposureSeen.has(`${kind}:${name}`)) fail(`${EXPOSURE_DOC} has two ${kind} blocks for ${name}`);
   exposureSeen.add(`${kind}:${name}`);
-  const body = kind === "exposure" ? exposureBlock(name) : exampleBlock(exposureExample(name));
+  const body = kind === "exposure" ? exposureBlock(name) : kind === "exposure-against" ? exposureAgainstBlock(name) : exampleBlock(exposureExample(name));
   const out = [`<!-- ${kind}:${name} -->`, ...body, `<!-- /${kind} -->`].join("\n");
   if (out !== block) exposureStale.push(`${kind}:${name}`);
   return out;
 });
 for (const name of exposureNames) {
-  for (const kind of ["exposure-example", "exposure"]) {
+  const kinds = ["exposure-example", "exposure", ...(existsSync(join(ROOT, EXPOSURE_EXAMPLES, name, "sync-config.changed.yaml")) ? ["exposure-against"] : [])];
+  for (const kind of kinds) {
     if (!exposureSeen.has(`${kind}:${name}`)) fail(`${EXPOSURE_DOC} has no ${kind} block for ${EXPOSURE_EXAMPLES}/${name}; add <!-- ${kind}:${name} --> and <!-- /${kind} --> on lines of their own`);
   }
 }

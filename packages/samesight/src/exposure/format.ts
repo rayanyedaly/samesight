@@ -88,7 +88,7 @@ function configText({ file, map, lineOf }: MappedConfig, options: FormatOptions)
 }
 
 /** A labelled line of a block, its text lined up with the others'. */
-const field = (label: string, text: string) => `  ${label.padEnd(7)}  ${text}`;
+export const field = (label: string, text: string) => `  ${label.padEnd(7)}  ${text}`;
 
 /** Who a bucket reaches through one parameter query, without naming that query twice. */
 function pathText(p: ExposedQuery["paths"][number]): string {
@@ -115,7 +115,7 @@ function columnsText(q: ExposedQuery, kind: ExposureMap["kind"], options: Format
  * A column by its name on the device; the table's columns it is read from, when the name
  * does not show them (who, from full_name); and why it looks personal.
  */
-function columnText(c: ExposedColumn): string {
+export function columnText(c: Pick<ExposedColumn, "name" | "from" | "personal">): string {
   const from = c.from.some((f) => !shows(c.name, f)) ? ` (from ${c.from.join(", ")})` : "";
   const personal = c.personal ? ` [${c.personal.category}${c.personal.source === "comment" ? ", marked in its comment" : ""}]` : "";
   return `${c.name}${from}${personal}`;

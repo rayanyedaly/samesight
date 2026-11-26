@@ -160,12 +160,14 @@ A column that likely holds personal data, sent to users other than the row's own
 Prints, for each table a sync config sends, who receives its rows and which columns, marking those whose name or comment marker looks personal. Like lint, it reads the sync config and the migrations only, needs no policy file, and finds the sync config where lint does.
 
 ```text
-samesight exposure [file ...] [--migrations <dir>] [--format text|json]
+samesight exposure [file ...] [--migrations <dir>] [--against <ref>] [--format text|json]
 ```
 
 `--migrations <dir>` names the SQL migrations whose tables give the columns a `SELECT *` sends, the primary keys that tie a row to its parent's owner, and the column comments that may hold a marker (default: `supabase/migrations`, when it exists). Without them, those columns are not known, no comment is read and every table is taken to be keyed by `id`, and it says so. `--format json` prints one JSON object on stdout instead of the text; notes stay on stderr.
 
-Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. See [the exposure map](exposure.md) for an example, how to read it, and how columns are matched.
+`--against <ref>` compares with the sync configs and migrations as that git commit holds them (a branch, a tag, a commit id), and prints what the change does to who receives which tables and columns, calling a change wider only where more users surely receive something.
+
+Exit codes: `0` whatever the map shows, `2` when a file cannot be read, no sync config is found or an option is wrong. With `--against`: `1` when something reaches more users than in the commit, or may (a new query it cannot read, a table whose columns it can no longer all read), `0` when nothing is known to, and `2` also when it is not in a git repository or the repository does not have the ref. See [the exposure map](exposure.md) for an example, how to read it, how columns are matched, and [comparing with a commit](exposure.md#comparing-with-a-commit).
 
 ### `agent`
 

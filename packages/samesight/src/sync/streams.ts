@@ -20,7 +20,9 @@ const STREAM_KEYS = new Set(["auto_subscribe", "priority", "with", "query", "que
 
 /** The streams of an Edition 3 sync config; throws on anything it cannot read in full. */
 export function parseStreams(yaml: string): Stream[] {
-  const doc = parse(yaml) as unknown;
+  // Warnings off: the yaml package prints them with lines of the file under them, which a
+  // file from a pull request could make pose as a CI runner's command.
+  const doc = parse(yaml, { logLevel: "error" }) as unknown;
   if (!isObject(doc)) throw new Error("the sync config is not a YAML mapping");
   const unknown = Object.keys(doc).filter((k) => !TOP_LEVEL.has(k));
   if (unknown.length) throw new Error(`the sync config has ${unknown.join(", ")}, which this check does not read; only streams are supported`);
